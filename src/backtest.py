@@ -18,10 +18,24 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from supabase import create_client
 from datetime import date, timedelta
+import time
 import config as cfg
 from strategy import add_features, get_regime, get_regime_params, get_signals
 
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "reports")
+
+
+def _retry(fn, attempts=4, base_delay=2.0):
+    """anon role punya statement_timeout=3s; query yang menyentuh tabel besar
+    (ihsg_eod, 1.3jt baris) bisa melewati itu saat DB sedang ramai. Retry
+    dengan backoff lebih murah daripada menaikkan timeout role secara global."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception:
+            if i == attempts - 1:
+                raise
+            time.sleep(base_delay * (i + 1))
 
 # Palet warna (lihat skill dataviz): series-1 biru = portfolio, series-2
 # aqua = IHSG, merah = drawdown/regime bearish.
@@ -101,37 +115,37 @@ def fetch_data():
         print("[FETCH] WARNING: Tidak ada data index_eod")
 
     # --- IHSG EOD (per stock code agar query tidak timeout) ---
-    # Ambil daftar stock_code dari hari bursa terakhir di rentang
+    # Ambil daftar stock_code dari hari bursa terakhir di rentang.
+    # Cari tanggal dari idx_df (sudah di-fetch, kecil) — bukan query baru ke
+    # ihsg_eod (1.3 juta baris): ORDER BY trade_date DESC tanpa filter
+    # stock_code tidak bisa pakai index (stock_code, trade_date) dan gampang
+    # timeout begitu rentang tanggalnya besar (mis. backtest multi-tahun).
     print("[FETCH] Mengambil daftar stock_code ...")
-    # Cari tanggal dengan data (hari bursa aktif)
-    latest_day_res = (
-        supabase.table("ihsg_eod")
-        .select("trade_date")
-        .lte("trade_date", BACKTEST_END.isoformat())
-        .gte("trade_date", BACKTEST_START.isoformat())
-        .order("trade_date", desc=True)
-        .limit(1)
-        .execute()
+    idx_in_range = idx_df[
+        (idx_df["trade_date"] >= BACKTEST_START) & (idx_df["trade_date"] <= BACKTEST_END)
+    ] if not idx_df.empty else idx_df
+    code_date = (
+        idx_in_range["trade_date"].max().isoformat()
+        if not idx_in_range.empty else BACKTEST_END.isoformat()
     )
-    code_date = latest_day_res.data[0]["trade_date"] if latest_day_res.data else BACKTEST_END.isoformat()
 
-    codes_batch = (
+    codes_batch = _retry(lambda: (
         supabase.table("ihsg_eod")
         .select("stock_code")
         .eq("trade_date", code_date)
         .limit(2000)
         .execute()
-    )
+    ))
     unique_codes = sorted(set(row["stock_code"] for row in (codes_batch.data or [])))
     if not unique_codes:
         # Fallback: coba BACKTEST_START
-        codes_batch = (
+        codes_batch = _retry(lambda: (
             supabase.table("ihsg_eod")
             .select("stock_code")
             .eq("trade_date", BACKTEST_START.isoformat())
             .limit(2000)
             .execute()
-        )
+        ))
         unique_codes = sorted(set(row["stock_code"] for row in (codes_batch.data or [])))
     print(f"[FETCH] {len(unique_codes)} ticker unik ditemukan dari tanggal {code_date}")
 

@@ -8,6 +8,7 @@ backtest.py, supaya hasil live selalu konsisten dengan backtest.
 
 import os
 import sys
+import time
 import pandas as pd
 from supabase import create_client, Client
 from datetime import date, timedelta
@@ -15,6 +16,19 @@ from datetime import date, timedelta
 import config as cfg
 from strategy import add_features, get_regime, get_regime_params, get_signals
 from notifier import send_screener_results
+
+
+def _retry(fn, attempts=4, base_delay=2.0):
+    """anon role punya statement_timeout=3s; query ke ihsg_eod (1.3jt baris)
+    bisa melewati itu saat DB sedang ramai. Retry lebih murah daripada
+    menaikkan timeout role secara global."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception:
+            if i == attempts - 1:
+                raise
+            time.sleep(base_delay * (i + 1))
 
 # ----------------------------------------------------------------------
 # Supabase connection
@@ -82,11 +96,11 @@ except Exception as e:
 # ihsg_eod di-index per (stock_code, trade_date), jadi query date-range
 # murni di 280 hari x ~1000 saham gampang kena statement timeout.
 try:
-    codes_res = supabase.table("ihsg_eod") \
-        .select("stock_code") \
-        .eq("trade_date", latest_date.isoformat()) \
-        .limit(2000) \
-        .execute()
+    codes_res = _retry(lambda: supabase.table("ihsg_eod")
+        .select("stock_code")
+        .eq("trade_date", latest_date.isoformat())
+        .limit(2000)
+        .execute())
     stock_codes = sorted(set(row["stock_code"] for row in (codes_res.data or [])))
     if not stock_codes:
         sys.exit("No stock_code found on latest trading day")
