@@ -4,23 +4,23 @@
 
   Periode Pengujian    : 2025-07-01 – 2025-12-31
   Modal Awal           : Rp  100,000,000
-  Modal Akhir          : Rp  167,838,039
-  Net Profit           : Rp   67,838,039  (+67.84%)
-  Benchmark IHSG       : +25.04%  (alpha +42.80%)
-  Total Trade          : 100
-  Win Rate             : 58.0% (58 menang, 42 kalah)
-  Profit Factor        : 2.80
+  Modal Akhir          : Rp  160,859,283
+  Net Profit           : Rp   60,859,283  (+60.86%)
+  Benchmark IHSG       : +25.04%  (alpha +35.82%)
+  Total Trade          : 106
+  Win Rate             : 56.6% (60 menang, 46 kalah)
+  Profit Factor        : 2.63
   Max Drawdown         : -9.98%
-  Rata-rata Win        : +16.57%
-  Rata-rata Loss       : -3.79%
+  Rata-rata Win        : +16.32%
+  Rata-rata Loss       : -3.60%
   Biaya Transaksi      : 0.2% per transaksi
 
 --- Breakdown by Exit Reason ---
-  TP1   : 38 trade (38 win), total PnL Rp  6,916,899
-  TRAILING: 35 trade (19 win), total PnL Rp 91,803,705
-  SL    : 18 trade ( 0 win), total PnL Rp -28,936,943
+  TP1   : 40 trade (40 win), total PnL Rp  6,823,814
+  TRAILING: 37 trade (19 win), total PnL Rp 84,709,548
+  SL    : 19 trade ( 0 win), total PnL Rp -28,714,511
   TIME  :  4 trade ( 1 win), total PnL Rp -1,334,704
-  END   :  5 trade ( 0 win), total PnL Rp   -610,918
+  END   :  6 trade ( 0 win), total PnL Rp   -624,864
 
 --- Daftar Transaksi ---
 No   Ticker  Entry        Exit         Entry    Exit     Lot   PnL            PnL%     Exit
@@ -82,64 +82,70 @@ No   Ticker  Entry        Exit         Entry    Exit     Lot   PnL            Pn
 55   CRSN    2025-10-14   2025-10-20   122      110      3631  -4,525,678     -9.84  % SL
 56   WAPO    2025-10-21   2025-10-22   230      252      205   +428,315       +9.50  % TP1
 57   WAPO    2025-10-21   2025-10-23   230      250      1851  +3,524,304     +8.70  % TRAILING
-58   CITY    2025-10-21   2025-10-23   123      136      285   +342,531       +10.19 % TP1
-59   KOIN    2025-10-22   2025-10-23   79       85       1     +589           +7.87  % TP1
-60   JMAS    2025-10-09   2025-10-27   141      167      1410  +3,579,144     +18.44 % TRAILING
-61   CITY    2025-10-21   2025-10-27   123      158      2573  +8,860,897     +28.46 % TRAILING
+58   CITY    2025-10-21   2025-10-23   123      136      61    +73,314        +10.19 % TP1
+59   JMAS    2025-10-09   2025-10-27   141      167      1410  +3,579,144     +18.44 % TRAILING
+60   BINO    2025-10-21   2025-10-27   127      137      217   +209,410       +8.01  % TP1
+61   CITY    2025-10-21   2025-10-27   123      158      553   +1,904,421     +28.46 % TRAILING
 62   LRNA    2025-10-24   2025-10-31   189      178      486   -582,398       -5.95  % SL
 63   SIDO    2025-10-21   2025-11-04   560      582      84    +165,315       +3.92  % TP1
-64   IKBI    2025-10-28   2025-11-05   550      500      225   -1,172,250     -9.09  % SL
-65   PEHA    2025-10-15   2025-11-10   338      311      157   -437,563       -7.86  % SL
-66   ZYRX    2025-11-06   2025-11-10   146      166      351   +680,098       +13.70 % TP1
-67   SIDO    2025-10-21   2025-11-11   560      555      760   -549,480       -0.89  % TRAILING
-68   SAME    2025-11-11   2025-11-12   320      348      161   +429,290       +8.75  % TP1
-69   SAME    2025-11-11   2025-11-13   320      316      1453  -766,022       -1.25  % TRAILING
-70   ASJT    2025-10-28   2025-11-18   133      148      143   +203,405       +11.12 % TP1
-71   ASJT    2025-10-28   2025-11-20   133      141      1292  +962,798       +6.02  % TRAILING
-72   ELIT    2025-11-12   2025-11-24   183      192      259   +221,983       +5.09  % TP1
-73   MAXI    2025-11-14   2025-11-24   56       52       9163  -3,536,525     -6.51  % SL
-74   ZYRX    2025-11-06   2025-11-26   146      168      3167  +6,768,512     +15.07 % TRAILING
-75   ELIT    2025-11-12   2025-11-26   183      182      2340  -404,820       -0.55  % TRAILING
-76   VRNA    2025-11-03   2025-11-27   84       92       61    +47,522        +9.69  % TP1
-77   INRU    2025-11-27   2025-12-01   740      665      162   -1,260,522     -10.14 % SL
-78   PEVE    2025-12-02   2025-12-03   525      506      590   -1,215,320     -3.53  % SL
-79   MUTU    2025-11-21   2025-12-05   123      135      164   +195,352       +10.10 % TP1
-80   LRNA    2025-12-04   2025-12-05   191      203      72    +79,957        +6.23  % TP1
-81   CAKK    2025-11-27   2025-12-08   179      187      48    +34,031        +4.37  % TP1
-82   OMED    2025-11-25   2025-12-09   200      209      263   +203,938       +4.29  % TP1
-83   LRNA    2025-12-04   2025-12-09   191      208      651   +1,054,750     +8.90  % TRAILING
-84   MUTU    2025-11-21   2025-12-11   123      122      1482  -220,818       -0.81  % TRAILING
-85   OMED    2025-11-25   2025-12-11   200      200      2374  -189,920       +0.00  % TRAILING
-86   CAKK    2025-11-27   2025-12-12   179      178      433   -74,216        -0.56  % TRAILING
-87   NELY    2025-12-12   2025-12-15   434      398      1190  -4,482,016     -8.29  % SL
-88   KIJA    2025-12-12   2025-12-15   226      252      228   +571,003       +11.50 % TP1
-89   BINA    2025-12-15   2025-12-16   4500     4443     112   -836,328       -1.26  % SL
-90   KIJA    2025-12-12   2025-12-17   226      226      2058  -186,043       +0.00  % TRAILING
-91   KING    2025-12-16   2025-12-17   206      214      49    +34,211        +3.80  % TP1
-92   SMDR    2025-12-17   2025-12-18   342      363      146   +292,259       +6.27  % TP1
-93   SMDR    2025-12-17   2025-12-19   342      346      1323  +347,155       +1.17  % TRAILING
-94   KING    2025-12-16   2025-12-22   206      202      444   -213,830       -1.94  % TRAILING
-95   MREI    2025-12-23   2025-12-30   1070     1148     46    +336,919       +7.26  % TP1
-96   VRNA    2025-11-03   2025-12-31   84       84       555   -18,648        +0.00  % END
-97   BRNA    2025-12-10   2025-12-31   730      730      178   -51,976        +0.00  % END
-98   NPGF    2025-12-18   2025-12-31   59       59       8511  -200,860       +0.00  % END
-99   LUCK    2025-12-22   2025-12-31   128      128      3127  -160,102       +0.00  % END
-100  MREI    2025-12-23   2025-12-31   1070     1070     419   -179,332       +0.00  % END
+64   BINO    2025-10-21   2025-11-05   127      127      1957  -99,416        +0.00  % TRAILING
+65   IKBI    2025-10-28   2025-11-05   550      500      225   -1,172,250     -9.09  % SL
+66   AXIO    2025-11-06   2025-11-07   129      140      143   +149,607       +8.53  % TP1
+67   PEHA    2025-10-15   2025-11-10   338      311      157   -437,563       -7.86  % SL
+68   ZYRX    2025-11-06   2025-11-10   146      166      337   +652,971       +13.70 % TP1
+69   SIDO    2025-10-21   2025-11-11   560      555      760   -549,480       -0.89  % TRAILING
+70   SAME    2025-11-11   2025-11-12   320      348      111   +295,970       +8.75  % TP1
+71   SAME    2025-11-11   2025-11-13   320      316      999   -526,673       -1.25  % TRAILING
+72   AXIO    2025-11-06   2025-11-14   129      129      1288  -66,461        +0.00  % TRAILING
+73   ASJT    2025-10-28   2025-11-18   133      148      143   +203,405       +11.12 % TP1
+74   ASJT    2025-10-28   2025-11-20   133      141      1292  +962,798       +6.02  % TRAILING
+75   NFCX    2025-11-17   2025-11-21   1730     1619     95    -1,117,115     -6.41  % SL
+76   ELIT    2025-11-12   2025-11-24   183      192      229   +196,271       +5.09  % TP1
+77   MAXI    2025-11-14   2025-11-24   56       52       6303  -2,432,688     -6.51  % SL
+78   LUCY    2025-11-24   2025-11-25   122      134      49    +54,195        +9.48  % TP1
+79   ZYRX    2025-11-06   2025-11-26   146      168      3035  +6,486,402     +15.07 % TRAILING
+80   ELIT    2025-11-12   2025-11-26   183      182      2067  -357,591       -0.55  % TRAILING
+81   VRNA    2025-11-03   2025-11-27   84       92       61    +47,522        +9.69  % TP1
+82   INRU    2025-11-27   2025-12-01   740      665      162   -1,260,522     -10.14 % SL
+83   PEVE    2025-12-02   2025-12-03   525      506      590   -1,215,320     -3.53  % SL
+84   MUTU    2025-11-21   2025-12-05   123      135      165   +196,543       +10.10 % TP1
+85   LRNA    2025-12-04   2025-12-05   191      203      72    +79,957        +6.23  % TP1
+86   CAKK    2025-11-27   2025-12-08   179      187      48    +34,031        +4.37  % TP1
+87   OMED    2025-11-25   2025-12-09   200      209      232   +179,899       +4.29  % TP1
+88   LRNA    2025-12-04   2025-12-09   191      208      651   +1,054,750     +8.90  % TRAILING
+89   MUTU    2025-11-21   2025-12-11   123      122      1490  -222,010       -0.81  % TRAILING
+90   OMED    2025-11-25   2025-12-11   200      200      2093  -167,440       +0.00  % TRAILING
+91   CAKK    2025-11-27   2025-12-12   179      178      433   -74,216        -0.56  % TRAILING
+92   NELY    2025-12-12   2025-12-15   434      398      1175  -4,425,520     -8.29  % SL
+93   KIJA    2025-12-12   2025-12-15   226      252      225   +563,490       +11.50 % TP1
+94   BINA    2025-12-15   2025-12-16   4500     4443     88    -657,115       -1.26  % SL
+95   KIJA    2025-12-12   2025-12-17   226      226      2031  -183,602       +0.00  % TRAILING
+96   KING    2025-12-16   2025-12-17   206      214      49    +34,211        +3.80  % TP1
+97   SMDR    2025-12-17   2025-12-18   342      363      147   +294,260       +6.27  % TP1
+98   SMDR    2025-12-17   2025-12-19   342      346      1323  +347,155       +1.17  % TRAILING
+99   KING    2025-12-16   2025-12-22   206      202      444   -213,830       -1.94  % TRAILING
+100  MREI    2025-12-23   2025-12-30   1070     1148     43    +314,946       +7.26  % TP1
+101  VRNA    2025-11-03   2025-12-31   84       84       555   -18,648        +0.00  % END
+102  LUCY    2025-11-24   2025-12-31   122      122      449   -21,911        +0.00  % END
+103  BRNA    2025-12-10   2025-12-31   730      730      178   -51,976        +0.00  % END
+104  NPGF    2025-12-18   2025-12-31   59       59       8573  -202,323       +0.00  % END
+105  LUCK    2025-12-22   2025-12-31   128      128      3202  -163,942       +0.00  % END
+106  MREI    2025-12-23   2025-12-31   1070     1070     388   -166,064       +0.00  % END
 
 --- Equity Curve ---
-Tanggal      Portofolio         Drawdown   Regime
+Tanggal      Portofolio         Drawdown   Regime    
 ------------------------------------------------------
-2025-07-01   Rp 100,000,000    +0.00    % BULLISH
-2025-07-30   Rp 99,263,675     -1.87    % BULLISH
-2025-08-29   Rp 122,229,006    -3.98    % BULLISH
-2025-09-30   Rp 173,970,904    -0.07    % BULLISH
-2025-10-29   Rp 172,591,797    -3.72    % BULLISH
-2025-11-27   Rp 173,652,505    -4.69    % BULLISH
-2025-12-30   Rp 172,172,198    -5.50    % BULLISH
+2025-07-01   Rp 100,000,000    +0.00    % BULLISH   
+2025-07-30   Rp 99,263,675     -1.87    % BULLISH   
+2025-08-29   Rp 122,229,006    -3.98    % BULLISH   
+2025-09-30   Rp 173,970,904    -0.07    % BULLISH   
+2025-10-29   Rp 166,112,317    -4.58    % BULLISH   
+2025-11-27   Rp 168,231,892    -4.00    % BULLISH   
+2025-12-30   Rp 183,086,615    +0.00    % BULLISH   
 
   Portfolio Awal : Rp  100,000,000
-  Portfolio Akhir: Rp  172,172,198
-  Nilai Tertinggi: Rp  182,197,984
+  Portfolio Akhir: Rp  183,086,615
+  Nilai Tertinggi: Rp  183,086,615
   Nilai Terendah : Rp   97,647,861
   Max Drawdown   : -9.98%
   Biaya Transaksi: 0.2% per transaksi
@@ -152,26 +158,6 @@ Tanggal      Portofolio         Drawdown   Regime
   - Liquidity cap: maks 10% dari avg volume 20 hari
   - Exit: TP1 intraday (10% partial) -> trailing 8% (EOD) + SL breakeven; SL intraday
   - Hold max 20 hari, TP/SL/kondisi menyesuaikan regime IHSG
-
---- Validasi Out-of-Sample (2026-01-02 – 2026-07-13, IHSG -30.98%) ---
-  Net Profit OOS       : +32.71%  (alpha +63.69% vs IHSG, MDD -9.24%, 26 trade)
-  Strategi tetap profit saat IHSG bearish parah — regime-adaptive logic
-  (posisi lebih kecil & filter lebih ketat di BEARISH) terbukti jalan.
-
---- Catatan Risiko: Distribusi Return Fat-Tailed ---
-  Strategi ini trend-following dengan trailing stop — bukan compounding
-  yang mulus. Mayoritas profit berasal dari SEDIKIT trade yang "meledak":
-    - Window in-sample (Jul-Des 2025): 1 trade (PICO, +109.79%) menyumbang
-      Rp 36,9 juta dari total profit Rp 67,8 juta (~54%). Tanpa trade ini,
-      net profit ~+30.9% — masih di atas IHSG (+25.04%) tapi tipis.
-    - Window OOS (2026 H1): 1 trade (INDS, +960.87%) menyumbang hampir
-      seluruh profit trailing. Tanpa trade ini, hasil OOS jadi rugi
-      (~-16%) meski masih lebih baik dari IHSG (-31%).
-  Ini watak strategi (potong rugi kecil, biarkan profit lari via trailing
-  stop) — bukan bug. Tapi jangan berharap kurva equity mulus: kemungkinan
-  besar hasil riil akan didominasi 1-2 "home run" per semester, diselingi
-  banyak trade kecil impas/rugi tipis. Ukuran posisi (maks 30% equity di
-  bull) sudah dibatasi supaya satu SL tidak menghancurkan akun.
 
 ========================================================================
 Laporan digenerate oleh backtest_runner.py — 2026-07-13

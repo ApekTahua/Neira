@@ -1,7 +1,7 @@
 """
 strategy.py — Satu-satunya sumber logic sinyal Accumulation Detector.
 
-quant_screener.py (live, GitHub Actions harian) dan backtest_runner.py
+screener.py (live, GitHub Actions harian) dan backtest.py
 (simulasi historis) sama-sama import dari sini, supaya sinyal yang
 dikirim ke Telegram selalu identik dengan yang sudah divalidasi backtest.
 Jangan duplikasi fungsi-fungsi ini di tempat lain.

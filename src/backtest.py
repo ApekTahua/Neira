@@ -1,20 +1,37 @@
 """
-backtest_runner.py — Backtesting untuk Accumulation Detector
-Mensimulasikan strategi dari quant_screener.py secara point-in-time
-periode 1 Jul 2025 – 31 Des 2025.
+backtest.py — Backtesting untuk Accumulation Detector
+Mensimulasikan strategi dari screener.py secara point-in-time.
 
-Menghasilkan laporan backtest_report.txt yang diupload sebagai artifact
-di GitHub Actions.
+Menghasilkan reports/backtest_report.html (grafik equity vs IHSG) dan
+reports/backtest_report.txt, diupload sebagai artifact di GitHub Actions.
 """
 
 import os
 import sys
+import base64
+from io import BytesIO
+
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from supabase import create_client
 from datetime import date, timedelta
 import config as cfg
 from strategy import add_features, get_regime, get_regime_params, get_signals
+
+REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "reports")
+
+# Palet warna (lihat skill dataviz): series-1 biru = portfolio, series-2
+# aqua = IHSG, merah = drawdown/regime bearish.
+COLOR_PORTFOLIO = "#2a78d6"
+COLOR_IHSG = "#1baf7a"
+COLOR_DRAWDOWN = "#e34948"
+COLOR_BEARISH_BG = "#e3494820"  # merah, alpha rendah
+COLOR_GRID = "#e1e0d9"
+COLOR_INK = "#0b0b0b"
+COLOR_MUTED = "#898781"
 
 # ======================================================================
 # KONFIGURASI BACKTEST
@@ -150,6 +167,87 @@ def fetch_data():
 
     print(f"[FETCH] {len(df)} baris data saham, {df['stock_code'].nunique()} ticker")
     return df, idx_df
+
+
+# ======================================================================
+# 4b. GRAFIK: equity vs IHSG + drawdown
+# ======================================================================
+def _render_chart_png(df_equity: pd.DataFrame, idx_df: pd.DataFrame) -> str:
+    """Equity portfolio vs IHSG (di-index ke 100) + drawdown. Return base64 PNG."""
+    bench = idx_df[
+        (idx_df["trade_date"] >= df_equity["date"].iloc[0])
+        & (idx_df["trade_date"] <= df_equity["date"].iloc[-1])
+    ].set_index("trade_date")["close"]
+    bench_aligned = bench.reindex(df_equity["date"]).ffill().bfill()
+
+    port_idx = df_equity["total"] / df_equity["total"].iloc[0] * 100
+    ihsg_idx = bench_aligned / bench_aligned.iloc[0] * 100
+    dates = df_equity["date"]
+
+    regimes = [get_regime(idx_df, d) for d in dates]
+
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(11, 6.5), sharex=True, height_ratios=[2.5, 1],
+        gridspec_kw={"hspace": 0.08},
+    )
+
+    # Shading regime BEARISH (kondisi IHSG)
+    in_bear = False
+    bear_start = None
+    for d, r in zip(dates, regimes):
+        if r == "BEARISH" and not in_bear:
+            in_bear, bear_start = True, d
+        elif r != "BEARISH" and in_bear:
+            ax1.axvspan(bear_start, d, color=COLOR_BEARISH_BG, lw=0)
+            in_bear = False
+    if in_bear:
+        ax1.axvspan(bear_start, dates.iloc[-1], color=COLOR_BEARISH_BG, lw=0)
+
+    ax1.plot(dates, port_idx, color=COLOR_PORTFOLIO, lw=2, label="Strategi")
+    ax1.plot(dates, ihsg_idx, color=COLOR_IHSG, lw=2, label="IHSG")
+    ax1.axhline(100, color=COLOR_MUTED, lw=1, ls="--")
+    ax1.set_ylabel("Indeks (awal = 100)", color=COLOR_INK)
+    ax1.legend(loc="upper left", frameon=False)
+    ax1.grid(True, color=COLOR_GRID, lw=0.8)
+    ax1.set_title(
+        "Equity Strategi vs IHSG  (area merah = regime BEARISH)",
+        color=COLOR_INK, fontsize=12, loc="left",
+    )
+    for spine in ("top", "right"):
+        ax1.spines[spine].set_visible(False)
+
+    dd = (df_equity["total"] - df_equity["total"].cummax()) / df_equity["total"].cummax() * 100
+    ax2.fill_between(dates, dd, 0, color=COLOR_DRAWDOWN, alpha=0.35, lw=0)
+    ax2.plot(dates, dd, color=COLOR_DRAWDOWN, lw=1.2)
+    ax2.set_ylabel("Drawdown %", color=COLOR_INK)
+    ax2.grid(True, color=COLOR_GRID, lw=0.8)
+    for spine in ("top", "right"):
+        ax2.spines[spine].set_visible(False)
+    fig.autofmt_xdate()
+
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor="#fcfcfb")
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _render_html_report(report_text: str, chart_b64: str) -> str:
+    return f"""<!doctype html>
+<html lang="id"><head><meta charset="utf-8">
+<title>Backtest Report — Accumulation Detector</title>
+<style>
+  body {{ background:#f9f9f7; color:#0b0b0b; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         max-width: 900px; margin: 2rem auto; padding: 0 1rem; }}
+  img {{ max-width: 100%; border-radius: 8px; border: 1px solid #e1e0d9; }}
+  pre {{ background:#fcfcfb; border:1px solid #e1e0d9; border-radius:8px; padding:1rem;
+        overflow-x:auto; font-size: 0.82rem; line-height:1.4; }}
+  h1 {{ font-size: 1.3rem; }}
+</style></head>
+<body>
+  <h1>Backtest Report — Accumulation Detector</h1>
+  <img src="data:image/png;base64,{chart_b64}" alt="Equity vs IHSG">
+  <pre>{report_text}</pre>
+</body></html>"""
 
 
 # ======================================================================
@@ -640,21 +738,25 @@ def run_backtest():
 
     _w("")
     _w("=" * 72)
-    _w(f"Laporan digenerate oleh backtest_runner.py — {date.today().isoformat()}")
+    _w(f"Laporan digenerate oleh backtest.py — {date.today().isoformat()}")
     _w("=" * 72)
 
     report = "\n".join(report_lines)
     print(report)
 
-    # Simpan ke file
-    report_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "backtest_report.txt"
-    )
-    with open(report_path, "w", encoding="utf-8") as f:
+    # Simpan ke reports/: .txt (raw) + .html (grafik equity vs IHSG + drawdown)
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    txt_path = os.path.join(REPORTS_DIR, "backtest_report.txt")
+    with open(txt_path, "w", encoding="utf-8") as f:
         f.write(report)
 
-    print(f"\n[OK] Laporan tersimpan di: {report_path}")
-    return report_path
+    chart_b64 = _render_chart_png(df_equity, idx_df)
+    html_path = os.path.join(REPORTS_DIR, "backtest_report.html")
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(_render_html_report(report, chart_b64))
+
+    print(f"\n[OK] Laporan tersimpan di: {txt_path} & {html_path}")
+    return html_path
 
 
 def _write_empty_report():
@@ -675,12 +777,14 @@ def _write_empty_report():
     ]
     report = "\n".join(lines)
     print(report)
-    report_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "backtest_report.txt"
-    )
-    with open(report_path, "w", encoding="utf-8") as f:
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    txt_path = os.path.join(REPORTS_DIR, "backtest_report.txt")
+    with open(txt_path, "w", encoding="utf-8") as f:
         f.write(report)
-    print(f"\n[OK] Laporan kosong tersimpan di: {report_path}")
+    html_path = os.path.join(REPORTS_DIR, "backtest_report.html")
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(f"<!doctype html><pre>{report}</pre>")
+    print(f"\n[OK] Laporan kosong tersimpan di: {txt_path}")
 
 
 # ======================================================================
