@@ -7,7 +7,7 @@ import requests
 
 TELEGRAM_API = "https://api.telegram.org/bot"
 
-W = [6, 6, 10, 6]
+W = [6, 5, 9, 6, 6]
 
 
 def _row(*cells):
@@ -22,19 +22,19 @@ def send_screener_results(top10, latest_date, market_label, market_multiplier):
         print("WARNING: TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID not set.")
         return
 
-    sep = "\u2500" * 31
+    sep = "\u2500" * (sum(W) + len(W) - 1)
     lines = [
         "\U0001F4CC *Neira \u2014 Quant Result*",
         "\U0001F4C5 `{}`".format(latest_date),
         "",
-        "`{}`".format(_row("Ticker", "Score", "Buy Zone", "TP")),
+        "`{}`".format(_row("Ticker", "Score", "Buy Zone", "TP", "SL")),
         "`{}`".format(sep),
     ]
     for _, row in top10.iterrows():
         lines.append(
             "`{}`".format(
                 _row(row["stock_code"], "{}%".format(row["confidence"]),
-                     row["buy_zone"], str(row["tp_target"]))
+                     row["buy_zone"], str(row["tp_target"]), str(row["sl_target"]))
             )
         )
 

@@ -2,8 +2,10 @@ name: Run Quant Screener Daily
 
 on:
   schedule:
-    # 18:00 WIB (11:00 UTC) berjalan HANYA di hari Senin-Jumat
-    - cron: '0 11 * * 1-5'
+    # 16:00 WIB (09:00 UTC) berjalan HANYA di hari Senin-Jumat.
+    # Dimajukan 2 jam sebagai buffer: scheduled run GitHub Actions sering
+    # telat ~2 jam saat load tinggi, jadi target real ~18:00 WIB.
+    - cron: '0 9 * * 1-5'
   workflow_dispatch: # Fitur ini agar kamu bisa klik "Run" manual kapan saja dari web
 
 jobs:
