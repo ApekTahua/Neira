@@ -1,0 +1,48 @@
+# Backtest Accumulation Detector
+# Trigger: manual (workflow_dispatch) dan terjadwal setiap Sabtu
+name: Backtest Accumulation Detector
+
+on:
+  workflow_dispatch:
+    inputs:
+      report_name:
+        description: "Nama file laporan (opsional)"
+        required: false
+        default: "backtest_report.txt"
+  schedule:
+    # Setiap Sabtu jam 08:00 WIB (01:00 UTC)
+    - cron: "0 1 * * 6"
+
+jobs:
+  backtest:
+    name: Run Backtest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install supabase pandas numpy requests scikit-learn
+
+      - name: Run backtest
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python Program/backtest_runner.py
+
+      - name: Upload backtest report
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-report
+          path: Program/backtest_report.txt
+          retention-days: 90
