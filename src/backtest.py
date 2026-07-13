@@ -45,6 +45,11 @@ SL_PCT = 0.02                        # Stop loss 2% (fallback)
 LOT_SIZE = 100                       # 1 lot = 100 lembar
 TRANSACTION_COST = 0.002             # 0.2% biaya transaksi
 
+# Tag hasil run ini di Supabase (website hanya menampilkan version+is_published
+# yang sesuai — dipakai supaya eksperimen V2 tidak numpang tampil di production)
+BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v1")
+BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "true").lower() == "true"
+
 # ======================================================================
 # KONEKSI SUPABASE
 # ======================================================================
@@ -229,6 +234,78 @@ def _render_chart_png(df_equity: pd.DataFrame, idx_df: pd.DataFrame) -> str:
     fig.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor="#fcfcfb")
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _concentration_notes(df_trades: pd.DataFrame, net_profit: float) -> str:
+    """Catatan risiko: seberapa besar net profit ditopang segelintir trade."""
+    if net_profit <= 0 or df_trades.empty:
+        return ""
+    top = df_trades.sort_values("pnl", ascending=False)
+    top1 = top.iloc[0]
+    top1_pct = top1["pnl"] / net_profit * 100
+    top3_pct = top["pnl"].head(3).sum() / net_profit * 100
+    return (
+        f"Trade terbesar ({top1['stock_code']}) menyumbang {top1_pct:.0f}% dari net profit; "
+        f"top-3 trade = {top3_pct:.0f}%. Distribusi return fat-tailed (khas trend-following) — "
+        f"angka net profit sensitif terhadap segelintir outlier, jangan dijadikan ekspektasi baseline."
+    )
+
+
+def _save_to_supabase(df_trades: pd.DataFrame, df_equity: pd.DataFrame, idx_df: pd.DataFrame, metrics: dict) -> None:
+    """Simpan ringkasan + trade + equity curve ke Supabase untuk website."""
+    try:
+        run_res = supabase.table("backtest_runs").insert({
+            "version": BACKTEST_VERSION,
+            "period_start": BACKTEST_START.isoformat(),
+            "period_end": BACKTEST_END.isoformat(),
+            "initial_capital": metrics["initial_capital"],
+            "final_capital": metrics["final_capital"],
+            "net_profit_pct": metrics["total_return_pct"],
+            "benchmark_pct": metrics["bench_ret"],
+            "alpha_pct": metrics["total_return_pct"] - metrics["bench_ret"],
+            "total_trades": metrics["total_trades"],
+            "win_rate": metrics["win_rate"],
+            "profit_factor": None if metrics["profit_factor"] == float("inf") else metrics["profit_factor"],
+            "max_drawdown": metrics["max_drawdown"],
+            "notes": metrics["notes"],
+            "is_published": BACKTEST_PUBLISH,
+        }).execute()
+        run_id = run_res.data[0]["id"]
+
+        trade_rows = [
+            {
+                "run_id": run_id,
+                "stock_code": tr["stock_code"],
+                "entry_date": tr["entry_date"].isoformat(),
+                "exit_date": tr["exit_date"].isoformat(),
+                "entry_price": float(tr["entry_price"]),
+                "exit_price": float(tr["exit_price"]),
+                "lots": int(tr["lots"]),
+                "pnl": float(tr["pnl"]),
+                "pnl_pct": float(tr["pnl_pct"]),
+                "exit_reason": tr["exit_reason"],
+            }
+            for _, tr in df_trades.iterrows()
+        ]
+        equity_rows = [
+            {
+                "run_id": run_id,
+                "date": row["date"].isoformat(),
+                "portfolio_value": float(row["total"]),
+                "drawdown_pct": float(row["drawdown"]),
+                "regime": get_regime(idx_df, row["date"]),
+            }
+            for _, row in df_equity.iterrows()
+        ]
+        for i in range(0, len(trade_rows), 500):
+            supabase.table("backtest_trades").insert(trade_rows[i:i + 500]).execute()
+        for i in range(0, len(equity_rows), 500):
+            supabase.table("backtest_equity").insert(equity_rows[i:i + 500]).execute()
+
+        print(f"[OK] Tersimpan ke Supabase: backtest_runs id={run_id}, "
+              f"{len(trade_rows)} trade, {len(equity_rows)} hari equity.")
+    except Exception as e:
+        print(f"WARNING: Gagal simpan ke Supabase: {e}")
 
 
 def _render_html_report(report_text: str, chart_b64: str) -> str:
@@ -756,6 +833,19 @@ def run_backtest():
         f.write(_render_html_report(report, chart_b64))
 
     print(f"\n[OK] Laporan tersimpan di: {txt_path} & {html_path}")
+
+    _save_to_supabase(df_trades, df_equity, idx_df, {
+        "initial_capital": INITIAL_CAPITAL,
+        "final_capital": final_capital,
+        "total_return_pct": total_return_pct,
+        "bench_ret": bench_ret,
+        "total_trades": total_trades,
+        "win_rate": win_rate,
+        "profit_factor": profit_factor,
+        "max_drawdown": max_drawdown,
+        "notes": _concentration_notes(df_trades, net_profit),
+    })
+
     return html_path
 
 
