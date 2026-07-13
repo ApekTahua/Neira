@@ -3,7 +3,7 @@
 # ----------------------------------------------------------------------
 # Data range
 # ----------------------------------------------------------------------
-LOOKBACK_DAYS = 150
+LOOKBACK_DAYS = 280                   # ~200 hari bursa — cukup untuk SMA200 (samakan dgn backtest)
 
 # ----------------------------------------------------------------------
 # Red‑flag filters
@@ -87,8 +87,8 @@ MAX_POS_BULLISH = 6                  # 6 posisi di bull
 MAX_POS_NEUTRAL = 3
 MAX_POS_BEARISH = 2
 
-# Alokasi maksimum per posisi (% dari cash)
-ALLOC_BULLISH = 0.25                 # max 25% cash per posisi di bull
+# Alokasi maksimum per posisi (% dari equity, bukan cash — lihat backtest_runner)
+ALLOC_BULLISH = 0.30                 # max 30% equity per posisi di bull
 ALLOC_NEUTRAL = 0.20                 # max 20% di neutral
 ALLOC_BEARISH = 0.10                 # max 10% di bearish
 
@@ -105,9 +105,16 @@ TP_BEARISH = 1.5
 # ----------------------------------------------------------------------
 # TP1 + Trailing Stop (Enhancement 1)
 # ----------------------------------------------------------------------
-TP1_PCT = 0.40                       # ambil 40% profit di TP1
-TP1_MULT = 1.0                       # TP1 = 1.0 × ATR
+TP1_PCT = 0.10                       # ambil 10% profit di TP1 (sisanya ride trailing)
+TP1_MULT = 1.5                       # TP1 = 1.5 × ATR
 TRAILING_PCT = 0.08                  # trailing stop 8% dari harga tertinggi
+
+# ----------------------------------------------------------------------
+# Eksekusi realistis (Enhancement 5)
+# ----------------------------------------------------------------------
+GAP_MAX = 0.10                       # skip entry jika open T+1 gap >10% dari close sinyal
+LIQ_CAP_PCT = 0.10                   # posisi maks 10% dari avg volume 20 hari
+RISK_PCT = 0.04                      # risiko per trade maks 4% equity (jarak entry-SL)
 
 # ----------------------------------------------------------------------
 # Filter requirements per regime (Enhancement 4)
