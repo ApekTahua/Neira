@@ -156,7 +156,7 @@ def fetch_data():
         batch_codes = unique_codes[i : i + batch_size]
         offset = 0
         while True:
-            batch = (
+            batch = _retry(lambda: (
                 supabase.table("ihsg_eod")
                 .select("stock_code,trade_date,open_price,close_price,high,low,previous,volume,foreign_buy,foreign_sell")
                 .in_("stock_code", batch_codes)
@@ -165,7 +165,7 @@ def fetch_data():
                 .order("trade_date")
                 .range(offset, offset + 999)
                 .execute()
-            )
+            ))
             if not batch.data:
                 break
             all_stocks.extend(batch.data)
@@ -282,6 +282,7 @@ def _save_to_supabase(df_trades: pd.DataFrame, df_equity: pd.DataFrame, idx_df: 
             "profit_factor": None if metrics["profit_factor"] == float("inf") else metrics["profit_factor"],
             "max_drawdown": metrics["max_drawdown"],
             "notes": metrics["notes"],
+            "strategy_summary": metrics["strategy_summary"],
             "is_published": BACKTEST_PUBLISH,
         }).execute()
         run_id = run_res.data[0]["id"]
@@ -819,13 +820,17 @@ def run_backtest():
             pct = regime_counts[reg] / total_days * 100
             parts.append(f"{pct:.0f}% {reg}")
         _w(f"  - Regime IHSG: {', '.join(parts)}")
-    _w(f"  - Sinyal: MA squeeze + BB squeeze + volume spike + foreign flow (Bandamologi)")
-    _w(f"  - Eksekusi: sinyal EOD -> beli di OPEN hari berikutnya (skip gap >{cfg.GAP_MAX*100:.0f}%)")
-    _w(f"  - Sizing: {'%.0f' % (cfg.ALLOC_BULLISH*100)}%/{'%.0f' % (cfg.ALLOC_NEUTRAL*100)}%/{'%.0f' % (cfg.ALLOC_BEARISH*100)}% equity per posisi (bull/neutral/bear), "
-       f"maks {cfg.MAX_POS_BULLISH}/{cfg.MAX_POS_NEUTRAL}/{cfg.MAX_POS_BEARISH} posisi")
-    _w(f"  - Liquidity cap: maks {cfg.LIQ_CAP_PCT*100:.0f}% dari avg volume 20 hari")
-    _w(f"  - Exit: TP1 intraday ({cfg.TP1_PCT*100:.0f}% partial) -> trailing {cfg.TRAILING_PCT*100:.0f}% (EOD) + SL breakeven; SL intraday")
-    _w(f"  - Hold max {cfg.MAX_HOLD_DAYS} hari, TP/SL/kondisi menyesuaikan regime IHSG")
+    strategy_lines = [
+        "Sinyal: MA squeeze + BB squeeze + volume spike + foreign flow (Bandamologi)",
+        f"Eksekusi: sinyal EOD, beli di OPEN hari berikutnya (skip gap >{cfg.GAP_MAX*100:.0f}%)",
+        f"Sizing: {cfg.ALLOC_BULLISH*100:.0f}%/{cfg.ALLOC_NEUTRAL*100:.0f}%/{cfg.ALLOC_BEARISH*100:.0f}% equity per posisi (bull/neutral/bear), "
+        f"maks {cfg.MAX_POS_BULLISH}/{cfg.MAX_POS_NEUTRAL}/{cfg.MAX_POS_BEARISH} posisi",
+        f"Liquidity cap: maks {cfg.LIQ_CAP_PCT*100:.0f}% dari avg volume 20 hari",
+        f"Exit: TP1 intraday ({cfg.TP1_PCT*100:.0f}% partial) -> trailing {cfg.TRAILING_PCT*100:.0f}% (EOD) + SL breakeven; SL intraday",
+        f"Hold max {cfg.MAX_HOLD_DAYS} hari, TP/SL/kondisi menyesuaikan regime IHSG",
+    ]
+    for line in strategy_lines:
+        _w(f"  - {line}")
 
     _w("")
     _w("=" * 72)
@@ -858,6 +863,7 @@ def run_backtest():
         "profit_factor": profit_factor,
         "max_drawdown": max_drawdown,
         "notes": _concentration_notes(df_trades, net_profit),
+        "strategy_summary": "\n".join(strategy_lines),
     })
 
     return html_path
