@@ -268,6 +268,12 @@ def get_signals(df_day: pd.DataFrame, confidence_min: float, min_conditions: int
     conditions_met = cond1.astype(int) + cond2.astype(int) + cond3.astype(int) + cond4.astype(int)
     signal_mask = conditions_met >= min_conditions
 
+    # Simpan kondisi mana yang kena, buat label "trigger" (dipakai website/laporan)
+    candidates["cond_ma_squeeze"] = cond1
+    candidates["cond_bb_squeeze"] = cond2
+    candidates["cond_vol_spike"] = cond3
+    candidates["cond_sideways"] = cond4
+
     # --- Lorentzian-inspired filters (wajib selalu) ---
     rsi_ok = candidates["rsi"].fillna(50) > cfg.RSI_OVERSOLD
     adx_ok = candidates["adx"].fillna(25) > cfg.ADX_THRESHOLD
@@ -316,6 +322,17 @@ def get_signals(df_day: pd.DataFrame, confidence_min: float, min_conditions: int
 
     signals["confidence"] = np.round(confidence_raw * ut_boost, 1)
     signals["vol_spike_pct"] = (vol_ratio_signal - 1) * 100
+
+    _cond_labels = {
+        "cond_vol_spike": "Volume Spike",
+        "cond_ma_squeeze": "MA Squeeze",
+        "cond_bb_squeeze": "BB Squeeze",
+        "cond_sideways": "Sideways",
+    }
+    signals["trigger"] = signals.apply(
+        lambda r: " + ".join(lbl for col, lbl in _cond_labels.items() if r[col]) or "Lorentzian Filter",
+        axis=1,
+    )
     signals["ut_trend"] = signals["ut_position"].map({1: "UP", -1: "DOWN"}).fillna("?")
     signals["ut_cross"] = signals.get("ut_fresh_buy", False)
     signals["tp_target"] = signals["tp_target"].fillna(0).round(0).astype(int)

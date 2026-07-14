@@ -299,6 +299,8 @@ def _save_to_supabase(df_trades: pd.DataFrame, df_equity: pd.DataFrame, idx_df: 
                 "pnl": float(tr["pnl"]),
                 "pnl_pct": float(tr["pnl_pct"]),
                 "exit_reason": tr["exit_reason"],
+                "trigger": tr.get("trigger"),
+                "hold_days": int(tr["hold_days"]) if pd.notna(tr.get("hold_days")) else None,
             }
             for _, tr in df_trades.iterrows()
         ]
@@ -480,6 +482,7 @@ def run_backtest():
                 "hold_days": 0,
                 "tp1_hit": False,
                 "highest_price": entry_price,  # trailing stop tracker
+                "trigger": sig["trigger"],
             })
         pending_entries = []
 
@@ -564,6 +567,8 @@ def run_backtest():
                     "pnl": pnl,
                     "pnl_pct": pnl_pct,
                     "exit_reason": exit_reason,
+                    "trigger": pos["trigger"],
+                    "hold_days": pos["hold_days"],
                 })
 
                 if exit_reason == "TP1":
@@ -613,6 +618,7 @@ def run_backtest():
                     "sl_mult": regime_params["sl_mult"],
                     "alloc_pct": alloc_pct,
                     "max_positions": regime_params["max_positions"],
+                    "trigger": sig["trigger"],
                 })
 
         # ---- Catat equity curve ----
@@ -672,6 +678,8 @@ def run_backtest():
             "pnl": pnl,
             "pnl_pct": pnl_pct,
             "exit_reason": "END",
+            "trigger": pos["trigger"],
+            "hold_days": pos["hold_days"],
         })
 
     positions = []
