@@ -56,20 +56,26 @@ try:
     print(f"Latest market date: {latest_date}")
 
     idx_data = []
-    offset = 0
-    while True:
-        batch = supabase.table("index_eod") \
-            .select("trade_date,close") \
-            .eq("index_code", "COMPOSITE") \
-            .gte("trade_date", start_date.isoformat()) \
-            .lte("trade_date", latest_date.isoformat()) \
-            .order("trade_date") \
-            .range(offset, offset + 999) \
-            .execute()
-        if not batch.data:
-            break
-        idx_data.extend(batch.data)
-        offset += 1000
+
+    def _fetch_index():
+        rows = []
+        offset = 0
+        while True:
+            batch = supabase.table("index_eod") \
+                .select("trade_date,close") \
+                .eq("index_code", "COMPOSITE") \
+                .gte("trade_date", start_date.isoformat()) \
+                .lte("trade_date", latest_date.isoformat()) \
+                .order("trade_date") \
+                .range(offset, offset + 999) \
+                .execute()
+            if not batch.data:
+                break
+            rows.extend(batch.data)
+            offset += 1000
+        return rows
+
+    idx_data = _retry(_fetch_index)
 
     if not idx_data:
         sys.exit("No IHSG index data retrieved")
