@@ -321,7 +321,11 @@ def get_signals(df_day: pd.DataFrame, confidence_min: float, min_conditions: int
     signals["tp_target"] = signals["tp_target"].fillna(0).round(0).astype(int)
     # SL dinamis ATR-based (atr_sl = close - 1.5*ATR); fallback -5% jika ATR NaN
     signals["sl_target"] = (
-        signals["atr_sl"].fillna(signals["close_price"] * 0.95).round(0).astype(int)
+        signals["atr_sl"]
+        .fillna(signals["close_price"] * 0.95)
+        .fillna(0)
+        .round(0)
+        .astype(int)
     )
     signals["buy_zone"] = (
         signals["buy_zone_low"].fillna(0).round(0).astype(int).astype(str)
