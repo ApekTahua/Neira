@@ -232,7 +232,13 @@ def get_regime_params(regime: str) -> dict:
 # ======================================================================
 # SCREENER LOGIC PER HARI
 # ======================================================================
-def get_signals(df_day: pd.DataFrame, confidence_min: float, min_conditions: int = 4) -> pd.DataFrame:
+def get_signals(
+    df_day: pd.DataFrame,
+    confidence_min: float,
+    min_conditions: int = 4,
+    adtv_min: float | None = None,
+    hmm_gate: bool = False,
+) -> pd.DataFrame:
     """
     Menjalankan logika screener pada data satu hari tertentu.
     Enhancement 4: jumlah kondisi yang dibutuhkan tergantung regime.
@@ -256,6 +262,17 @@ def get_signals(df_day: pd.DataFrame, confidence_min: float, min_conditions: int
     candidates = latest[~(sleeping | illiquid)].copy()
     if candidates.empty:
         return pd.DataFrame()
+
+    # --- V2 (opt-in, default off): ADTV liquidity + HMM regime gate ---
+    if adtv_min is not None:
+        candidates = candidates[candidates["adtv_20"] >= adtv_min]
+        if candidates.empty:
+            return pd.DataFrame()
+
+    if hmm_gate:
+        candidates = candidates[candidates["hmm_state"].isin(["BULLISH", "SIDEWAYS"])]
+        if candidates.empty:
+            return pd.DataFrame()
 
     # --- 4 kondisi sinyal ---
     ma_spread = (
