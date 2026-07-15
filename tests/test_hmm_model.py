@@ -59,3 +59,66 @@ def test_compute_train_test_split_never_empty_test_window():
     days = [date(2024, 1, 1), date(2024, 1, 2)]
     split = hmm_model.compute_train_test_split(days, train_pct=0.99)
     assert split == date(2024, 1, 1)  # clamp so at least 1 test day remains
+
+
+def _synthetic_regime_series():
+    """200 days clearly BEARISH (drift -1.5%/day), 200 SIDEWAYS (~0%),
+    200 BULLISH (drift +1.5%/day), low noise so the 3 regimes are
+    separable in mean return."""
+    rng = np.random.default_rng(42)
+    n_per_regime = 200
+
+    def block(drift, n=n_per_regime):
+        rets = rng.normal(drift, 0.002, n)
+        return rets
+
+    rets = np.concatenate([block(-0.015), block(0.0002), block(0.015)])
+    close = 100 * np.cumprod(1 + rets)
+    close = np.concatenate([[100.0], close])[:-1]  # align length
+    dates = pd.date_range("2020-01-01", periods=len(close), freq="B").date
+    volume = rng.integers(1000, 5000, size=len(close))
+    df = pd.DataFrame({
+        "trade_date": dates,
+        "close_price": close,
+        "high": close * 1.005,
+        "low": close * 0.995,
+        "volume": volume,
+    })
+    labels = ["BEARISH"] * n_per_regime + ["SIDEWAYS"] * n_per_regime + ["BULLISH"] * n_per_regime
+    df["true_label"] = labels
+    return hmm_model.compute_hmm_features(df)
+
+
+def test_fit_stock_hmm_insufficient_history_returns_none():
+    df = hmm_model.compute_hmm_features(_synthetic_ohlcv())  # only 10 rows
+    assert hmm_model.fit_stock_hmm(df, min_history_days=300) is None
+
+
+def test_fit_stock_hmm_and_infer_recovers_regimes():
+    df = _synthetic_regime_series()
+    artifact = hmm_model.fit_stock_hmm(df, min_history_days=300)
+    assert artifact is not None
+    assert set(artifact["state_label_map"].values()) == {"BEARISH", "SIDEWAYS", "BULLISH"}
+
+    predicted = hmm_model.infer_hmm_state(df, artifact)
+    df["predicted"] = predicted.values
+
+    # Majority of each true-regime block should be classified correctly.
+    for label in ["BEARISH", "SIDEWAYS", "BULLISH"]:
+        block = df[df["true_label"] == label]
+        accuracy = (block["predicted"] == label).mean()
+        assert accuracy > 0.7, f"{label} block only {accuracy:.0%} correctly classified"
+
+
+def test_infer_hmm_state_no_model_returns_no_model_label():
+    df = hmm_model.compute_hmm_features(_synthetic_ohlcv())
+    result = hmm_model.infer_hmm_state(df, None)
+    assert (result == "NO_MODEL").all()
+
+
+def test_infer_hmm_state_missing_features_stay_no_model():
+    df = _synthetic_regime_series()
+    artifact = hmm_model.fit_stock_hmm(df, min_history_days=300)
+    result = hmm_model.infer_hmm_state(df, artifact)
+    # First row has NaN hmm_return (pct_change of first row) -> can't be scored
+    assert result.iloc[0] == "NO_MODEL"
