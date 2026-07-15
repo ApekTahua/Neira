@@ -165,13 +165,18 @@ class _FakeStorageBucket:
             raise Exception(f"not found: {path}")
         return self._objects[path]
 
-    def list(self, prefix):
+    def list(self, prefix, options=None):
         prefix = prefix.rstrip("/") + "/"
         names = set()
         for path in self._objects:
             if path.startswith(prefix):
                 names.add(path[len(prefix):])
-        return [{"name": n} for n in sorted(names)]
+        sorted_names = sorted(names)
+        if options:
+            offset = options.get("offset", 0)
+            limit = options.get("limit", len(sorted_names))
+            sorted_names = sorted_names[offset:offset + limit]
+        return [{"name": n} for n in sorted_names]
 
 
 class _FakeStorage:
@@ -210,3 +215,26 @@ def test_load_all_artifacts():
     hmm_model.save_artifact(supabase, "hmm-models", "v2-2026q3", "TLKM", {"x": 2})
     all_artifacts = hmm_model.load_all_artifacts(supabase, "hmm-models", "v2-2026q3")
     assert all_artifacts == {"BBCA": {"x": 1}, "TLKM": {"x": 2}}
+
+
+def test_load_all_artifacts_paginates_beyond_page_size():
+    """Regression test: load_all_artifacts must not silently truncate to
+    Storage's default 100-item list() page size. Uses a small page size
+    override via monkeypatching the pagination constant is not needed --
+    instead we save more than one page's worth of tiny artifacts and rely
+    on the fake's own limit/offset handling to prove the loop paginates
+    correctly when given a small enough object count relative to a forced
+    small page; since production page_size is 100, we verify the looping
+    logic itself using a lower object count by directly testing the fake's
+    limit/offset slicing combined with load_all_artifacts's loop against a
+    monkeypatched smaller page. Simpler and just as valid: verify with 250
+    objects against the real page_size=100 to prove 3 full pages are walked."""
+    supabase = _FakeSupabase()
+    for i in range(250):
+        hmm_model.save_artifact(supabase, "hmm-models", "v2-2026q3", f"STK{i:04d}", {"x": i})
+
+    all_artifacts = hmm_model.load_all_artifacts(supabase, "hmm-models", "v2-2026q3")
+
+    assert len(all_artifacts) == 250
+    assert all_artifacts["STK0000"] == {"x": 0}
+    assert all_artifacts["STK0249"] == {"x": 249}

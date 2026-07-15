@@ -150,11 +150,24 @@ def load_artifact(supabase, bucket: str, version: str, stock_code: str) -> dict 
 
 
 def load_all_artifacts(supabase, bucket: str, version: str) -> dict:
-    """Loads every artifact under v2/{version}/ into {stock_code: artifact}."""
+    """Loads every artifact under v2/{version}/ into {stock_code: artifact}.
+    Paginates through Storage's list() — it defaults to a 100-item page
+    size, and a real training run can produce hundreds of artifacts."""
     prefix = f"v2/{version}"
-    files = supabase.storage.from_(bucket).list(prefix)
+    page_size = 100
+    all_files = []
+    offset = 0
+    while True:
+        page = supabase.storage.from_(bucket).list(prefix, {"limit": page_size, "offset": offset})
+        if not page:
+            break
+        all_files.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+
     artifacts = {}
-    for f in files:
+    for f in all_files:
         name = f["name"]
         if not name.endswith(".pkl"):
             continue
