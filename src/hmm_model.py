@@ -137,7 +137,7 @@ def save_artifact(supabase, bucket: str, version: str, stock_code: str, artifact
     supabase.storage.from_(bucket).upload(
         artifact_path(version, stock_code),
         blob,
-        {"content-type": "application/octet-stream"},
+        {"content-type": "application/octet-stream", "upsert": "true"},
     )
 
 
