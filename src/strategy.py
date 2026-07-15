@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 import config as cfg
+import hmm_model
 
 REQUIRED_COLS = ["ma10", "ma20", "ma50", "std20", "avg_vol_20", "avg_vol_20_prev"]
 
@@ -165,6 +166,10 @@ def add_features(group: pd.DataFrame) -> pd.DataFrame:
     group["foreign_net_ma"] = (
         group["foreign_net_ratio"].rolling(cfg.FOREIGN_LOOKBACK, min_periods=1).mean()
     )
+
+    # ---- V2: ADTV liquidity feature + HMM regime features ----
+    group["adtv_20"] = (group["close_price"] * group["volume"]).rolling(20, min_periods=20).mean()
+    group = hmm_model.compute_hmm_features(group)
 
     return group
 
