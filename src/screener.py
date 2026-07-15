@@ -195,6 +195,7 @@ try:
             "tp_target": int(row["tp_target"]),
             "sl_target": int(row["sl_target"]),
             "regime": market_label,
+            "trigger": row["trigger"],
         }
         for _, row in top10.iterrows()
     ]
