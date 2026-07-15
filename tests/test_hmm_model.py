@@ -62,8 +62,8 @@ def test_compute_train_test_split_never_empty_test_window():
 
 
 def _synthetic_regime_series():
-    """200 days clearly BEARISH (drift -1.5%/day), 200 SIDEWAYS (~0%),
-    200 BULLISH (drift +1.5%/day), low noise so the 3 regimes are
+    """200 days clearly BEARISH (drift -3.0%/day), 200 SIDEWAYS (~0%),
+    200 BULLISH (drift +3.0%/day), low noise so the 3 regimes are
     separable in mean return."""
     rng = np.random.default_rng(42)
     n_per_regime = 200
@@ -122,3 +122,27 @@ def test_infer_hmm_state_missing_features_stay_no_model():
     result = hmm_model.infer_hmm_state(df, artifact)
     # First row has NaN hmm_return (pct_change of first row) -> can't be scored
     assert result.iloc[0] == "NO_MODEL"
+
+
+def test_fit_stock_hmm_skips_restart_that_crashes_on_score():
+    """Regression test: a restart candidate whose .score() raises (e.g. a
+    converged-but-degenerate fit with NaN startprob_) must be skipped, not
+    propagate the exception and crash the whole fit_stock_hmm call."""
+    from unittest.mock import patch
+    from hmmlearn.hmm import GaussianHMM
+
+    df = _synthetic_regime_series()
+    real_score = GaussianHMM.score
+    call_count = {"n": 0}
+
+    def flaky_score(self, X, lengths=None):
+        call_count["n"] += 1
+        if call_count["n"] <= 3:
+            raise ValueError("startprob_ must sum to 1 (got nan)")
+        return real_score(self, X, lengths)
+
+    with patch.object(GaussianHMM, "score", flaky_score):
+        artifact = hmm_model.fit_stock_hmm(df, min_history_days=300, random_state=0)
+
+    assert artifact is not None
+    assert call_count["n"] > 3  # confirms later, non-raising restarts were actually reached
