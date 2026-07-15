@@ -172,10 +172,10 @@ class _FakeStorageBucket:
             if path.startswith(prefix):
                 names.add(path[len(prefix):])
         sorted_names = sorted(names)
-        if options:
-            offset = options.get("offset", 0)
-            limit = options.get("limit", len(sorted_names))
-            sorted_names = sorted_names[offset:offset + limit]
+        options = options or {}
+        offset = options.get("offset", 0)
+        limit = options.get("limit", 100)
+        sorted_names = sorted_names[offset:offset + limit]
         return [{"name": n} for n in sorted_names]
 
 
@@ -218,17 +218,9 @@ def test_load_all_artifacts():
 
 
 def test_load_all_artifacts_paginates_beyond_page_size():
-    """Regression test: load_all_artifacts must not silently truncate to
-    Storage's default 100-item list() page size. Uses a small page size
-    override via monkeypatching the pagination constant is not needed --
-    instead we save more than one page's worth of tiny artifacts and rely
-    on the fake's own limit/offset handling to prove the loop paginates
-    correctly when given a small enough object count relative to a forced
-    small page; since production page_size is 100, we verify the looping
-    logic itself using a lower object count by directly testing the fake's
-    limit/offset slicing combined with load_all_artifacts's loop against a
-    monkeypatched smaller page. Simpler and just as valid: verify with 250
-    objects against the real page_size=100 to prove 3 full pages are walked."""
+    """Regression test: must not silently truncate to Storage's default
+    100-item list() page size (this exact bug dropped 178/278 real models
+    in a live acceptance run before being caught and fixed)."""
     supabase = _FakeSupabase()
     for i in range(250):
         hmm_model.save_artifact(supabase, "hmm-models", "v2-2026q3", f"STK{i:04d}", {"x": i})
