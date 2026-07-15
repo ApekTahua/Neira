@@ -108,11 +108,41 @@ def fit_stock_hmm(feature_df: pd.DataFrame, min_history_days: int, random_state:
     return {"scaler": scaler, "model": model, "state_label_map": state_label_map}
 
 
+def _causal_filtered_states(model, X_scaled: np.ndarray) -> np.ndarray:
+    """Forward-only (causal) state filtering: argmax_k P(state_t=k | obs_1..t).
+
+    hmmlearn's `.predict()` runs Viterbi over the WHOLE sequence, which is
+    non-causal — the label at time t can depend on observations at t+1..T.
+    That is unacceptable for a backtest: a live decision on day t must
+    never depend on data that hasn't happened yet. This runs only the
+    forward pass of the forward-backward algorithm (no backward pass, no
+    global Viterbi), so state_seq[t] depends solely on X_scaled[0..t].
+    """
+    from scipy.special import logsumexp
+
+    framelogprob = model._compute_log_likelihood(X_scaled)  # (T, K)
+    log_startprob = np.log(model.startprob_)
+    log_transmat = np.log(model.transmat_)
+
+    T, K = framelogprob.shape
+    log_alpha = np.empty((T, K))
+    log_alpha[0] = log_startprob + framelogprob[0]
+    log_alpha[0] -= logsumexp(log_alpha[0])
+    for t in range(1, T):
+        for k in range(K):
+            log_alpha[t, k] = logsumexp(log_alpha[t - 1] + log_transmat[:, k]) + framelogprob[t, k]
+        log_alpha[t] -= logsumexp(log_alpha[t])
+
+    return log_alpha.argmax(axis=1)
+
+
 def infer_hmm_state(feature_df: pd.DataFrame, artifact: dict | None) -> pd.Series:
     """Returns a Series aligned to feature_df.index with the dominant HMM
     state label per row ("BEARISH"/"SIDEWAYS"/"BULLISH"). Rows that can't
     be scored (no frozen artifact, or missing features for that row) get
-    "NO_MODEL"."""
+    "NO_MODEL". Uses causal (forward-only filtered) decoding — see
+    `_causal_filtered_states` — never Viterbi, which would leak future
+    observations into a day's label."""
     if artifact is None:
         return pd.Series("NO_MODEL", index=feature_df.index)
 
@@ -123,7 +153,7 @@ def infer_hmm_state(feature_df: pd.DataFrame, artifact: dict | None) -> pd.Serie
         return result
 
     X_scaled = artifact["scaler"].transform(clean.to_numpy())
-    state_seq = artifact["model"].predict(X_scaled)
+    state_seq = _causal_filtered_states(artifact["model"], X_scaled)
     labels = [artifact["state_label_map"][s] for s in state_seq]
     result.loc[clean.index] = labels
     return result

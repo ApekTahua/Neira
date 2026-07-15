@@ -124,6 +124,25 @@ def test_infer_hmm_state_missing_features_stay_no_model():
     assert result.iloc[0] == "NO_MODEL"
 
 
+def test_infer_hmm_state_is_causal_not_affected_by_future_data():
+    """Regression test: infer_hmm_state must be causal. A day's label must
+    not change when MORE FUTURE data is appended after it — Viterbi decoding
+    (hmmlearn's .predict()) fails this because it's a global decode over the
+    whole sequence; forward-only filtering (the fix) passes it by
+    construction, since state_seq[t] depends solely on obs[0..t]."""
+    df = _synthetic_regime_series()
+    artifact = hmm_model.fit_stock_hmm(df, min_history_days=300, random_state=0)
+    assert artifact is not None
+
+    prefix_len = 400
+    df_prefix = df.iloc[:prefix_len].reset_index(drop=True)
+
+    labels_full = hmm_model.infer_hmm_state(df, artifact)
+    labels_prefix = hmm_model.infer_hmm_state(df_prefix, artifact)
+
+    assert list(labels_full.iloc[:prefix_len]) == list(labels_prefix)
+
+
 def test_fit_stock_hmm_skips_restart_that_crashes_on_score():
     """Regression test: a restart candidate whose .score() raises (e.g. a
     converged-but-degenerate fit with NaN startprob_) must be skipped, not
