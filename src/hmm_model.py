@@ -126,3 +126,39 @@ def infer_hmm_state(feature_df: pd.DataFrame, artifact: dict | None) -> pd.Serie
     labels = [artifact["state_label_map"][s] for s in state_seq]
     result.loc[clean.index] = labels
     return result
+
+
+def artifact_path(version: str, stock_code: str) -> str:
+    return f"v2/{version}/{stock_code}.pkl"
+
+
+def save_artifact(supabase, bucket: str, version: str, stock_code: str, artifact: dict) -> None:
+    blob = pickle.dumps(artifact)
+    supabase.storage.from_(bucket).upload(
+        artifact_path(version, stock_code),
+        blob,
+        {"content-type": "application/octet-stream"},
+    )
+
+
+def load_artifact(supabase, bucket: str, version: str, stock_code: str) -> dict | None:
+    try:
+        blob = supabase.storage.from_(bucket).download(artifact_path(version, stock_code))
+    except Exception:
+        return None
+    return pickle.loads(blob)
+
+
+def load_all_artifacts(supabase, bucket: str, version: str) -> dict:
+    """Loads every artifact under v2/{version}/ into {stock_code: artifact}."""
+    prefix = f"v2/{version}"
+    files = supabase.storage.from_(bucket).list(prefix)
+    artifacts = {}
+    for f in files:
+        name = f["name"]
+        if not name.endswith(".pkl"):
+            continue
+        stock_code = name[: -len(".pkl")]
+        blob = supabase.storage.from_(bucket).download(f"{prefix}/{name}")
+        artifacts[stock_code] = pickle.loads(blob)
+    return artifacts

@@ -146,3 +146,67 @@ def test_fit_stock_hmm_skips_restart_that_crashes_on_score():
 
     assert artifact is not None
     assert call_count["n"] > 3  # confirms later, non-raising restarts were actually reached
+
+
+# Supabase Storage persistence tests
+class _FakeStorageBucket:
+    """In-memory stand-in for supabase.storage.from_(bucket) — enough of
+    the .upload/.download/.list surface to test path construction and
+    pickle round-tripping without network access."""
+
+    def __init__(self):
+        self._objects = {}  # path -> bytes
+
+    def upload(self, path, data, options=None):
+        self._objects[path] = data
+
+    def download(self, path):
+        if path not in self._objects:
+            raise Exception(f"not found: {path}")
+        return self._objects[path]
+
+    def list(self, prefix):
+        prefix = prefix.rstrip("/") + "/"
+        names = set()
+        for path in self._objects:
+            if path.startswith(prefix):
+                names.add(path[len(prefix):])
+        return [{"name": n} for n in sorted(names)]
+
+
+class _FakeStorage:
+    def __init__(self):
+        self._bucket = _FakeStorageBucket()
+
+    def from_(self, bucket_name):
+        return self._bucket
+
+
+class _FakeSupabase:
+    def __init__(self):
+        self.storage = _FakeStorage()
+
+
+def test_artifact_path_format():
+    assert hmm_model.artifact_path("v2-2026q3", "BBCA") == "v2/v2-2026q3/BBCA.pkl"
+
+
+def test_save_and_load_artifact_roundtrip():
+    supabase = _FakeSupabase()
+    artifact = {"scaler": "fake-scaler", "model": "fake-model", "state_label_map": {0: "BEARISH"}}
+    hmm_model.save_artifact(supabase, "hmm-models", "v2-2026q3", "BBCA", artifact)
+    loaded = hmm_model.load_artifact(supabase, "hmm-models", "v2-2026q3", "BBCA")
+    assert loaded == artifact
+
+
+def test_load_artifact_missing_returns_none():
+    supabase = _FakeSupabase()
+    assert hmm_model.load_artifact(supabase, "hmm-models", "v2-2026q3", "NOPE") is None
+
+
+def test_load_all_artifacts():
+    supabase = _FakeSupabase()
+    hmm_model.save_artifact(supabase, "hmm-models", "v2-2026q3", "BBCA", {"x": 1})
+    hmm_model.save_artifact(supabase, "hmm-models", "v2-2026q3", "TLKM", {"x": 2})
+    all_artifacts = hmm_model.load_all_artifacts(supabase, "hmm-models", "v2-2026q3")
+    assert all_artifacts == {"BBCA": {"x": 1}, "TLKM": {"x": 2}}
