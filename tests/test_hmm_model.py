@@ -76,7 +76,7 @@ def _synthetic_regime_series():
     close = 100 * np.cumprod(1 + rets)
     close = np.concatenate([[100.0], close])[:-1]  # align length
     dates = pd.date_range("2020-01-01", periods=len(close), freq="B").date
-    volume = rng.integers(1000, 5000, size=len(close))
+    volume = rng.integers(1950, 2050, size=len(close))
     df = pd.DataFrame({
         "trade_date": dates,
         "close_price": close,
