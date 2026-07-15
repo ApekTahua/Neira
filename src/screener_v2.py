@@ -21,6 +21,7 @@ from supabase import create_client
 import config as cfg
 import data_fetch
 import hmm_model
+from data_fetch import _retry
 from strategy import add_features, get_regime, get_regime_params, get_signals
 
 
@@ -31,7 +32,13 @@ def main():
         sys.exit("Missing SUPABASE_URL / SUPABASE_KEY")
     supabase = create_client(url, key)
 
-    latest_date_res = supabase.table("ihsg_eod").select("trade_date").order("trade_date", desc=True).limit(1).execute()
+    latest_date_res = _retry(lambda: (
+        supabase.table("ihsg_eod")
+        .select("trade_date")
+        .order("trade_date", desc=True)
+        .limit(1)
+        .execute()
+    ))
     if not latest_date_res.data:
         sys.exit("No data in ihsg_eod")
     latest_date = pd.Timestamp(latest_date_res.data[0]["trade_date"]).date()
