@@ -16,13 +16,13 @@ V2's goal: make the system honest about out-of-sample robustness before it's tru
 
 ```
 Layer 0: Liquidity gate (ADTV >= Rp 1B, 20-day rolling)     [strategy.py]
-Layer 1: Per-stock HMM regime confirm (Bull state dominant)  [hmm_model.py]
+Layer 1: Per-stock HMM regime confirm (block BEARISH only)   [hmm_model.py]
 Layer 2: Existing V1 technical signals (unchanged)            [strategy.py]
 Layer 3: Portfolio risk mgmt — IHSG macro regime sizing        [backtest.py / screener.py]
          (unchanged) + new: min-hold, cooldown, asymmetric fees
 ```
 
-The IHSG-level macro regime (`get_regime()`, position sizing / max-positions / alloc% by BULLISH/NEUTRAL/BEARISH) is **kept as-is** — that's a portfolio risk-sizing decision, a different job from entry confirmation. The new per-stock HMM is an *additional* required gate at the entry-signal layer: a stock's own technical signal can only fire if that stock's own HMM says it's currently in its dominant Bull state. Two regime concepts coexist, each doing a distinct job.
+The IHSG-level macro regime (`get_regime()`, position sizing / max-positions / alloc% by BULLISH/NEUTRAL/BEARISH) is **kept as-is** — that's a portfolio risk-sizing decision, a different job from entry confirmation. The new per-stock HMM is an *additional* required gate at the entry-signal layer: a stock's own technical signal can only fire if that stock's own HMM dominant state is NOT BEARISH. Two regime concepts coexist, each doing a distinct job.
 
 ## Layer 0 — Liquidity gate
 
@@ -45,7 +45,9 @@ All three z-scored with a `StandardScaler` fit **only on that stock's train-spli
 
 **Minimum-history gate** (config: `HMM_MIN_HISTORY_DAYS = 300`): a stock needs at least this many clean trading days in the train split to attempt fitting. Below that, or if `hmmlearn` fails to converge, the stock is excluded from the V2 candidate universe entirely — no fallback to V1's threshold logic for that ticker. No signal is better than a signal from a model that hasn't seen enough data to have learned anything real.
 
-**Confirmation rule:** "dominant Bull state" = the HMM's argmax state for that stock, on that day, is BULLISH. No additional probability-threshold knob on top of argmax — argmax already means "most likely state right now"; a second threshold is an extra parameter to overfit later without a principled way to set it.
+**Confirmation rule (revised after design review):** gate on argmax state ∈ {BULLISH, SIDEWAYS} — reject only if argmax state is BEARISH. No additional probability-threshold knob on top of argmax — argmax already means "most likely state right now"; a second threshold is an extra parameter to overfit later without a principled way to set it.
+
+Requiring argmax == BULLISH outright was the first draft and it's wrong: V1's entire signal set (MA squeeze, BB squeeze, low bandwidth, flat price) is purpose-built to detect *accumulation during consolidation* — by construction a low-volatility, near-zero-recent-return phase, which the HMM's return-ranked labeling will mark SIDEWAYS, not BULLISH (BULLISH requires already-elevated mean return, i.e. the move has already happened). A BULLISH-only gate would systematically reject the exact setups the strategy targets and only admit stocks after they've already broken out — turning an accumulation detector into a late-momentum chaser. SIDEWAYS is exactly the state the technical layer is designed to catch and act as the final trigger inside; HMM's job here is narrower than "confirm bullishness" — it's "reject confirmed distribution," i.e. keep out of names where the HMM's own read of return/range/volume already says smart money is unloading (BEARISH), and let the existing 4-condition technical logic decide entry timing within everything else.
 
 **Inference:** a single batched `predict_proba()` call per stock over its full available history, computed once during feature engineering (same pass as `add_features()` today) — not a per-day rolling-window recomputation. This is both the statistically correct filtered-probability approach (uses full history up to each day) and matches V1's existing "compute indicators once per stock" architecture.
 
