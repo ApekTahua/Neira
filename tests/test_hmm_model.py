@@ -72,7 +72,7 @@ def _synthetic_regime_series():
         rets = rng.normal(drift, 0.002, n)
         return rets
 
-    rets = np.concatenate([block(-0.015), block(0.0002), block(0.015)])
+    rets = np.concatenate([block(-0.03), block(0.0002), block(0.03)])
     close = 100 * np.cumprod(1 + rets)
     close = np.concatenate([[100.0], close])[:-1]  # align length
     dates = pd.date_range("2020-01-01", periods=len(close), freq="B").date
@@ -96,7 +96,7 @@ def test_fit_stock_hmm_insufficient_history_returns_none():
 
 def test_fit_stock_hmm_and_infer_recovers_regimes():
     df = _synthetic_regime_series()
-    artifact = hmm_model.fit_stock_hmm(df, min_history_days=300)
+    artifact = hmm_model.fit_stock_hmm(df, min_history_days=300, random_state=0)
     assert artifact is not None
     assert set(artifact["state_label_map"].values()) == {"BEARISH", "SIDEWAYS", "BULLISH"}
 

@@ -63,18 +63,38 @@ def fit_stock_hmm(feature_df: pd.DataFrame, min_history_days: int, random_state:
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    model = GaussianHMM(
-        n_components=3,
-        covariance_type="diag",
-        n_iter=100,
-        random_state=random_state,
-    )
-    try:
-        model.fit(X_scaled)
-    except Exception:
-        return None
+    # Single-restart EM is known to land in bad local optima depending on
+    # initialization. Multi-restart (keep the highest-log-likelihood
+    # converged fit) is standard practice for Gaussian mixture/HMM fitting
+    # — the same principle sklearn's own KMeans(n_init=10) uses internally.
+    # Restarts are seeded deterministically from `random_state` so the
+    # overall fit stays fully reproducible.
+    rng = np.random.default_rng(random_state)
+    n_restarts = 10
+    model = None
+    best_score = -np.inf
+    for _ in range(n_restarts):
+        seed = int(rng.integers(0, 2**31 - 1))
+        candidate = GaussianHMM(
+            n_components=3,
+            covariance_type="diag",
+            n_iter=100,
+            random_state=seed,
+        )
+        try:
+            candidate.fit(X_scaled)
+            if not candidate.monitor_.converged:
+                continue
+            score = candidate.score(X_scaled)
+        except Exception:
+            continue
+        if not np.isfinite(score):
+            continue
+        if score > best_score:
+            best_score = score
+            model = candidate
 
-    if not model.monitor_.converged:
+    if model is None:
         return None
 
     # Rank hidden states by fitted mean return (index 0 = hmm_return).
