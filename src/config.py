@@ -143,3 +143,19 @@ FOREIGN_SCORE_WEIGHT = 0.10     # bobot foreign flow di confidence scoring
 ALLOC_BASE_PCT = 0.30           # base allocation = confidence/100 × 30% cash
 ALLOC_MAX_PCT = 0.30            # maks 30% cash per posisi
 ALLOC_MIN_LOTS = 1              # minimal 1 lot
+
+# ----------------------------------------------------------------------
+# V2: Liquidity, HMM regime, risk management
+# (see docs/superpowers/specs/2026-07-15-v2-hmm-screener-design.md)
+# Only referenced by *_v2.py scripts — V1's screener.py/backtest.py never
+# import these.
+# ----------------------------------------------------------------------
+ADTV_MIN = 1_000_000_000          # Rp 1 miliar rata-rata nilai transaksi 20 hari
+MIN_HOLD_DAYS = 3                 # TP1/Trailing ditahan N hari bursa; SL selalu aktif
+COOLDOWN_DAYS = 10                # blokir entry ulang N hari bursa setelah kena SL
+BUY_FEE = 0.0018                  # 0.18% fee beli (broker fee)
+SELL_FEE = 0.0028                 # 0.28% fee jual (broker fee + levy bursa 0.1%)
+HMM_MIN_HISTORY_DAYS = 300        # minimal hari bersih di train split buat fit HMM
+HMM_TRAIN_SPLIT_PCT = 0.7         # 70% train / 30% test, chronological
+HMM_VERSION = "v2-2026q3"         # bump manual tiap retrain (train_hmm.py)
+HMM_BUCKET = "hmm-models"
