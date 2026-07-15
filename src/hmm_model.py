@@ -13,8 +13,6 @@ import pickle
 
 import numpy as np
 import pandas as pd
-from hmmlearn.hmm import GaussianHMM
-from sklearn.preprocessing import StandardScaler
 
 HMM_FEATURES = ["hmm_return", "hmm_range", "hmm_log_vol_change"]
 STATE_LABELS = ["BEARISH", "SIDEWAYS", "BULLISH"]  # rank order by mean return
@@ -55,6 +53,9 @@ def fit_stock_hmm(feature_df: pd.DataFrame, min_history_days: int, random_state:
     HMM_FEATURES columns. Returns None if there isn't enough clean data or
     the model fails to converge. feature_df should already be restricted
     to the train-split rows for this stock."""
+    from hmmlearn.hmm import GaussianHMM
+    from sklearn.preprocessing import StandardScaler
+
     clean = feature_df.dropna(subset=HMM_FEATURES)
     if len(clean) < min_history_days:
         return None
