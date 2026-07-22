@@ -159,3 +159,24 @@ HMM_MIN_HISTORY_DAYS = 300        # minimal hari bersih di train split buat fit 
 HMM_TRAIN_SPLIT_PCT = 0.7         # 70% train / 30% test, chronological
 HMM_VERSION = "v2-2026q3"         # bump manual tiap retrain (train_hmm.py)
 HMM_BUCKET = "hmm-models"
+
+# ----------------------------------------------------------------------
+# V2b: HMM as risk management (exit-side), not an entry gate.
+# Single, untuned first-principles default: exit immediately (pre-TP1) or
+# halve trailing width (post-TP1) the day a held position's own HMM state
+# reads BEARISH. Not derived from watching backtest results -- if this
+# multiplier needs adjusting, that is a new, separate, single-run test,
+# never iteration against this same result.
+# ----------------------------------------------------------------------
+HMM_BEARISH_RISK_CUT = 0.5        # halve trailing-stop width when HMM turns BEARISH post-TP1
+
+# ----------------------------------------------------------------------
+# V2d: Signal-memory watchlist. A signal that clears get_signals() but
+# loses the slot/cash competition gets a bounded grace window instead of
+# being discarded outright -- structural justification: capital/slot
+# scarcity is a portfolio constraint, not a market judgment on the setup.
+# Single, untuned first-principles default matching "a few days" -- if it
+# needs adjusting, that is a new, separate, single-run test, never
+# iteration against this same result.
+# ----------------------------------------------------------------------
+WATCHLIST_MAX_DAYS = 3            # grace window before an unexecuted signal expires
