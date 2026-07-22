@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 reports/
 src/phase0_triggers.csv
+src/phase0f_holdtime_trades.csv
