@@ -58,6 +58,7 @@ SL_PCT = 0.02
 MAX_POSITIONS = 6
 ALLOC_PCT = 0.20
 BACKTEST_VERSION = "v3-dev"
+DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
 
 
 def build_full_dataset(supabase):
@@ -200,10 +201,15 @@ def main():
                 "tp1_price": tp1_price, "sl_price": sl_price, "total_lots": lots, "remaining_lots": lots,
                 "quantity": quantity, "cost_basis": cost_basis, "hold_days": 0, "tp1_hit": False,
                 "highest_price": entry_price, "trigger": sig["trigger"],
+                "no_data_days": 0, "last_valid_close": entry_price,
             })
         pending_entries = []
 
-        # ---- Exit check (identical to backtest_v2.py) ----
+        # ---- Exit check (identical to backtest_v2.py, plus a forced exit
+        # for stocks that stop reporting data mid-position -- delisting or
+        # permanent suspension. Without this, a position in a delisted
+        # stock sits forever, frozen at its last mark-to-market price,
+        # never contributing its real loss to the results.) ----
         remaining_positions = []
         for pos in positions:
             if pos["entry_date"] == trade_date:
@@ -212,9 +218,31 @@ def main():
             bar = get_bar(pos["stock_code"], trade_date)
             if bar is None:
                 pos["hold_days"] += 1
+                pos["no_data_days"] += 1
+                if pos["no_data_days"] >= DELISTING_GAP_DAYS:
+                    exit_price = pos["last_valid_close"]
+                    sell_lots = pos["remaining_lots"]
+                    sell_qty = sell_lots * LOT_SIZE
+                    sell_cost_basis = pos["cost_basis"] * (sell_lots / pos["total_lots"])
+                    gross_return = exit_price * sell_qty
+                    fee = risk.apply_fee(gross_return, "sell", cfg.BUY_FEE, cfg.SELL_FEE)
+                    net_return = gross_return - fee
+                    pnl = net_return - sell_cost_basis
+                    pnl_pct = (exit_price / pos["avg_price"] - 1) * 100
+                    cash += net_return
+                    pos["remaining_lots"] -= sell_lots
+                    trades.append({
+                        "stock_code": pos["stock_code"], "entry_date": pos["entry_date"], "exit_date": trade_date,
+                        "entry_price": pos["avg_price"], "exit_price": exit_price, "quantity": sell_qty, "lots": sell_lots,
+                        "pnl": pnl, "pnl_pct": pnl_pct, "exit_reason": "DELISTED_GAP", "trigger": pos["trigger"],
+                        "hold_days": pos["hold_days"],
+                    })
+                    continue
                 remaining_positions.append(pos)
                 continue
             o, close_price, high_price, low_price = bar
+            pos["no_data_days"] = 0
+            pos["last_valid_close"] = close_price
 
             exit_reason, exit_price, sell_lots = None, None, 0
             hold_ok = risk.min_hold_elapsed(pos["hold_days"], cfg.MIN_HOLD_DAYS)

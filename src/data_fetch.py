@@ -52,31 +52,42 @@ def fetch_data(supabase, start_date: date, end_date: date, lookback_days: int = 
         idx_df = idx_df.sort_values("trade_date").reset_index(drop=True)
         idx_df["ma50"] = idx_df["close"].rolling(50, min_periods=50).mean()
 
-    idx_in_range = idx_df[
-        (idx_df["trade_date"] >= start_date) & (idx_df["trade_date"] <= end_date)
-    ] if not idx_df.empty else idx_df
-    code_date = (
-        idx_in_range["trade_date"].max().isoformat()
-        if not idx_in_range.empty else end_date.isoformat()
-    )
+    # Stock universe: union codes seen at multiple checkpoints spread across
+    # the whole fetch range (one per month), not just the last day. A
+    # single end-date snapshot silently drops any stock that delisted
+    # before end_date -- its entire pre-delisting history (including any
+    # losses right before delisting) would be invisible to every backtest,
+    # a real survivorship-bias bug, not a hypothetical one (confirmed:
+    # e.g. FREN/MFIN, liquid stocks that delisted mid-2025 with large
+    # prior declines, were completely absent from this universe before
+    # this fix). Monthly checkpoints catch any stock that traded for at
+    # least part of a calendar month; only a stock that listed AND
+    # delisted entirely within one month, on a day between checkpoints,
+    # could still be missed.
+    if not idx_df.empty:
+        all_dates_sorted = sorted(idx_df["trade_date"].unique())
+    else:
+        all_dates_sorted = []
+    checkpoint_dates = {fetch_start.isoformat(), end_date.isoformat()}
+    seen_months = set()
+    for d in all_dates_sorted:
+        if fetch_start <= d <= end_date:
+            ym = (d.year, d.month)
+            if ym not in seen_months:
+                seen_months.add(ym)
+                checkpoint_dates.add(d.isoformat())
 
-    codes_batch = _retry(lambda: (
-        supabase.table("ihsg_eod")
-        .select("stock_code")
-        .eq("trade_date", code_date)
-        .limit(2000)
-        .execute()
-    ))
-    unique_codes = sorted(set(row["stock_code"] for row in (codes_batch.data or [])))
-    if not unique_codes:
-        codes_batch = _retry(lambda: (
+    unique_codes = set()
+    for cd in sorted(checkpoint_dates):
+        codes_batch = _retry(lambda cd=cd: (
             supabase.table("ihsg_eod")
             .select("stock_code")
-            .eq("trade_date", start_date.isoformat())
+            .eq("trade_date", cd)
             .limit(2000)
             .execute()
         ))
-        unique_codes = sorted(set(row["stock_code"] for row in (codes_batch.data or [])))
+        unique_codes.update(row["stock_code"] for row in (codes_batch.data or []))
+    unique_codes = sorted(unique_codes)
 
     all_stocks = []
     batch_size = 50
