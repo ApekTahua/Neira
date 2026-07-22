@@ -59,6 +59,11 @@ MAX_POSITIONS = 6
 ALLOC_PCT = 0.20
 BACKTEST_VERSION = "v3-dev"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
+ATR_PRICE_RATIO_MAX = 0.10  # exclude entries where ATR_14/close > 10% -- PIPA/FUTR/ISAP-style
+                            # hyperactive penny stocks slip through the Rupiah-value ADTV filter
+                            # (huge share count, low price) despite genuinely extreme volatility;
+                            # this caps signal-day volatility directly, price-agnostic (GOTO/BUKA
+                            # stay eligible despite low price since their ATR% is normal, ~4%).
 
 
 def build_full_dataset(supabase):
@@ -105,6 +110,8 @@ def main():
         & (df["adtv_20"] >= cfg.ADTV_MIN)
         & df["weekly_ma_spread"].notna() & df["sector_rs_momentum"].notna()
         & (df["_regime"] == "BULLISH")
+        & df["atr_14"].notna() & (df["atr_14"] > 0)
+        & ((df["atr_14"] / df["close_price"]) <= ATR_PRICE_RATIO_MAX)
     ]
     weekly_cut = train_liquid_bullish["weekly_ma_spread"].quantile(QUANTILE_CUT)
     sector_cut = train_liquid_bullish["sector_rs_momentum"].quantile(QUANTILE_CUT)
@@ -315,6 +322,7 @@ def main():
                 & (df["sector_rs_momentum"] >= sector_cut)
                 & df["atr_14"].notna() & (df["atr_14"] > 0)
                 & df["avg_vol_20"].notna()
+                & ((df["atr_14"] / df["close_price"]) <= ATR_PRICE_RATIO_MAX)
             ].copy()
 
             if not day_data.empty:
