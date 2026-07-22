@@ -116,13 +116,13 @@ def main():
 
     close_lookup = df.set_index(["stock_code", "trade_date"])["close_price"]
     bar_lookup = {
-        (r.stock_code, r.trade_date): (r.open_price, r.close_price, r.high, r.low)
+        (r.stock_code, r.trade_date): (r.open_price, r.close_price, r.high, r.low, r.volume)
         for r in df.itertuples()
     }
 
     def get_bar(stock_code, d):
         try:
-            o, c, h, l = bar_lookup[(stock_code, d)]
+            o, c, h, l, _vol = bar_lookup[(stock_code, d)]
         except KeyError:
             return None
         if pd.isna(c) or c <= 0:
@@ -156,6 +156,9 @@ def main():
             bar = get_bar(sig["stock_code"], trade_date)
             if bar is None:
                 continue
+            _, _, _, _, entry_day_volume = bar_lookup[(sig["stock_code"], trade_date)]
+            if pd.isna(entry_day_volume) or entry_day_volume <= 0:
+                continue  # zero-volume day: stale carried-forward print, no real fill possible
             o, c, h, l = bar
             entry_price = o if o is not None else c
             sc_price = sig["signal_close"]
