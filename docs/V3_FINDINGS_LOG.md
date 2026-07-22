@@ -19,10 +19,20 @@ V2 HMM-gate plan — superseded, see below).
   `BULLISH regime AND weekly-trend-alignment top quintile AND sector-RRG
   relative-strength top quintile`, on liquid stocks (ADTV≥1B), thresholds
   learned on train data only. Portfolio backtest (`src/backtest_v3.py`),
-  out-of-sample 2024-07 to 2026-06: **net profit +183.48%** (after fixing
-  two real bugs that originally inflated it to +486.74% — see below),
-  win rate 57.6%, profit factor 1.65, max drawdown -27.77%. Still being
-  hardened (volatility-cap fix applied, second OOS window pending).
+  out-of-sample 2024-07 to 2026-06 (window 1): **net profit +216.94%**
+  (after fixing three real bugs that originally inflated it to +486.74%
+  — see below), win rate 55.4%, profit factor 1.84, max drawdown -24.33%.
+  **A second OOS window (2023-07 to 2024-12, train 2021-2023) came back
+  much weaker: +16.29% net profit, win rate exactly 50.0%, profit factor
+  1.14, max drawdown -33.12%.** The edge is real but NOT stable across
+  market conditions — window 1 covered a period where the bullish-regime
+  gate got to sit safely in cash through an actual IHSG crash; window 2
+  was a choppier, more range-bound period where the same gate produced
+  more whipsaws (stop-loss exits rose from 42.5% to 47.2% of all exits).
+  **Treat the realistic expectation as closer to window 2's numbers
+  (coin-flip win rate, thin profit factor, 30%+ drawdown possible) than
+  window 1's, until more OOS windows are tested.** Not deployed to
+  production.
 
 ## The core finding: squeeze signal is dead
 
@@ -97,7 +107,9 @@ manual AND-rule finds trivially.
    genuine share volume) and some genuinely erratic (PIPA/FUTR/ISAP:
    7-10%+ avg daily range). **Fix**: `ATR_14/close_price <= 10%` cap on
    entry day — price-agnostic, so it excludes the erratic names while
-   keeping calm low-price large-caps eligible. Result pending re-run.
+   keeping calm low-price large-caps eligible. Result: took window 1 from
+   +183.48% to the final +216.94%, and improved both profit factor
+   (1.65→1.84) and max drawdown (-27.77%→-24.33%).
 
 **Standing caution for any future backtest on this data**: always run a
 top-5-ticker concentration check on any headline number before trusting
@@ -109,12 +121,18 @@ liquidity when a stock has an extreme share count or extreme volatility).
 
 ## Known open items / next steps
 
-- Re-run `backtest_v3.py` with the ATR/price volatility cap (in progress
-  as of this log entry).
-- Run a second out-of-sample window (different train/test split) — only
-  one OOS window has been portfolio-backtested so far; Phase 0g/0h were
-  walk-forward at the feature-validation level but the final portfolio
-  backtest wasn't.
+- **Run more OOS windows.** Two is enough to prove the edge is unstable
+  across regimes, not enough to characterize *how* unstable — a third or
+  fourth window (ideally spanning a genuinely choppy/sideways multi-year
+  stretch, not just two different 1.5-2yr slices) would help quantify a
+  realistic worst case rather than anchoring on window 2's single data
+  point.
+- **Investigate a "don't trade this regime" filter** — something that
+  detects choppy/range-bound conditions (not just BULLISH/BEARISH/NEUTRAL
+  via price-vs-MA50) and sits out, since window 2's underperformance
+  traces directly to more whipsaws (SL exits 42.5%→47.2%) in a period
+  IHSG itself was flat. The current regime detector is binary trend
+  direction, not trend *quality*/choppiness.
 - Adaptive hold-time exit (`phase0f`) needs its own proper OOS validation
   before folding into `backtest_v3.py` — the "helps slow movers, hurts
   fast movers" finding came from looking at bucketed results after the
