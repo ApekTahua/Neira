@@ -53,9 +53,23 @@ spectacular-at-one-value.** Default `VOL_BAND_MULT=2.0`.
 profit, 17.9% win rate — a real loss, not just a weak win.** Traced to a
 specific cause: six positions opened simultaneously on a false-start
 regime flip (`MAX_POSITIONS=6` filled in one day), all stopped out
-together within days. Nothing currently diversifies entry timing.
-**NOT DEPLOYMENT-READY** — three windows now show one great result, one
-modest result, one that loses money with an identified, unfixed cause.
+together within days.
+
+**Fixed in two steps**: `MAX_NEW_ENTRIES_PER_DAY=2` (capped new
+positions per day) alone barely moved window 3, because the false
+regime read persisted for several consecutive days, not just one.
+`REGIME_CONFIRM_DAYS=3` (require the regime to hold 3 days before ANY
+new entries) combined with the cap actually worked: **win rate and
+profit factor improved in all three windows** — window 3 specifically
+went from -22.10%/17.9% win to -12.28%/38.5% win. Real, consistent
+improvement. **But window 3 STILL loses money and underperforms the
+benchmark**, and drawdown got worse in windows 1/2. Win rate 38.5% in
+window 3 (still under 50%) suggests the remaining issue may be entry-
+rule stock-selection quality in that market character, not just timing
+— a different, still-open question.
+
+**STILL NOT DEPLOYMENT-READY** — meaningfully better after tonight's
+fixes, not solved.
 
 **Treat any single backtest number in this repo as an optimistic case,
 not the expectation** — see `docs/V3_FINDINGS_LOG.md` for the full
@@ -94,9 +108,14 @@ detail and the standing cautions below.
    never reach the trigger threshold), not a real null result. A
    suspiciously exact match to a baseline is a signal to check the
    mechanism, not a result to report.
-8. Entry timing is currently undiversified — MAX_POSITIONS=6 can fill
-   entirely on one regime-flip day. If that flip is a false start, the
-   whole portfolio gets stopped out together (confirmed in the third OOS
-   window). Any future entry-rule change should consider whether it
-   makes this worse, and this needs an actual fix (stagger entries,
-   require flip confirmation) before real deployment.
+8. Entry-timing concentration was found (window 3) and partially fixed
+   (`MAX_NEW_ENTRIES_PER_DAY` + `REGIME_CONFIRM_DAYS`) — win rate and
+   profit factor improved in all three windows, but window 3 still loses
+   money. Don't assume this is fully solved; the remaining loss may be
+   entry-rule selection quality, not timing. Any future entry-rule
+   change should re-test all three windows, not just the two good ones.
+9. A one-variable fix can help some windows a lot while barely touching
+   the one it was aimed at, and vice versa — the per-day cap alone
+   transformed window 2 (+26%→+99%) while barely moving window 3
+   (-22.10%→-21.11%), the window it was built for. Test every fix
+   against ALL windows, not just the one that motivated it.
