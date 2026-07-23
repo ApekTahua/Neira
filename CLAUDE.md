@@ -28,6 +28,10 @@ detection then improved every metric in both windows (one window now
 win — gap narrowed, not closed). A Monte Carlo permutation test then
 confirmed p=0.0000 in both windows (the rule beat 5000/5000 random draws
 from the same opportunity set) — the edge is real selection skill, not
-multiple-testing luck. Not yet deployed to production. See the worktree
-branch for the real detail — don't trust a summary shorter than this one
-for anything V3-related.
+multiple-testing luck. **But a hysteresis-band sensitivity sweep then
+showed the 2% figure was one lucky point in a noisy landscape, not a
+validated optimum** (window 1 swung 61%-501% profit across nearby band
+values) — the direction of the fix holds up (every band, both windows,
+keeps win rate above 50%), the exact magnitude doesn't. Not yet deployed
+to production. See the worktree branch for the real detail — don't
+trust a summary shorter than this one for anything V3-related.
