@@ -38,6 +38,12 @@ volatility instead of a flat %) — no catastrophic breakdown at any
 tested multiplier in either window, unlike the fixed-% design's collapse
 at its extreme, though drawdown is consistently a bit worse than the
 fixed design's best case. Kept the redesign: predictable-across-
-parameters beats spectacular-at-one-value. Not yet deployed to
-production. See the worktree branch for the real detail — don't trust a
-summary shorter than this one for anything V3-related.
+parameters beats spectacular-at-one-value.
+
+**A THIRD OOS window (2023-01..2023-06) then returned -22.10% net
+profit, 17.9% win rate — a real loss, traced to six positions opening
+simultaneously on a false-start regime flip, all stopped out together.
+NOT DEPLOYMENT-READY** — three windows now show one great result, one
+modest result, one that loses money with an identified, unfixed cause.
+See the worktree branch for the real detail — don't trust a summary
+shorter than this one for anything V3-related.
