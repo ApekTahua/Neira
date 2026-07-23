@@ -36,12 +36,22 @@ the edge is real selection skill, not multiple-testing luck; only its
 showed the 2% figure above is one point in a noisy landscape, not a
 validated optimum** — window 1 swings 61%→501% profit across those
 bands with no clean trend, and window 2 breaks down entirely at 5%
-(only 50 trades, 82% concentration — a fragile-result signature). What
-IS robust: every band, both windows, keeps win rate above 50% and beats
-the benchmark. What is NOT robust: the exact profit/drawdown number at
-any single band. **Treat any single backtest number in this repo as an
-optimistic case, not the expectation** — see `docs/V3_FINDINGS_LOG.md`
-for the full detail and the standing cautions below.
+(only 50 trades, 82% concentration — a fragile-result signature).
+
+**Redesigned the band as volatility-relative** (`VOL_BAND_MULT`, scales
+with IHSG's own trailing 20-day return volatility instead of a flat %)
+— swept 1.0/2.0/3.0 on both windows: **no catastrophic breakdown at any
+multiplier**, trade counts and concentration stay sane everywhere
+(unlike the fixed-% design's collapse at 5%), and window 1's results
+cluster far tighter (123-226%, ~1.8x range vs the old 61-501%, ~8x
+range). Tradeoff: drawdown is consistently a bit worse than the fixed
+design's *best* case (28-35% vs 23-29%). **Kept the volatility-relative
+design anyway — predictable-across-parameters beats
+spectacular-at-one-value.** Default `VOL_BAND_MULT=2.0`.
+
+**Treat any single backtest number in this repo as an optimistic case,
+not the expectation** — see `docs/V3_FINDINGS_LOG.md` for the full
+detail and the standing cautions below.
 
 ## Do not repeat these mistakes
 1. Don't trust a backtest headline number without a top-5-ticker

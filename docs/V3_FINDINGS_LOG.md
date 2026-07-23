@@ -66,13 +66,38 @@ V2 HMM-gate plan — superseded, see below).
   robust**: the specific profit/drawdown magnitude at any one band,
   including the 2% reported above as though it were tuned — it wasn't;
   it was picked a priori and got lucky-looking results on the first try.
-  Do not deploy at a hand-picked fixed percentage without either (a)
-  averaging/ensembling across a band range, or (b) redesigning the
-  band as a function of IHSG's own historical volatility (e.g. ATR-
-  relative) rather than an arbitrary fixed percentage — the fixed-
-  percentage design is itself the likely source of the instability,
-  since 2% of MA50 means something different in a low-volatility period
-  than a high-volatility one.
+
+  **Redesigned as volatility-relative** (`VOL_BAND_MULT`, `backtest_v3.py`):
+  band width = `VOL_BAND_MULT × IHSG's trailing 20-day daily-return
+  std-dev`, instead of a flat percentage — widens automatically in
+  choppy periods, narrows in calm ones. Swept `VOL_BAND_MULT` 1.0/2.0/3.0
+  on both windows:
+
+  | mult | W1 profit | W1 win | W1 PF | W1 DD | W1 conc | W2 profit | W2 win | W2 PF | W2 DD | W2 conc | W2 trades |
+  |---|---|---|---|---|---|---|---|---|---|---|---|
+  | 1.0 | +220.35% | 55.9% | 1.76 | -33.98% | 37.2% | +54.75% | 53.3% | 1.50 | -31.84% | 53.6% | 152 |
+  | 2.0 | +225.66% | 59.3% | 1.89 | -31.39% | 41.3% | +26.49% | 55.2% | 1.26 | -35.18% | 51.8% | 174 |
+  | 3.0 | +123.44% | 57.8% | 1.55 | -32.23% | 38.8% | +31.16% | 53.8% | 1.30 | -27.86% | 50.3% | 182 |
+
+  **The real win: no catastrophic breakdown at any tested multiplier, in
+  either window.** Trade counts stay healthy (152-222) and concentration
+  stays in a sane 37-54% range everywhere — contrast with the fixed-%
+  design's collapse to 50 trades / 82% concentration at its 5% extreme.
+  Window 1's results also cluster far more tightly (123-226% profit, a
+  ~1.8x range) than the fixed-% design did (61-501%, an ~8x range) —
+  genuinely more predictable behavior near the chosen parameter.
+
+  **Honest tradeoff, not a free upgrade**: absolute profit/win-rate are
+  comparable to the fixed-% design's *typical* case, not clearly better,
+  and drawdown is consistently somewhat worse (28-35% vs the fixed
+  design's best cases of 23-29%, excluding its broken 5% outlier).
+  **Verdict: prefer the volatility-relative design for deployment
+  despite the modestly worse average numbers** — a design that behaves
+  predictably across nearby parameter choices is more trustworthy than
+  one that happens to score spectacularly at one hand-picked value,
+  which is exactly the failure mode just walked back above. Default
+  kept at `VOL_BAND_MULT=2.0` (the standard "2-sigma" convention) since
+  it's not clearly dominated by 1.0 or 3.0 in either window.
 
   Not deployed to production.
 
