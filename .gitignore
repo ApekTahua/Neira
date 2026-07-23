@@ -5,3 +5,7 @@ src/phase0_triggers.csv
 src/phase0f_holdtime_trades.csv
 src/backtest_v3_trades.csv
 src/backtest_v3_equity.csv
+src/w1_hyst_trades.csv
+src/w1_hyst_equity.csv
+src/w3_trades.csv
+src/w3_equity.csv
