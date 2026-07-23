@@ -71,24 +71,34 @@ from phase0d_multitimeframe_validation import attach_weekly_trend
 VOL_BAND_MULT = float(os.environ.get("V3_VOL_BAND_MULT", "2.0"))
 
 
-def compute_regime_with_hysteresis(idx_df: pd.DataFrame) -> dict:
+def compute_regime_with_hysteresis(idx_df: pd.DataFrame):
+    """Returns (regime_by_date, bullish_streak_by_date). The streak counts
+    consecutive trading days the regime has read BULLISH, ending at that
+    date -- used to require the flip to hold before trusting it with new
+    capital (see REGIME_CONFIRM_DAYS)."""
     sub = idx_df.dropna(subset=["ma50"]).sort_values("trade_date").copy()
     daily_ret = sub["close"].pct_change()
     vol_20 = daily_ret.rolling(20, min_periods=20).std()
     sub["band"] = (VOL_BAND_MULT * vol_20).fillna(vol_20.median())
 
     regime_by_date = {}
+    bullish_streak_by_date = {}
     current = "NEUTRAL"
+    streak = 0
     for row in sub.itertuples():
         upper = row.ma50 * (1 + row.band)
         lower = row.ma50 * (1 - row.band)
         if row.close > upper:
-            current = "BULLISH"
+            new_state = "BULLISH"
         elif row.close < lower:
-            current = "BEARISH"
-        # else: inside the band -- hold the current state, no flip
+            new_state = "BEARISH"
+        else:
+            new_state = current  # inside the band -- hold the current state, no flip
+        streak = streak + 1 if new_state == current else 1
+        current = new_state
         regime_by_date[row.trade_date] = current
-    return regime_by_date
+        bullish_streak_by_date[row.trade_date] = streak if current == "BULLISH" else 0
+    return regime_by_date, bullish_streak_by_date
 
 FETCH_START = date.fromisoformat(os.environ.get("V3_FETCH_START", "2021-01-01"))
 TRAIN_END = date.fromisoformat(os.environ.get("V3_TRAIN_END", "2024-06-30"))
@@ -112,7 +122,16 @@ MAX_POSITIONS = 6
 # real it will still qualify (and get re-evaluated, score-ranked) on a
 # later day; if it was a false-start flip, most won't still qualify once
 # the regime corrects, which is exactly the exposure being reduced.
+#
+# First attempt at a fix: this cap ALONE. Tested against window 3 --
+# barely moved the needle (-22.10% -> -21.11%), because the false regime
+# read persisted for several consecutive days (2023-02-06 through 02-08),
+# so entries just spread across 3 days instead of 1, still all riding the
+# same wrong thesis. Kept as defense-in-depth, but REGIME_CONFIRM_DAYS
+# below is the fix that actually targets the failure mode: don't deploy
+# capital on day 1 of a flip, wait to see if it holds.
 MAX_NEW_ENTRIES_PER_DAY = int(os.environ.get("V3_MAX_NEW_ENTRIES_PER_DAY", "2"))
+REGIME_CONFIRM_DAYS = int(os.environ.get("V3_REGIME_CONFIRM_DAYS", "3"))
 ALLOC_PCT = 0.20
 BACKTEST_VERSION = "v3-dev"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
@@ -186,15 +205,16 @@ def main():
     df, idx_df = build_full_dataset(supabase)
 
     print("[REGIME] Precomputing regime per unique trading day ...")
-    regime_by_date = compute_regime_with_hysteresis(idx_df)
+    regime_by_date, bullish_streak_by_date = compute_regime_with_hysteresis(idx_df)
     df["_regime"] = df["trade_date"].map(regime_by_date).fillna("NEUTRAL")
+    df["_streak"] = df["trade_date"].map(bullish_streak_by_date).fillna(0)
 
     # ---- Thresholds learned on TRAIN split only (never touches test data) ----
     train_liquid_bullish = df[
         (df["trade_date"] <= TRAIN_END)
         & (df["adtv_20"] >= cfg.ADTV_MIN)
         & df["weekly_ma_spread"].notna() & df["sector_rs_momentum"].notna()
-        & (df["_regime"] == "BULLISH")
+        & (df["_regime"] == "BULLISH") & (df["_streak"] >= REGIME_CONFIRM_DAYS)
         & df["atr_14"].notna() & (df["atr_14"] > 0)
         & ((df["atr_14"] / df["close_price"]) <= ATR_PRICE_RATIO_MAX)
     ]
@@ -416,7 +436,11 @@ def main():
         positions = remaining_positions
 
         # ---- New entries: the Phase 0g validated rule, not squeeze ----
-        if regime == "BULLISH":
+        # Gated on the regime having read BULLISH for REGIME_CONFIRM_DAYS
+        # running, not just today -- don't deploy capital on day 1 of a
+        # flip that might be a false start (see MAX_NEW_ENTRIES_PER_DAY
+        # comment above for the window-3 failure this targets).
+        if regime == "BULLISH" and bullish_streak_by_date.get(trade_date, 0) >= REGIME_CONFIRM_DAYS:
             day_data = df[
                 (df["trade_date"] == trade_date)
                 & (df["adtv_20"] >= cfg.ADTV_MIN)
