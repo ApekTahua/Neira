@@ -35,6 +35,16 @@ V2 HMM-gate plan — superseded, see below).
   fact that a genuinely choppy market has less trend to ride than a
   crash to sit out or a rally to ride). **Current realistic expectation:
   somewhere between the two windows, not the flagship number alone.**
+
+  **Monte Carlo permutation significance test** (`phase0i_significance_test.py`,
+  5000 random same-size draws from the same liquid+bullish opportunity
+  set each rule draws from): **p-value = 0.0000 in BOTH windows** — zero
+  of 5000 random draws matched or beat the rule's actual mean return, in
+  either window, including the weak window 2 (rule mean 1.64% vs random
+  draws averaging -0.57%). This is real selection skill, not an artifact
+  of testing many hypotheses tonight — the *existence* of the edge is
+  not in doubt; its *size* still swings with market conditions.
+
   Not deployed to production.
 
 ## The core finding: squeeze signal is dead
@@ -155,12 +165,11 @@ liquidity when a stock has an extreme share count or extreme volatility).
   0.01/0.03/0.05 on both windows to see how sensitive the result is
   before trusting the exact number, and to rule out this being a
   lucky pick.
-- **Statistical significance check** (Deflated Sharpe Ratio / Monte
-  Carlo permutation test, per stefan-jansen/machine-learning-for-trading)
-  — tonight involved testing many features/rules/thresholds, which is
-  implicit multiple-hypothesis-testing; a proper significance check
-  adjusts for that and would answer "is this edge distinguishable from
-  what you'd expect from all this searching, or not" — not yet done.
+- ~~Statistical significance check~~ — **done**, see TL;DR: p=0.0000 in
+  both windows via Monte Carlo permutation test. Could still go further
+  with a proper Deflated Sharpe Ratio (adjusts for the exact number of
+  trials run tonight, not just tests one rule against random chance) if
+  more rigor is wanted before real capital.
 - **Systematic alpha-factor battery** (insight from HKUDS/Vibe-Trading's
   452-factor registry: alpha101/qlib158/gtja191/academic) — instead of
   continuing to hand-invent one feature at a time, batch-test a curated

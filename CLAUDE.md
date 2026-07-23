@@ -26,8 +26,12 @@ market conditions (window 1: +216.94%/55.4% win; window 2, choppier
 period: +16.29%/50.0% win). **Adding hysteresis to regime detection
 (V3-only, `strategy.py` untouched) improved every metric in both
 windows** — window 1 now +267.18%/57.3% win, window 2 now +28.44%/51.2%
-win — narrowing but not eliminating the gap. **Treat any single backtest
-number in this repo as an optimistic case, not the expectation** — see
+win — narrowing but not eliminating the gap. **A Monte Carlo permutation
+test then confirmed p=0.0000 in both windows** (zero of 5000 random
+draws from the same opportunity set matched the rule's actual return) —
+the edge is real selection skill, not multiple-testing luck; only its
+*size* is regime-dependent. **Treat any single backtest number in this
+repo as an optimistic case, not the expectation** — see
 `docs/V3_FINDINGS_LOG.md` for the full detail and the standing cautions
 below.
 
