@@ -42,9 +42,36 @@ from supabase import create_client
 import config as cfg
 import data_fetch
 import risk
-from strategy import add_features, get_regime
+from strategy import add_features
 from phase0c_rrg_validation import fetch_sector_indices, fetch_sector_map, compute_rs_momentum
 from phase0d_multitimeframe_validation import attach_weekly_trend
+
+# strategy.get_regime flips BULLISH/BEARISH the instant close crosses ma50,
+# with zero buffer -- fine for V1 (untouched, never modified here), but a
+# real source of the window-2 OOS failure: near the MA50 line, small day-
+# to-day noise flips the regime back and forth, causing entries right
+# before a flip-back (SL exits jumped 42.5%->47.2% in the choppier
+# window). A Schmitt-trigger-style hysteresis band -- enter BULLISH only
+# HYSTERESIS_BAND above ma50, exit only HYSTERESIS_BAND below -- requires
+# a real, sustained move to flip state, not a single noisy tick. This is
+# V3-only; strategy.py is untouched.
+HYSTERESIS_BAND = 0.02
+
+
+def compute_regime_with_hysteresis(idx_df: pd.DataFrame) -> dict:
+    sub = idx_df.dropna(subset=["ma50"]).sort_values("trade_date")
+    regime_by_date = {}
+    current = "NEUTRAL"
+    for row in sub.itertuples():
+        upper = row.ma50 * (1 + HYSTERESIS_BAND)
+        lower = row.ma50 * (1 - HYSTERESIS_BAND)
+        if row.close > upper:
+            current = "BULLISH"
+        elif row.close < lower:
+            current = "BEARISH"
+        # else: inside the band -- hold the current state, no flip
+        regime_by_date[row.trade_date] = current
+    return regime_by_date
 
 FETCH_START = date.fromisoformat(os.environ.get("V3_FETCH_START", "2021-01-01"))
 TRAIN_END = date.fromisoformat(os.environ.get("V3_TRAIN_END", "2024-06-30"))
@@ -101,8 +128,8 @@ def main():
     df, idx_df = build_full_dataset(supabase)
 
     print("[REGIME] Precomputing regime per unique trading day ...")
-    regime_by_date = {d: get_regime(idx_df, d) for d in sorted(df["trade_date"].unique())}
-    df["_regime"] = df["trade_date"].map(regime_by_date)
+    regime_by_date = compute_regime_with_hysteresis(idx_df)
+    df["_regime"] = df["trade_date"].map(regime_by_date).fillna("NEUTRAL")
 
     # ---- Thresholds learned on TRAIN split only (never touches test data) ----
     train_liquid_bullish = df[
@@ -148,7 +175,7 @@ def main():
     last_sl_idx = {}
 
     for day_idx, trade_date in enumerate(trading_days):
-        regime = regime_by_date[trade_date]
+        regime = regime_by_date.get(trade_date, "NEUTRAL")
         prev_equity = equity_curve[-1]["total"] if equity_curve else float(INITIAL_CAPITAL)
 
         # ---- Execute pending entries at today's OPEN ----
