@@ -100,6 +100,19 @@ INITIAL_CAPITAL = 100_000_000
 LOT_SIZE = 100
 SL_PCT = 0.02
 MAX_POSITIONS = 6
+# Third OOS window (2023-01..2023-06) lost money because six positions
+# opened SIMULTANEOUSLY on 2023-02-06 -- MAX_POSITIONS filled entirely in
+# one day on a regime flip that turned out to be a false start, and all
+# six were stopped out together within days. Position sizing was never
+# the problem; nothing diversified ENTRY TIMING. Capping new entries per
+# day means a bad day can hurt at most MAX_NEW_ENTRIES_PER_DAY positions,
+# not the whole portfolio at once -- regardless of whether that day's
+# regime flip turns out to be real or fake, which isn't knowable in
+# advance. A stock that misses today's cap isn't lost -- if the setup is
+# real it will still qualify (and get re-evaluated, score-ranked) on a
+# later day; if it was a false-start flip, most won't still qualify once
+# the regime corrects, which is exactly the exposure being reduced.
+MAX_NEW_ENTRIES_PER_DAY = int(os.environ.get("V3_MAX_NEW_ENTRIES_PER_DAY", "2"))
 ALLOC_PCT = 0.20
 BACKTEST_VERSION = "v3-dev"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
@@ -224,10 +237,13 @@ def main():
         prev_equity = equity_curve[-1]["total"] if equity_curve else float(INITIAL_CAPITAL)
 
         # ---- Execute pending entries at today's OPEN ----
+        new_entries_today = 0
         for sig in pending_entries:
             if any(p["stock_code"] == sig["stock_code"] for p in positions):
                 continue
             if len(positions) >= MAX_POSITIONS:
+                break
+            if new_entries_today >= MAX_NEW_ENTRIES_PER_DAY:
                 break
             if risk.is_in_cooldown(sig["stock_code"], day_idx, last_sl_idx, cfg.COOLDOWN_DAYS):
                 continue
@@ -292,6 +308,7 @@ def main():
                 "no_data_days": 0, "last_valid_close": entry_price,
                 "checkpoint_day": checkpoint_day, "target_price": sig["tp_target"],
             })
+            new_entries_today += 1
         pending_entries = []
 
         # ---- Exit check (identical to backtest_v2.py, plus a forced exit
