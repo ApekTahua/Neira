@@ -49,6 +49,14 @@ design's *best* case (28-35% vs 23-29%). **Kept the volatility-relative
 design anyway — predictable-across-parameters beats
 spectacular-at-one-value.** Default `VOL_BAND_MULT=2.0`.
 
+**A THIRD OOS window (2023-01..2023-06) then returned -22.10% net
+profit, 17.9% win rate — a real loss, not just a weak win.** Traced to a
+specific cause: six positions opened simultaneously on a false-start
+regime flip (`MAX_POSITIONS=6` filled in one day), all stopped out
+together within days. Nothing currently diversifies entry timing.
+**NOT DEPLOYMENT-READY** — three windows now show one great result, one
+modest result, one that loses money with an identified, unfixed cause.
+
 **Treat any single backtest number in this repo as an optimistic case,
 not the expectation** — see `docs/V3_FINDINGS_LOG.md` for the full
 detail and the standing cautions below.
@@ -78,3 +86,17 @@ detail and the standing cautions below.
    new fixed-threshold parameter across multiple values AND windows
    before trusting it, and prefer a data-driven band (e.g. volatility-
    relative) over an arbitrary fixed percentage.
+7. Don't trust a "no effect" A/B result without checking whether the
+   feature could even fire — adaptive hold-time first looked like it
+   changed nothing in window 2 (byte-identical to baseline, zero
+   CHECKPOINT exits). That was a bug (expected_hold_days computed
+   against tp1_price collapsed to a fixed constant, TP1_MULT, that could
+   never reach the trigger threshold), not a real null result. A
+   suspiciously exact match to a baseline is a signal to check the
+   mechanism, not a result to report.
+8. Entry timing is currently undiversified — MAX_POSITIONS=6 can fill
+   entirely on one regime-flip day. If that flip is a false start, the
+   whole portfolio gets stopped out together (confirmed in the third OOS
+   window). Any future entry-rule change should consider whether it
+   makes this worse, and this needs an actual fix (stagger entries,
+   require flip confirmation) before real deployment.

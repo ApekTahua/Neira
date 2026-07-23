@@ -99,6 +99,16 @@ V2 HMM-gate plan — superseded, see below).
   kept at `VOL_BAND_MULT=2.0` (the standard "2-sigma" convention) since
   it's not clearly dominated by 1.0 or 3.0 in either window.
 
+  **A THIRD, genuinely different OOS window (2023-01..2023-06, not
+  overlapping windows 1 or 2) then returned -22.10% net profit, 17.9% win
+  rate, alpha -19.34% (underperforms the benchmark) — a real loss, not
+  just a weak win.** Traced to a specific, fixable structural gap (six
+  positions opening simultaneously on a false-start regime flip, all
+  stopped out together) — see "Third OOS window" section below for the
+  full trade-level audit. **This is not yet deployment-ready** — three
+  windows now show one great result, one modest result, and one that
+  loses money, and the losing one has an identified, un-fixed cause.
+
   Not deployed to production.
 
 ## The core finding: squeeze signal is dead
@@ -205,6 +215,47 @@ check for survivorship bias in the universe-selection query, and always
 sanity-check whether a liquidity/volume filter is actually filtering what
 you think it's filtering (Rupiah-value ADTV ≠ genuine institutional
 liquidity when a stock has an extreme share count or extreme volatility).
+
+## Third OOS window: a real, structural failure mode (not noise)
+
+Window 3 (train 2021-2022, test 2023-01-01..2023-06-30 -- a fresh
+6-month slice not overlapping windows 1 or 2 at all): **net -22.10%,
+alpha -19.34% (underperforms the benchmark), win rate 17.9%, profit
+factor 0.14, max drawdown -24.07%, only 28 trades, 100.0% concentration**
+(literally every winning trade is in the top 5; the other ~23 trades all
+lost).
+
+Traced the cause via trade-level audit (`w3_trades.csv`), not accepted
+at face value: on 2023-02-06, **six positions opened simultaneously**
+(GOTO, BUKA, EMTK, WIRG, ASSA, DMMX -- all legitimate large-caps,
+nothing wrong with stock selection) because `MAX_POSITIONS=6` filled
+entirely in one day on a regime flip. The rally that triggered
+"BULLISH" failed almost immediately -- **all six were stopped out within
+2-6 days.** The rest of the window repeats the pattern (re-entries,
+mostly losses); only two tickers (HOMI, TMAS) produced real gains across
+the whole 6 months.
+
+**This is a genuine, previously-unexamined structural gap: nothing
+diversifies ENTRY TIMING.** Position sizing (ALLOC_PCT/RISK_PCT/
+LIQ_CAP_PCT) is carefully managed per-position, but a false-start regime
+flip can commit the entire portfolio's risk budget on a single bad day,
+with zero protection from spreading entries over time. Windows 1 and 2
+didn't expose this because their regime flips happened to coincide with
+real, sustained moves (an actual crash to sit out, an actual rally to
+ride) -- window 3's flip was a fakeout, and the current design has no
+defense against that scenario.
+
+**Verdict on "is V3 ready to finalize": no, not as of this finding.**
+Three windows now show one great result, one modest result, and one
+genuinely bad one that loses money and underperforms the benchmark.
+That's not "edge exists but size varies" (the honest conclusion after
+two windows) -- it's "edge exists but a specific, identifiable risk
+(correlated entry timing on regime-flip days) can produce real losses,"
+which needs an actual fix (e.g. staggering entries over multiple days
+even when many signals fire at once, or requiring some confirmation
+period after a regime flip before deploying full position count) before
+this should be treated as deployment-ready, not just disclosed as a
+caveat.
 
 ## Known open items / next steps
 
