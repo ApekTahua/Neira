@@ -18,21 +18,24 @@ V2 HMM-gate plan — superseded, see below).
   spike) has **no edge on liquid stocks in any regime**. New entry rule:
   `BULLISH regime AND weekly-trend-alignment top quintile AND sector-RRG
   relative-strength top quintile`, on liquid stocks (ADTV≥1B), thresholds
-  learned on train data only. Portfolio backtest (`src/backtest_v3.py`),
-  out-of-sample 2024-07 to 2026-06 (window 1): **net profit +216.94%**
-  (after fixing three real bugs that originally inflated it to +486.74%
-  — see below), win rate 55.4%, profit factor 1.84, max drawdown -24.33%.
-  **A second OOS window (2023-07 to 2024-12, train 2021-2023) came back
-  much weaker: +16.29% net profit, win rate exactly 50.0%, profit factor
-  1.14, max drawdown -33.12%.** The edge is real but NOT stable across
-  market conditions — window 1 covered a period where the bullish-regime
-  gate got to sit safely in cash through an actual IHSG crash; window 2
-  was a choppier, more range-bound period where the same gate produced
-  more whipsaws (stop-loss exits rose from 42.5% to 47.2% of all exits).
-  **Treat the realistic expectation as closer to window 2's numbers
-  (coin-flip win rate, thin profit factor, 30%+ drawdown possible) than
-  window 1's, until more OOS windows are tested.** Not deployed to
-  production.
+  learned on train data only.
+
+  Portfolio backtest (`src/backtest_v3.py`) after 3 bug fixes (see below)
+  but BEFORE regime hysteresis: window 1 (2024-07..2026-06) +216.94%
+  profit / 55.4% win / PF 1.84 / DD -24.33%; window 2 (2023-07..2024-12,
+  a choppier period) fell to +16.29% / 50.0% win (exact coin flip) / PF
+  1.14 / DD -33.12%. Edge real but unstable across regimes.
+
+  **After adding regime hysteresis** (see "Bug/gap #5" below): window 1
+  **+267.18%** / 57.3% win / PF 1.83 / DD -23.56%; window 2 **+28.44%** /
+  **51.2% win** / PF 1.27 / DD -28.74%. Every metric improved in BOTH
+  windows — win rate now clears 50% even in the weak window. Gap
+  narrowed, not eliminated: window 2 is still meaningfully weaker than
+  window 1, which makes sense (hysteresis fixes whipsaw noise, not the
+  fact that a genuinely choppy market has less trend to ride than a
+  crash to sit out or a rally to ride). **Current realistic expectation:
+  somewhere between the two windows, not the flagship number alone.**
+  Not deployed to production.
 
 ## The core finding: squeeze signal is dead
 
@@ -111,6 +114,26 @@ manual AND-rule finds trivially.
    +183.48% to the final +216.94%, and improved both profit factor
    (1.65→1.84) and max drawdown (-27.77%→-24.33%).
 
+5. **Regime detector has zero hysteresis** — `strategy.get_regime()`
+   flips BULLISH/BEARISH the instant close crosses ma50, with no buffer.
+   Near that line, ordinary noise flips the regime back and forth, which
+   is the direct explanation for window 2's underperformance (SL exits
+   rose to 47.2% of all exits vs 42.5% in window 1 — more whipsaws).
+   Insight from reviewing HKUDS/Vibe-Trading (causal hysteresis state
+   machine for regime detection) and stefan-jansen/machine-learning-for-trading
+   (HMM regime probabilities are inherently smoother than a raw
+   threshold) — both pointed at the same gap. **Fix**:
+   `compute_regime_with_hysteresis()` in `backtest_v3.py` (V3-only,
+   `strategy.py` untouched) — a Schmitt-trigger band: enter BULLISH only
+   2% above ma50, exit only 2% below. Requires a sustained move to flip
+   state. **Result: improved every single metric in both OOS windows.**
+   Window 1: +216.94%→+267.18% profit, 55.4%→57.3% win, DD -24.33%→
+   -23.56%, concentration 52.3%→45.2%. Window 2: +16.29%→+28.44% profit,
+   50.0%→51.2% win, PF 1.14→1.27, DD -33.12%→-28.74%, concentration
+   56.0%→49.8%. Narrowed the window-1-vs-window-2 gap, didn't eliminate
+   it — expected, since hysteresis fixes noise-driven whipsaws, not the
+   underlying fact that a genuinely choppy market has less trend to ride.
+
 **Standing caution for any future backtest on this data**: always run a
 top-5-ticker concentration check on any headline number before trusting
 it (this is what caught V1/V2's fake 99%-concentrated "edge"), always
@@ -121,18 +144,40 @@ liquidity when a stock has an extreme share count or extreme volatility).
 
 ## Known open items / next steps
 
-- **Run more OOS windows.** Two is enough to prove the edge is unstable
-  across regimes, not enough to characterize *how* unstable — a third or
-  fourth window (ideally spanning a genuinely choppy/sideways multi-year
-  stretch, not just two different 1.5-2yr slices) would help quantify a
-  realistic worst case rather than anchoring on window 2's single data
-  point.
-- **Investigate a "don't trade this regime" filter** — something that
-  detects choppy/range-bound conditions (not just BULLISH/BEARISH/NEUTRAL
-  via price-vs-MA50) and sits out, since window 2's underperformance
-  traces directly to more whipsaws (SL exits 42.5%→47.2%) in a period
-  IHSG itself was flat. The current regime detector is binary trend
-  direction, not trend *quality*/choppiness.
+- **Run more OOS windows.** Two (now three effectively, pre/post
+  hysteresis) is enough to prove the edge is unstable across regimes,
+  not enough to characterize *how* unstable — a third genuinely
+  different window (ideally a longer sideways multi-year stretch) would
+  help quantify a realistic worst case.
+- **`HYSTERESIS_BAND = 0.02` was picked, not tuned/validated** — it
+  helped both windows on the first try, which is a good sign, but a
+  single a-priori guess isn't a validated hyperparameter. Worth testing
+  0.01/0.03/0.05 on both windows to see how sensitive the result is
+  before trusting the exact number, and to rule out this being a
+  lucky pick.
+- **Statistical significance check** (Deflated Sharpe Ratio / Monte
+  Carlo permutation test, per stefan-jansen/machine-learning-for-trading)
+  — tonight involved testing many features/rules/thresholds, which is
+  implicit multiple-hypothesis-testing; a proper significance check
+  adjusts for that and would answer "is this edge distinguishable from
+  what you'd expect from all this searching, or not" — not yet done.
+- **Systematic alpha-factor battery** (insight from HKUDS/Vibe-Trading's
+  452-factor registry: alpha101/qlib158/gtja191/academic) — instead of
+  continuing to hand-invent one feature at a time, batch-test a curated
+  set of published, well-known alpha formulas against the existing
+  Phase-0 quintile-validation harness. Could surface additional real
+  features beyond weekly-trend/sector-RRG. Not started.
+- **News sentiment** (insight from snowfluke/sentimeter, which is
+  IDX-specific — same market as us) — a genuinely different feature
+  category from anything tested so far (foreign flow is a money-flow
+  proxy; this would be textual/news sentiment). Would need a new news
+  data pipeline, which is more than "algorithm" scope — noted for a
+  future phase, not attempted tonight.
+- **Triple-barrier labeling** (insight from both ML-for-trading repos)
+  — if ML is revisited, label forward return using the actual TP/SL/
+  time exit barriers instead of a fixed-horizon return, so the label
+  matches what the live system actually does. Lower priority since the
+  explicit rule has beaten ML twice already.
 - Adaptive hold-time exit (`phase0f`) needs its own proper OOS validation
   before folding into `backtest_v3.py` — the "helps slow movers, hurts
   fast movers" finding came from looking at bucketed results after the

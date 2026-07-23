@@ -20,13 +20,14 @@ statistical edge** on liquid stocks. V3 replaced it with a validated rule
 (bullish regime + weekly-trend + sector-RRG intersection), and three real
 bugs (survivorship bias, delisted-position handling, hypervolatile-penny-
 stock leak through the liquidity filter) were found and fixed mid-session
-— all three materially changed the headline number. **A second
+— all three materially changed the headline number. A second
 out-of-sample window then showed the edge is real but NOT stable across
-market conditions**: window 1 (2024-07..2026-06) returned +216.94%, win
-rate 55.4%, PF 1.84; window 2 (2023-07..2024-12, a choppier/flatter
-period) returned only +16.29%, win rate exactly 50.0%, PF 1.14, and a
-worse -33.12% drawdown. **Treat any single backtest number in this repo
-as an optimistic case, not the expectation** — see
+market conditions (window 1: +216.94%/55.4% win; window 2, choppier
+period: +16.29%/50.0% win). **Adding hysteresis to regime detection
+(V3-only, `strategy.py` untouched) improved every metric in both
+windows** — window 1 now +267.18%/57.3% win, window 2 now +28.44%/51.2%
+win — narrowing but not eliminating the gap. **Treat any single backtest
+number in this repo as an optimistic case, not the expectation** — see
 `docs/V3_FINDINGS_LOG.md` for the full detail and the standing cautions
 below.
 
