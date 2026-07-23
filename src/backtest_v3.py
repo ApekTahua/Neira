@@ -119,6 +119,18 @@ ATR_PRICE_RATIO_MAX = 0.10  # exclude entries where ATR_14/close > 10% -- PIPA/F
 # is why it's gated on expected_hold_days >= HOLDTIME_MIN_DAYS rather
 # than applied to every position. Off by default (ADAPTIVE_HOLDTIME=0)
 # so it can be A/B'd against the validated baseline before being trusted.
+#
+# IMPORTANT: this MUST use tp_target (the SMC swing-high target from
+# strategy.add_features, a real market-structure level) as "target", NOT
+# tp1_price (entry + ATR*TP1_MULT). An earlier version of this code used
+# tp1_price -- but since tp1_price is BY DEFINITION entry + ATR*TP1_MULT,
+# |tp1_price-entry|/ATR collapses to exactly TP1_MULT (a fixed constant,
+# 1.5 in config.py) for every single position. That made expected_hold_days
+# a constant that could never reach HOLDTIME_MIN_DAYS=5, so the checkpoint
+# could never fire -- caught via a suspiciously-exact match to the
+# no-hold-time baseline (zero CHECKPOINT exits) before being reported as
+# "tested." tp_target is a genuinely variable, stock/day-specific distance
+# unrelated to ATR by construction, matching what phase0f actually tested.
 ADAPTIVE_HOLDTIME = os.environ.get("V3_ADAPTIVE_HOLDTIME", "0") == "1"
 HOLDTIME_MIN_DAYS = 5       # only gate positions whose own math says "slow"
 HOLDTIME_CAP_DAYS = 15      # matches phase0f's CHECKPOINT_CAP_DAYS
@@ -244,7 +256,7 @@ def main():
                 sl_price = entry_price - atr_val * 1.5
                 tp1_price = max(tp1_price, entry_price * 1.01)
                 sl_price = min(sl_price, entry_price * 0.99)
-                expected_hold_days = abs(tp1_price - entry_price) / atr_val
+                expected_hold_days = abs(sig["tp_target"] - entry_price) / atr_val
 
             alloc = min(prev_equity * ALLOC_PCT, cash)
             cost_per_share = entry_price * (1 + cfg.BUY_FEE)
@@ -278,7 +290,7 @@ def main():
                 "quantity": quantity, "cost_basis": cost_basis, "hold_days": 0, "tp1_hit": False,
                 "highest_price": entry_price, "trigger": sig["trigger"],
                 "no_data_days": 0, "last_valid_close": entry_price,
-                "checkpoint_day": checkpoint_day,
+                "checkpoint_day": checkpoint_day, "target_price": sig["tp_target"],
             })
         pending_entries = []
 
@@ -334,7 +346,7 @@ def main():
                     exit_reason, exit_price = "TP1", (o if (o is not None and o > pos["tp1_price"]) else pos["tp1_price"])
                     sell_lots = max(1, int(pos["remaining_lots"] * cfg.TP1_PCT))
                 elif pos["checkpoint_day"] is not None and pos["hold_days"] == pos["checkpoint_day"]:
-                    dist_to_target = pos["tp1_price"] - pos["avg_price"]
+                    dist_to_target = pos["target_price"] - pos["avg_price"]
                     progress = (close_price - pos["avg_price"]) / dist_to_target if dist_to_target > 0 else 1.0
                     if progress < HOLDTIME_PROGRESS_THRESHOLD:
                         exit_reason, exit_price = "CHECKPOINT", close_price
@@ -407,6 +419,7 @@ def main():
                     pending_entries.append({
                         "stock_code": sig["stock_code"], "signal_close": float(sig["close_price"]),
                         "atr": sig["atr_14"], "avg_vol_20": float(sig["avg_vol_20"]), "trigger": "V3_regime_weekly_sector",
+                        "tp_target": float(sig["tp_target"]),
                     })
 
         pos_market_value = 0.0
