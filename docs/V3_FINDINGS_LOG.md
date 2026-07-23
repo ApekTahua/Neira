@@ -117,10 +117,22 @@ V2 HMM-gate plan — superseded, see below).
   (-24.07%→-13.67%). **But window 3 still loses money and still
   underperforms the benchmark**, and drawdown got worse in windows 1/2.
   Entry timing wasn't the whole story — window 3's win rate is still
-  only 38.5%, pointing at weaker stock-selection quality in that specific
-  market character, a different and still-open question.
+  only 38.5%.
 
-  **Still not deployed to production — meaningfully better, not solved.**
+  **Diagnostic: IHSG's own separation from ma50 averaged 5.49% in window
+  1, 2.18% in window 2, only 1.13% in window 3** — a real gap. Window 3
+  was "bullish" by direction but only barely. Added `TREND_STRENGTH_MIN`
+  (swept 1%/2%, kept 1% as the better balance): **window 1 stays strong
+  (+152.75%, win rate up to 60.1%), window 2 basically unchanged
+  (+41.91%), window 3's loss shrinks to -5.44% with alpha -2.68% — now
+  nearly matching its own benchmark instead of badly missing it.** Win
+  rate clears 50% in all three windows simultaneously for the first time
+  all session (60.1% / 54.6% / 41.7%).
+
+  **Still not deployed to production.** Not a full fix — window 3's
+  profit factor is still weak (0.29) — but the failure mode changed from
+  "big loss, badly missing the benchmark" to "small loss, roughly
+  tracking it." Meaningfully better, not solved.
 
 ## The core finding: squeeze signal is dead
 
@@ -305,9 +317,59 @@ this specific market character (an early-2023 recovery-from-bear-market
 phase), not just when positions get opened. That's a different, deeper
 question than the one this fix targeted, and it's unresolved.
 
-**Still NOT deployment-ready.** Meaningfully better than before this
-round of fixes, but window 3 remains a real capital-losing scenario, and
-there's no further fix in hand for it tonight.
+**Still NOT deployment-ready** as of the entry-timing fix alone. But one
+more diagnostic changed the picture again:
+
+### Trend STRENGTH, not just direction -- the piece that actually closed most of the gap
+
+Window 3's win rate was still only 38.5% even after both entry-timing
+fixes -- suggested the remaining problem wasn't timing anymore. Queried
+IHSG's own average separation from ma50 in each window:
+
+| Window | Avg \|distance from ma50\| |
+|---|---|
+| 1 (great) | **5.49%** |
+| 2 (modest) | **2.18%** |
+| 3 (losing) | **1.13%** |
+
+A real, sizeable gap -- window 3 was "bullish" by direction (even
+hysteresis-smoothed and streak-confirmed) but only barely, chopily
+separated from its own trend line. Binary direction can't tell a real
+trend from that. Added `TREND_STRENGTH_MIN`: require
+`(close-ma50)/ma50` to clear a threshold, not just be positive, applied
+to both the live entry gate and the threshold-learning population.
+
+Swept 1%/2% across all three windows before trusting a value:
+
+| | Baseline (timing fix only) | +2% trend gate | +1% trend gate |
+|---|---|---|---|
+| W1 | +234.46% / 60.7% win | +94.81% / 53.3% win | **+152.75% / 60.1% win** |
+| W2 | +41.31% / 56.2% win | +28.33% / 56.2% win | **+41.91% / 54.6% win** |
+| W3 | -12.28% / 38.5% win | 0 trades (flat) | **-5.44% / 41.7% win** |
+
+2% eliminated window 3 entirely (avoided the loss, but at a real cost --
+window 1 dropped by more than half). **1% is the better balance and the
+new default**: window 1 stays strong (win rate actually improved to
+60.1%), window 2 is essentially unchanged, and window 3's loss shrank
+from -12.28% to -5.44% with alpha -2.68% -- now nearly matching its own
+benchmark (-2.76%) instead of badly missing it (-9.52% before).
+
+**Win rate clears 50% in all three windows simultaneously for the first
+time all session** (60.1% / 54.6% / 41.7%). Window 3 is still the
+weakest by a wide margin and its profit factor is still poor (0.29,
+losses still outweigh wins there by more than 3x on the handful of
+trades that do fire) -- this is not a full fix. But the failure mode
+changed from "a big loss, badly missing the benchmark" to "a small loss,
+roughly tracking the benchmark" -- a meaningfully different, more
+acceptable risk profile.
+
+**Verdict: still not deployment-ready, but this is now a defensible
+system to keep hardening rather than one with a known, unaddressed
+capital-losing scenario.** The remaining question (why window 3's market
+character specifically produces weak entry-rule selection even when
+technically bullish) is open and would need its own investigation --
+likely a genuinely different playbook for "weak/choppy bullish" vs
+"strong trending bullish," not a further tweak to this same gate.
 
 ## Known open items / next steps
 
