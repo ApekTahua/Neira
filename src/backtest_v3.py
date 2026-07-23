@@ -162,7 +162,8 @@ REGIME_CONFIRM_DAYS = int(os.environ.get("V3_REGIME_CONFIRM_DAYS", "3"))
 # THREE windows simultaneously for the first time all session.
 TREND_STRENGTH_MIN = float(os.environ.get("V3_TREND_STRENGTH_MIN", "0.01"))
 ALLOC_PCT = 0.20
-BACKTEST_VERSION = "v3-dev"
+BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
+BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
 ATR_PRICE_RATIO_MAX = 0.10  # exclude entries where ATR_14/close > 10% -- PIPA/FUTR/ISAP-style
                             # hyperactive penny stocks slip through the Rupiah-value ADTV filter
@@ -218,6 +219,54 @@ def build_full_dataset(supabase):
     df = attach_weekly_trend(df)
 
     return df.sort_values(["stock_code", "trade_date"]).reset_index(drop=True), idx_df
+
+
+def _save_to_supabase(supabase, df_trades: pd.DataFrame, df_equity: pd.DataFrame,
+                       regime_by_date: dict, metrics: dict) -> None:
+    """Save summary + trades + equity curve to Supabase for the website,
+    same schema/pattern as backtest.py (V1) and backtest_v2.py."""
+    try:
+        run_res = supabase.table("backtest_runs").insert({
+            "version": BACKTEST_VERSION,
+            "period_start": metrics["period_start"].isoformat(),
+            "period_end": metrics["period_end"].isoformat(),
+            "initial_capital": metrics["initial_capital"],
+            "final_capital": metrics["final_capital"],
+            "net_profit_pct": metrics["total_return_pct"],
+            "benchmark_pct": metrics["bench_ret"],
+            "alpha_pct": metrics["total_return_pct"] - metrics["bench_ret"],
+            "total_trades": metrics["total_trades"],
+            "win_rate": metrics["win_rate"],
+            "profit_factor": None if metrics["profit_factor"] == float("inf") else metrics["profit_factor"],
+            "max_drawdown": metrics["max_drawdown"],
+            "notes": metrics["notes"],
+            "strategy_summary": metrics["notes"],
+            "is_published": BACKTEST_PUBLISH,
+        }).execute()
+        run_id = run_res.data[0]["id"]
+
+        trade_rows = [{
+            "run_id": run_id, "stock_code": tr["stock_code"],
+            "entry_date": tr["entry_date"].isoformat(), "exit_date": tr["exit_date"].isoformat(),
+            "entry_price": float(tr["entry_price"]), "exit_price": float(tr["exit_price"]),
+            "lots": int(tr["lots"]), "pnl": float(tr["pnl"]), "pnl_pct": float(tr["pnl_pct"]),
+            "exit_reason": tr["exit_reason"], "trigger": tr.get("trigger"),
+            "hold_days": int(tr["hold_days"]) if pd.notna(tr.get("hold_days")) else None,
+        } for _, tr in df_trades.iterrows()]
+        equity_rows = [{
+            "run_id": run_id, "date": row["date"].isoformat(), "portfolio_value": float(row["total"]),
+            "drawdown_pct": float(row["drawdown"]), "regime": regime_by_date.get(row["date"], "NEUTRAL"),
+        } for _, row in df_equity.iterrows()]
+
+        for i in range(0, len(trade_rows), 500):
+            supabase.table("backtest_trades").insert(trade_rows[i:i + 500]).execute()
+        for i in range(0, len(equity_rows), 500):
+            supabase.table("backtest_equity").insert(equity_rows[i:i + 500]).execute()
+
+        print(f"\n[OK] Saved to Supabase: backtest_runs id={run_id} "
+              f"(version={BACKTEST_VERSION}, published={BACKTEST_PUBLISH})")
+    except Exception as e:
+        print(f"WARNING: Failed to save to Supabase: {e}")
 
 
 def main():
@@ -584,6 +633,32 @@ def main():
     df_trades.to_csv("backtest_v3_trades.csv", index=False)
     df_equity.to_csv("backtest_v3_equity.csv", index=False)
     print(f"\n[OK] Saved backtest_v3_trades.csv ({len(df_trades)} rows), backtest_v3_equity.csv ({len(df_equity)} rows).")
+
+    notes = (
+        f"V3: BULLISH regime (volatility-relative hysteresis band, {VOL_BAND_MULT}x trailing 20d vol) "
+        f"+ weekly-trend-alignment top-quintile + sector-RRG relative-strength top-quintile, on liquid "
+        f"stocks (ADTV>=Rp{cfg.ADTV_MIN:,.0f}). Entry-timing guards: max {MAX_NEW_ENTRIES_PER_DAY} new "
+        f"positions/day, regime must hold {REGIME_CONFIRM_DAYS} consecutive days, and IHSG must have "
+        f"separated from its own ma50 by >={TREND_STRENGTH_MIN*100:.0f}% (not just direction) before any "
+        f"entry -- all three added after a 2023 H1 out-of-sample window showed correlated same-day entries "
+        f"on a false-start regime flip could lose money. ATR/price <= {ATR_PRICE_RATIO_MAX*100:.0f}% caps "
+        f"entries on hypervolatile penny stocks. Thresholds learned on {FETCH_START}..{TRAIN_END} only, "
+        f"this run's metrics are the held-out test window, never seen during threshold-fitting. "
+        f"Replaces V1/V2's squeeze+volume-spike signal, which was proven to have no statistical edge on "
+        f"liquid stocks in any regime (Monte Carlo permutation test vs the same opportunity set: p=0.0000 "
+        f"for this rule, confirming real selection skill). Caveat: a separate out-of-sample window covering "
+        f"a weak/choppy-bullish market character (2023 H1) still showed a smaller loss and a below-50% win "
+        f"rate even after these fixes -- edge size is regime-dependent, not yet a fully solved failure mode."
+    )
+    metrics = {
+        "period_start": trading_days[0], "period_end": trading_days[-1],
+        "initial_capital": INITIAL_CAPITAL, "final_capital": final_capital,
+        "total_return_pct": total_return_pct, "bench_ret": bench_ret,
+        "total_trades": total_trades, "win_rate": win_rate,
+        "profit_factor": profit_factor, "max_drawdown": max_drawdown,
+        "notes": notes,
+    }
+    _save_to_supabase(supabase, df_trades, df_equity, regime_by_date, metrics)
 
 
 if __name__ == "__main__":
