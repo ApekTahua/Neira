@@ -109,6 +109,22 @@ ATR_PRICE_RATIO_MAX = 0.10  # exclude entries where ATR_14/close > 10% -- PIPA/F
                             # this caps signal-day volatility directly, price-agnostic (GOTO/BUKA
                             # stay eligible despite low price since their ATR% is normal, ~4%).
 
+# Adaptive hold-time checkpoint exit (phase0f_holdtime_exit_backtest.py):
+# expected_hold_days = |target - entry| / ATR estimates how long this
+# setup should take to resolve if the move happens at all. Phase 0f found
+# checking progress at that day and exiting early if it's not developing
+# helps trades with expected_hold_days >= 5 (the setup is "slow" by its
+# own math) but HURTS trades expected to resolve fast (<5d) -- checking
+# in on a sprint at the pace of a marathon just cuts winners short. This
+# is why it's gated on expected_hold_days >= HOLDTIME_MIN_DAYS rather
+# than applied to every position. Off by default (ADAPTIVE_HOLDTIME=0)
+# so it can be A/B'd against the validated baseline before being trusted.
+ADAPTIVE_HOLDTIME = os.environ.get("V3_ADAPTIVE_HOLDTIME", "0") == "1"
+HOLDTIME_MIN_DAYS = 5       # only gate positions whose own math says "slow"
+HOLDTIME_CAP_DAYS = 15      # matches phase0f's CHECKPOINT_CAP_DAYS
+HOLDTIME_MIN_CHECKPOINT = 3  # matches phase0f's MIN_CHECKPOINT_DAYS
+HOLDTIME_PROGRESS_THRESHOLD = 0.40  # matches phase0f's PROGRESS_THRESHOLD
+
 
 def build_full_dataset(supabase):
     print("[FETCH] Downloading stock + index data ...")
@@ -222,11 +238,13 @@ def main():
             if pd.isna(atr_val) or atr_val <= 0:
                 tp1_price = entry_price * 1.02
                 sl_price = entry_price * (1 - SL_PCT)
+                expected_hold_days = None  # unreliable ATR -- don't gate a checkpoint on it
             else:
                 tp1_price = entry_price + atr_val * cfg.TP1_MULT
                 sl_price = entry_price - atr_val * 1.5
                 tp1_price = max(tp1_price, entry_price * 1.01)
                 sl_price = min(sl_price, entry_price * 0.99)
+                expected_hold_days = abs(tp1_price - entry_price) / atr_val
 
             alloc = min(prev_equity * ALLOC_PCT, cash)
             cost_per_share = entry_price * (1 + cfg.BUY_FEE)
@@ -249,6 +267,10 @@ def main():
                 quantity = lots * LOT_SIZE
                 cost_basis = quantity * cost_per_share
 
+            checkpoint_day = None
+            if ADAPTIVE_HOLDTIME and expected_hold_days is not None and expected_hold_days >= HOLDTIME_MIN_DAYS:
+                checkpoint_day = int(np.clip(round(expected_hold_days), HOLDTIME_MIN_CHECKPOINT, HOLDTIME_CAP_DAYS))
+
             cash -= cost_basis
             positions.append({
                 "stock_code": sig["stock_code"], "entry_date": trade_date, "avg_price": entry_price,
@@ -256,6 +278,7 @@ def main():
                 "quantity": quantity, "cost_basis": cost_basis, "hold_days": 0, "tp1_hit": False,
                 "highest_price": entry_price, "trigger": sig["trigger"],
                 "no_data_days": 0, "last_valid_close": entry_price,
+                "checkpoint_day": checkpoint_day,
             })
         pending_entries = []
 
@@ -310,6 +333,12 @@ def main():
                 elif hold_ok and high_price >= pos["tp1_price"]:
                     exit_reason, exit_price = "TP1", (o if (o is not None and o > pos["tp1_price"]) else pos["tp1_price"])
                     sell_lots = max(1, int(pos["remaining_lots"] * cfg.TP1_PCT))
+                elif pos["checkpoint_day"] is not None and pos["hold_days"] == pos["checkpoint_day"]:
+                    dist_to_target = pos["tp1_price"] - pos["avg_price"]
+                    progress = (close_price - pos["avg_price"]) / dist_to_target if dist_to_target > 0 else 1.0
+                    if progress < HOLDTIME_PROGRESS_THRESHOLD:
+                        exit_reason, exit_price = "CHECKPOINT", close_price
+                        sell_lots = pos["remaining_lots"]
                 elif pos["hold_days"] >= cfg.MAX_HOLD_DAYS - 1:
                     pnl_check = (close_price / pos["avg_price"] - 1) * 100
                     if not (pnl_check > 0 and regime == "BULLISH"):
