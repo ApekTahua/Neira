@@ -107,9 +107,20 @@ V2 HMM-gate plan — superseded, see below).
   stopped out together) — see "Third OOS window" section below for the
   full trade-level audit. **This is not yet deployment-ready** — three
   windows now show one great result, one modest result, and one that
-  loses money, and the losing one has an identified, un-fixed cause.
+  loses money, and the losing one has an identified cause.
 
-  Not deployed to production.
+  **Two fixes attempted** (`MAX_NEW_ENTRIES_PER_DAY=2`, then
+  `REGIME_CONFIRM_DAYS=3` requiring the regime to hold 3 days before
+  trusting it with entries): win rate and profit factor improved in
+  **all three windows** (a real, consistent quality gain), and window
+  3's loss roughly halved (-22.10%→-12.28%) with much better drawdown
+  (-24.07%→-13.67%). **But window 3 still loses money and still
+  underperforms the benchmark**, and drawdown got worse in windows 1/2.
+  Entry timing wasn't the whole story — window 3's win rate is still
+  only 38.5%, pointing at weaker stock-selection quality in that specific
+  market character, a different and still-open question.
+
+  **Still not deployed to production — meaningfully better, not solved.**
 
 ## The core finding: squeeze signal is dead
 
@@ -251,11 +262,52 @@ genuinely bad one that loses money and underperforms the benchmark.
 That's not "edge exists but size varies" (the honest conclusion after
 two windows) -- it's "edge exists but a specific, identifiable risk
 (correlated entry timing on regime-flip days) can produce real losses,"
-which needs an actual fix (e.g. staggering entries over multiple days
-even when many signals fire at once, or requiring some confirmation
-period after a regime flip before deploying full position count) before
-this should be treated as deployment-ready, not just disclosed as a
-caveat.
+which needs an actual fix before this should be treated as
+deployment-ready, not just disclosed as a caveat.
+
+### The fix, attempted in two steps -- second one is real, neither is complete
+
+**Attempt 1: `MAX_NEW_ENTRIES_PER_DAY=2`** (cap new positions per calendar
+day, regardless of how many signals qualify). Tested against window 3:
+barely moved the needle (-22.10% -> -21.11%). Audited why before
+concluding anything: the false regime read persisted for *multiple
+consecutive days* (2023-02-06 through 02-08), so entries just spread
+across 3 days instead of 1, still all riding the same wrong thesis.
+Interestingly, this cap ALONE had a large effect on windows 1 and 2 even
+though it barely touched window 3 -- window 2 jumped +26.44%->+98.93%
+(PF 1.27->1.92), window 1 dropped +267.18%->+132.13% (DD -23.56%->
+-31.71%). Kept as defense-in-depth, not sufficient alone.
+
+**Attempt 2: `REGIME_CONFIRM_DAYS=3`** -- require the hysteresis-smoothed
+regime to have read BULLISH for 3 consecutive trading days before
+allowing ANY new entries, not just capping how many. Applied to both the
+live entry gate and the threshold-learning population (train/live
+consistency). Tested against all three windows, combined with the
+per-day cap:
+
+| Window | Before either fix | After both fixes |
+|---|---|---|
+| 1 | +267.18% / 57.3% win / PF 1.83 / DD -23.56% | +234.46% / **60.7%** win / PF **1.94** / DD -30.04% |
+| 2 | +28.44% / 51.2% win / PF 1.27 / DD -28.74% | +41.31% / **56.2%** win / PF **1.40** / DD -37.29% |
+| 3 | -22.10% / 17.9% win / PF 0.14 / DD -24.07% | **-12.28%** / **38.5%** win / PF **0.39** / DD **-13.67%** |
+
+**Honest read: real, consistent improvement, not a full fix.** Win rate
+and profit factor improved in ALL THREE windows -- not cherry-picked,
+a genuine quality improvement from not deploying capital into unconfirmed
+regime flips. Window 3's loss roughly halved and its drawdown improved
+substantially. But **window 3 still loses money and still underperforms
+the benchmark** (alpha -9.52%), and drawdown got WORSE in windows 1 and 2
+(fewer, more selective trades means less smoothing when a loss does
+land). This suggests the remaining problem in window 3 may not be purely
+about entry TIMING anymore -- win rate is still 38.5%, well under 50%,
+which points at the entry RULE's stock-selection quality being weaker in
+this specific market character (an early-2023 recovery-from-bear-market
+phase), not just when positions get opened. That's a different, deeper
+question than the one this fix targeted, and it's unresolved.
+
+**Still NOT deployment-ready.** Meaningfully better than before this
+round of fixes, but window 3 remains a real capital-losing scenario, and
+there's no further fix in hand for it tonight.
 
 ## Known open items / next steps
 
