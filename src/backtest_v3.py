@@ -55,7 +55,7 @@ from phase0d_multitimeframe_validation import attach_weekly_trend
 # HYSTERESIS_BAND above ma50, exit only HYSTERESIS_BAND below -- requires
 # a real, sustained move to flip state, not a single noisy tick. This is
 # V3-only; strategy.py is untouched.
-HYSTERESIS_BAND = 0.02
+HYSTERESIS_BAND = float(os.environ.get("V3_HYSTERESIS_BAND", "0.02"))
 
 
 def compute_regime_with_hysteresis(idx_df: pd.DataFrame) -> dict:
