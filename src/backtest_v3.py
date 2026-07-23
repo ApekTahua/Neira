@@ -52,19 +52,36 @@ from phase0d_multitimeframe_validation import attach_weekly_trend
 # to-day noise flips the regime back and forth, causing entries right
 # before a flip-back (SL exits jumped 42.5%->47.2% in the choppier
 # window). A Schmitt-trigger-style hysteresis band -- enter BULLISH only
-# HYSTERESIS_BAND above ma50, exit only HYSTERESIS_BAND below -- requires
-# a real, sustained move to flip state, not a single noisy tick. This is
-# V3-only; strategy.py is untouched.
-HYSTERESIS_BAND = float(os.environ.get("V3_HYSTERESIS_BAND", "0.02"))
+# above ma50, exit only below -- requires a real, sustained move to flip
+# state, not a single noisy tick.
+#
+# A FIXED-PERCENTAGE band (tried first: 2%) turned out to be the wrong
+# design -- a sensitivity sweep (0.01/0.02/0.03/0.05) showed window 1
+# swinging 61%->501% profit across nearby values with no clean trend,
+# and window 2 breaking down entirely at 5% (50 trades, 82% concentration).
+# The likely reason: a fixed % of ma50 means something different in a
+# calm period than a volatile one -- too tight to matter when IHSG is
+# swinging hard, too wide relative to actual noise when it's calm.
+#
+# VOL_BAND_MULT scales the band by IHSG's own trailing 20-day return
+# volatility instead of a flat percentage -- the band widens
+# automatically in volatile periods and narrows in calm ones, which is
+# what a fixed percentage cannot do. This is V3-only; strategy.py is
+# untouched.
+VOL_BAND_MULT = float(os.environ.get("V3_VOL_BAND_MULT", "2.0"))
 
 
 def compute_regime_with_hysteresis(idx_df: pd.DataFrame) -> dict:
-    sub = idx_df.dropna(subset=["ma50"]).sort_values("trade_date")
+    sub = idx_df.dropna(subset=["ma50"]).sort_values("trade_date").copy()
+    daily_ret = sub["close"].pct_change()
+    vol_20 = daily_ret.rolling(20, min_periods=20).std()
+    sub["band"] = (VOL_BAND_MULT * vol_20).fillna(vol_20.median())
+
     regime_by_date = {}
     current = "NEUTRAL"
     for row in sub.itertuples():
-        upper = row.ma50 * (1 + HYSTERESIS_BAND)
-        lower = row.ma50 * (1 - HYSTERESIS_BAND)
+        upper = row.ma50 * (1 + row.band)
+        lower = row.ma50 * (1 - row.band)
         if row.close > upper:
             current = "BULLISH"
         elif row.close < lower:
