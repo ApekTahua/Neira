@@ -42,8 +42,12 @@ parameters beats spectacular-at-one-value.
 
 **A THIRD OOS window (2023-01..2023-06) then returned -22.10% net
 profit, 17.9% win rate — a real loss, traced to six positions opening
-simultaneously on a false-start regime flip, all stopped out together.
-NOT DEPLOYMENT-READY** — three windows now show one great result, one
-modest result, one that loses money with an identified, unfixed cause.
+simultaneously on a false-start regime flip, all stopped out together.**
+Fixed in two steps (a per-day entry cap, then requiring the regime to
+hold 3 days before trusting it) — win rate and profit factor improved
+in all three windows, and window 3's loss roughly halved (-22.10%→
+-12.28%). **But window 3 still loses money and underperforms the
+benchmark**, and drawdown worsened in the two good windows.
+**STILL NOT DEPLOYMENT-READY** — meaningfully better, not solved.
 See the worktree branch for the real detail — don't trust a summary
 shorter than this one for anything V3-related.
