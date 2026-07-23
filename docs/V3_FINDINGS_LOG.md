@@ -139,7 +139,7 @@ of scope, V1 is frozen); worth fixing if V1 ever gets touched again.
 | Weekly-trend alignment | `phase0d_multitimeframe_validation.py` | **Strongest single feature** — clean monotonic win rate/return, bullish-regime-conditional, inverts bearish |
 | Combined ML model (8-12 features, HistGradientBoosting) | `phase0e_ml_combined_model.py`, `phase0h_leaner_interaction_model.py` | **Failed twice** — AUC ~0.50 (random) in most folds even after pruning to just the validated features + explicit regime-interaction terms. The two real univariate signals got *negative* permutation importance in the combined model. |
 | Explicit rule intersection (bullish + weekly-trend Q5 + sector-RRG Q5, no ML) | `phase0g_rule_intersection_test.py` | **This is the one that worked.** OOS mean 20d return +7.48% vs +1.18% baseline, concentration check clean (12.6% from top-5 tickers vs V1/V2's 90%+). |
-| Adaptive hold-time (`expected_hold_days = |TP-entry|/ATR`, checkpoint exit) | `phase0f_holdtime_exit_backtest.py` | **Mixed** — only helps trades with expected_hold_days≥5d (rare, ~1% of triggers); hurts the majority of fast-resolving trades. Not folded into backtest_v3 yet; needs its own OOS validation before inclusion. |
+| Adaptive hold-time (`expected_hold_days = |TP-entry|/ATR`, checkpoint exit) | `phase0f_holdtime_exit_backtest.py`, integrated into `backtest_v3.py` (`V3_ADAPTIVE_HOLDTIME`) | **Integrated, verified correct, and essentially inert for this entry rule's population.** First integration attempt had a real bug (computed against `tp1_price`, which by definition made `expected_hold_days` collapse to the fixed constant `TP1_MULT=1.5` — never variable, never able to reach the 5-day gate; caught via a suspiciously-exact match to the no-hold-time baseline, not accepted at face value). Fixed to use `tp_target` (SMC swing-high). Diagnostic trace then showed only 1 of 118 entries in window 2 ever reaches `HOLDTIME_MIN_DAYS=5` (median ~1-2 days, matching phase0f's original population almost exactly) — the mechanism fires correctly when it should, there's just almost nothing for it to act on in this specific rule's trade population. Left off by default; not worth pursuing further here. |
 
 **Lesson: a simple, explicit, hand-built rule beat every ML attempt on
 the same features, twice.** Don't default to throwing a gradient-boosted
@@ -292,10 +292,16 @@ caveat.
   time exit barriers instead of a fixed-horizon return, so the label
   matches what the live system actually does. Lower priority since the
   explicit rule has beaten ML twice already.
-- Adaptive hold-time exit (`phase0f`) needs its own proper OOS validation
-  before folding into `backtest_v3.py` — the "helps slow movers, hurts
-  fast movers" finding came from looking at bucketed results after the
-  fact, not a clean train/test split.
+- ~~Adaptive hold-time exit~~ — **done**: integrated, bug caught and
+  fixed, verified inert for this entry rule's population (see the
+  Phase 0 feature table above). Not a lever worth pursuing further here.
+- **CRITICAL, unresolved: entry-timing concentration.** Third OOS window
+  proved `MAX_POSITIONS=6` filling on a single false-start regime-flip
+  day can lose real money. Needs an actual fix (stagger entries over
+  several days even when many signals fire at once, or require some
+  confirmation period after a regime flip before deploying full position
+  count) and re-validation across all three windows before this can be
+  called deployment-ready.
 - Not yet tried: shorter forward-return horizons (5/10d instead of 20d)
   for the final entry rule specifically (only tested in the ML attempts,
   not the winning explicit rule); Phase 1-3 items from the original V3
