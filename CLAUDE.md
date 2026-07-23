@@ -32,6 +32,12 @@ multiple-testing luck. **But a hysteresis-band sensitivity sweep then
 showed the 2% figure was one lucky point in a noisy landscape, not a
 validated optimum** (window 1 swung 61%-501% profit across nearby band
 values) — the direction of the fix holds up (every band, both windows,
-keeps win rate above 50%), the exact magnitude doesn't. Not yet deployed
-to production. See the worktree branch for the real detail — don't
-trust a summary shorter than this one for anything V3-related.
+keeps win rate above 50%), the exact magnitude doesn't. **Redesigned the
+band as volatility-relative** (scales with IHSG's own trailing
+volatility instead of a flat %) — no catastrophic breakdown at any
+tested multiplier in either window, unlike the fixed-% design's collapse
+at its extreme, though drawdown is consistently a bit worse than the
+fixed design's best case. Kept the redesign: predictable-across-
+parameters beats spectacular-at-one-value. Not yet deployed to
+production. See the worktree branch for the real detail — don't trust a
+summary shorter than this one for anything V3-related.
