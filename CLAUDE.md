@@ -68,8 +68,21 @@ window 3 (still under 50%) suggests the remaining issue may be entry-
 rule stock-selection quality in that market character, not just timing
 — a different, still-open question.
 
-**STILL NOT DEPLOYMENT-READY** — meaningfully better after tonight's
-fixes, not solved.
+**Diagnostic: IHSG's own separation from ma50 averaged 5.49% in window 1,
+2.18% in window 2, only 1.13% in window 3** — window 3 was bullish by
+direction but only barely, a genuinely weak trend binary direction can't
+tell apart from a real one. Added `TREND_STRENGTH_MIN`, swept 1%/2%: 2%
+avoided window 3's loss entirely (0 trades) but cost window 1 more than
+half its profit; **1% is the better balance — window 1 stays strong
+(+152.75%, win rate up to 60.1%), window 2 basically unchanged (+41.91%),
+window 3's loss shrinks to -5.44% with alpha now nearly matching its own
+benchmark instead of badly missing it. Win rate clears 50% in all three
+windows simultaneously for the first time all session.**
+
+**STILL NOT DEPLOYMENT-READY** — not a full fix (window 3's profit
+factor is still 0.29), but the failure mode changed from "big loss,
+badly missing the benchmark" to "small loss, roughly tracking it."
+Meaningfully better after tonight's fixes, not solved.
 
 **Treat any single backtest number in this repo as an optimistic case,
 not the expectation** — see `docs/V3_FINDINGS_LOG.md` for the full
