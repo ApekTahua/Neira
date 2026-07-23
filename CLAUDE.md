@@ -21,9 +21,10 @@ to have no edge on liquid stocks. V3 (on the worktree branch) replaced it
 with a validated rule and found + fixed three serious backtest bugs
 (survivorship bias, delisted-position handling, a liquidity-filter gap
 that let hypervolatile penny stocks through) that were inflating the
-headline number. A second out-of-sample window then showed the edge is
-real but inconsistent across market conditions (one window: +216.94%
-profit, 55.4% win rate; another: +16.29%, 50.0% win rate — same rule,
-same code). Not yet deployed to production. See the worktree branch for
-the real detail — don't trust a summary shorter than this one for
-anything V3-related.
+headline number. A second out-of-sample window showed the edge is real
+but inconsistent across market conditions; adding hysteresis to regime
+detection then improved every metric in both windows (one window now
++267.18% profit/57.3% win; the other, a choppier period, +28.44%/51.2%
+win — gap narrowed, not closed). Not yet deployed to production. See the
+worktree branch for the real detail — don't trust a summary shorter than
+this one for anything V3-related.
