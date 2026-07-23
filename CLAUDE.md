@@ -30,10 +30,18 @@ win — narrowing but not eliminating the gap. **A Monte Carlo permutation
 test then confirmed p=0.0000 in both windows** (zero of 5000 random
 draws from the same opportunity set matched the rule's actual return) —
 the edge is real selection skill, not multiple-testing luck; only its
-*size* is regime-dependent. **Treat any single backtest number in this
-repo as an optimistic case, not the expectation** — see
-`docs/V3_FINDINGS_LOG.md` for the full detail and the standing cautions
-below.
+*size* is regime-dependent.
+
+**WALK-BACK: a hysteresis-band sensitivity sweep (0.01/0.02/0.03/0.05)
+showed the 2% figure above is one point in a noisy landscape, not a
+validated optimum** — window 1 swings 61%→501% profit across those
+bands with no clean trend, and window 2 breaks down entirely at 5%
+(only 50 trades, 82% concentration — a fragile-result signature). What
+IS robust: every band, both windows, keeps win rate above 50% and beats
+the benchmark. What is NOT robust: the exact profit/drawdown number at
+any single band. **Treat any single backtest number in this repo as an
+optimistic case, not the expectation** — see `docs/V3_FINDINGS_LOG.md`
+for the full detail and the standing cautions below.
 
 ## Do not repeat these mistakes
 1. Don't trust a backtest headline number without a top-5-ticker
@@ -53,3 +61,10 @@ below.
    same rule scored +216.94%/55.4% win in one window and +16.29%/50.0%
    win in another. Always test at least two windows spanning different
    regime conditions before believing a headline number.
+6. Don't treat a single a-priori parameter choice as validated just
+   because it produced a good result on the first try — the 2%
+   hysteresis band looked great once, then a sensitivity sweep showed
+   window 1 swinging 61%->501% profit across nearby values. Sweep any
+   new fixed-threshold parameter across multiple values AND windows
+   before trusting it, and prefer a data-driven band (e.g. volatility-
+   relative) over an arbitrary fixed percentage.

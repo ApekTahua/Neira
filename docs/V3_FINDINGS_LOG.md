@@ -45,6 +45,35 @@ V2 HMM-gate plan — superseded, see below).
   of testing many hypotheses tonight — the *existence* of the edge is
   not in doubt; its *size* still swings with market conditions.
 
+  **IMPORTANT WALK-BACK: `HYSTERESIS_BAND` sensitivity sweep (0.01/0.02/
+  0.03/0.05, both windows) shows the 2% figure above is one point in a
+  genuinely noisy parameter landscape, not a validated optimum:**
+
+  | band | W1 profit | W1 win | W1 PF | W1 DD | W2 profit | W2 win | W2 PF | W2 DD | W2 trades | W2 conc |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | 0.01 | +501.30% | 62.7% | 2.38 | -32.84% | +28.83% | 54.2% | 1.27 | -28.82% | 177 | 50.5% |
+  | 0.02 | +267.18% | 57.3% | 1.83 | -23.56% | +28.44% | 51.2% | 1.27 | -28.74% | 166 | 49.8% |
+  | 0.03 | +60.77%  | 54.8% | 1.24 | -32.22% | +39.63% | 53.8% | 1.34 | -25.04% | 169 | 48.3% |
+  | 0.05 | +159.97% | 55.8% | 1.68 | -26.08% | +5.21%  | 58.0% | 1.22 | -10.50% | 50  | **82.0%** |
+
+  Window 1 swings 61%→501% across bands with no clean monotonic
+  relationship. Window 2 is stable across 0.01-0.03 but **breaks down at
+  0.05** — only 50 trades and 82.0% concentration, the exact fragile-
+  result signature this whole project has been guarding against.
+  **What IS robust**: every single band, both windows, keeps win rate
+  above 50% and beats the benchmark — the direction of the hysteresis
+  fix (smoothing regime detection helps) holds up. **What is NOT
+  robust**: the specific profit/drawdown magnitude at any one band,
+  including the 2% reported above as though it were tuned — it wasn't;
+  it was picked a priori and got lucky-looking results on the first try.
+  Do not deploy at a hand-picked fixed percentage without either (a)
+  averaging/ensembling across a band range, or (b) redesigning the
+  band as a function of IHSG's own historical volatility (e.g. ATR-
+  relative) rather than an arbitrary fixed percentage — the fixed-
+  percentage design is itself the likely source of the instability,
+  since 2% of MA50 means something different in a low-volatility period
+  than a high-volatility one.
+
   Not deployed to production.
 
 ## The core finding: squeeze signal is dead
