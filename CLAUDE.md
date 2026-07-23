@@ -46,8 +46,17 @@ simultaneously on a false-start regime flip, all stopped out together.**
 Fixed in two steps (a per-day entry cap, then requiring the regime to
 hold 3 days before trusting it) — win rate and profit factor improved
 in all three windows, and window 3's loss roughly halved (-22.10%→
--12.28%). **But window 3 still loses money and underperforms the
-benchmark**, and drawdown worsened in the two good windows.
-**STILL NOT DEPLOYMENT-READY** — meaningfully better, not solved.
+-12.28%). **But window 3 still loses money**, still under 50% win rate —
+timing wasn't the whole story. **Diagnostic: IHSG's own separation from
+ma50 averaged 5.49%/2.18%/1.13% across windows 1/2/3** — window 3 was
+bullish by direction but barely, a weak trend. Added a trend-strength
+gate requiring genuine separation, not just direction; swept 1%/2% and
+kept 1%: **window 1 stays strong (+152.75%, win rate up to 60.1%),
+window 2 basically unchanged, window 3's loss shrinks to -5.44% with
+alpha now nearly matching its own benchmark. Win rate clears 50% in all
+three windows simultaneously for the first time all session.**
+**STILL NOT DEPLOYMENT-READY** — not a full fix, but meaningfully
+better: the failure mode changed from a big loss badly missing the
+benchmark to a small loss roughly tracking it.
 See the worktree branch for the real detail — don't trust a summary
 shorter than this one for anything V3-related.
