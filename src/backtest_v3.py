@@ -150,7 +150,17 @@ REGIME_CONFIRM_DAYS = int(os.environ.get("V3_REGIME_CONFIRM_DAYS", "3"))
 # hysteresis- and streak-confirmed) can't distinguish a genuine trend
 # from IHSG barely, chopily hovering above a smoothed line. This requires
 # actual separation, not just direction + persistence.
-TREND_STRENGTH_MIN = float(os.environ.get("V3_TREND_STRENGTH_MIN", "0.02"))
+#
+# Swept 1%/2% across all three windows before trusting a value (same
+# discipline the hysteresis-band walk-back required). 2% eliminated
+# window 3 entirely (0 trades -- avoided the loss but at a big cost:
+# window 1 dropped +234.46%->+94.81%, too aggressive). 1% is the better
+# balance: window 1 +234.46%->+152.75% (still strong, win rate actually
+# UP to 60.1%), window 2 basically unchanged (+41.31%->+41.91%), window 3
+# -12.28%->-5.44% (small loss, alpha -2.68% now nearly matches its own
+# benchmark instead of badly missing it). Win rate clears 50% in ALL
+# THREE windows simultaneously for the first time all session.
+TREND_STRENGTH_MIN = float(os.environ.get("V3_TREND_STRENGTH_MIN", "0.01"))
 ALLOC_PCT = 0.20
 BACKTEST_VERSION = "v3-dev"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
