@@ -623,3 +623,55 @@ distribution that's inherently carried by outliers; sizing that
 captures more of those outliers when they occur might. This is the
 concrete link back to "risk-based position sizing" as the next
 priority, not a coincidence.
+
+## Score-weighted position sizing: tested, rejected -- worse on every metric
+
+Direct follow-up to the walk-forward's concentration finding: since most
+windows are carried by a handful of outlier winners, tested whether the
+entry rule's own `score` (weekly_ma_spread + sector_rs_momentum excess
+above their train-derived cuts -- already computed for ranking the
+top-15 daily picks, never used for sizing) predicts which trades become
+those outliers. Implementation: `SCORE_SIZING_ENABLED` scales
+`ALLOC_PCT` by `clip(score / train_score_p90, 0.5, 2.0)` -- a signal at
+the train 90th-percentile score gets the base allocation, stronger/
+weaker signals scale up/down, still bounded by the existing RISK_PCT/
+LIQ_CAP_PCT caps. Verified inert when disabled (window 3 regression
+matches exactly). Ran the full 9-window walk-forward with it enabled:
+
+| Metric | Baseline (flat sizing) | Score-weighted sizing |
+|---|---|---|
+| Windows beating benchmark | 5/9 | 4/9 |
+| Win rate (mean / median) | 50.9% / 45.6% | 49.3% / 44.8% |
+| Profit (mean / median) | +5.59% / -5.44% | +0.82% / -7.95% |
+| Alpha (mean / median) | +6.45% / +0.61% | **+1.68% / -5.19%** |
+| Profit factor (mean / median) | 1.29 / 0.85 | **0.98** / 0.84 |
+| Max drawdown (mean) | -15.56% | -17.88% |
+
+**Rejected -- every single metric got worse, not a mixed result.** Mean
+alpha collapsed from +6.45% to +1.68%; median alpha flipped from
+slightly positive to meaningfully negative; mean profit factor dropped
+below 1. Not attempting to rescue this by retuning the 0.5x-2x
+multiplier range -- a consistent across-the-board decline like this
+points at the signal itself lacking predictive content for sizing, not
+at a miscalibrated range. (A narrower or wider multiplier band would
+just be more knob-turning on a signal that's already shown it doesn't
+carry the information needed here.)
+
+**Likely why**: `score` measures how far a stock has *already* moved
+relative to the train thresholds (weekly-trend spread, sector relative
+strength) at entry time -- it's a measure of established momentum, not
+remaining runway. Sizing up the highest scorers may mean sizing up the
+most *already-extended* names, which plausibly have less room left to
+run than a name that just barely cleared the qualifying bar. The score
+is validated and kept for the yes/no entry filter it was built for; it
+has no demonstrated value for sizing.
+
+Kept off by default (`V3_SCORE_SIZING`, unset). Concentration is still
+the open problem this was meant to address -- this result rules out one
+approach (predict the winner at entry, size accordingly) without
+resolving how to actually capture more of the outlier trades. Worth
+trying the alternative framing next: let a position PROVE itself is
+working before adding size (pyramiding into strength post-TP1) instead
+of trying to predict the winner at entry -- a different, more
+commonly-validated approach in real systematic trend-following, and one
+this result doesn't rule out.
