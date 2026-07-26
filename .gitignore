@@ -10,3 +10,7 @@ src/w1_hyst_equity.csv
 src/w3_trades.csv
 src/w3_equity.csv
 .cache/
+backtest_v3_trades.csv
+backtest_v3_equity.csv
+walk_forward_v3_summary.csv
+src/w3_capped_trades.csv
