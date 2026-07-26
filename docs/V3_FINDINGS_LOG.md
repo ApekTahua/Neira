@@ -719,3 +719,46 @@ one try, though -- `PYRAMID_ADD_PCT=0.20` was picked to match the
 existing `ALLOC_PCT`, not tuned. Sweeping it next before fully trusting
 the exact size, same discipline `HYSTERESIS_BAND`/`VOL_BAND_MULT`
 required.
+
+## PYRAMID_ADD_PCT sweep: 0.20 kept, not the highest-mean value
+
+Swept `PYRAMID_ADD_PCT` at 0.10/0.20/0.30 across the full 9-window
+walk-forward before fully trusting the 0.20 pick (same discipline
+`HYSTERESIS_BAND`/`VOL_BAND_MULT` required):
+
+| ADD_PCT | Beat bench | Win-rate>50% | Alpha (mean/median) | PF (mean/median) | Max DD (mean/worst) |
+|---|---|---|---|---|---|
+| 0 (no pyramid) | 5/9 | 4/9 | +6.45% / +0.61% | 1.29 / 0.85 | -15.56% / -31.84% |
+| 0.10 | 4/9 | 5/9 | +5.75% / -3.16% | 1.35 / 0.83 | -16.55% / -29.48% |
+| **0.20** | 5/9 | **5/9** | +10.47% / +17.50% | 1.46 / 0.90 | -17.21% / -31.84% |
+| 0.30 | 5/9 | 4/9 | **+12.04% / +20.24%** | **1.49 / 0.95** | **-18.45% / -33.75%** |
+
+Monotonic pattern: bigger add-on -> steadily better mean alpha/profit/
+profit-factor, but steadily worse drawdown. **Not adopting 0.30 despite
+its higher mean numbers** -- win-rate-consistency (the >50% count) peaks
+at 0.20 (5/9) and regresses at 0.30 (back to 4/9, same as no pyramid at
+all), and 0.30's drawdown is the worst of every setting tested
+(-33.75% worst-case). This is the same judgment call `VOL_BAND_MULT`
+required: a setting that's dominant on one axis (raw mean return) isn't
+automatically the right default when it costs consistency and drawdown
+control on the others. 0.20 kept as default -- real, disclosed
+tradeoff, not hidden: 0.30 would show better on a pure backtest-profit
+comparison, at a cost this project has consistently chosen not to pay
+for a spectacular-looking single number.
+
+0.10 sits between baseline and 0.20 (weaker effect, smaller add-on),
+confirming the direction is real -- not adopted since 0.20 dominates it
+on every metric except max drawdown.
+
+**Where this leaves V3**: real, validated, disclosed edge (mean alpha
+positive and improved by pyramiding, Monte Carlo p=0.0000 on the
+original two-window test) but explicitly not deployment-ready by any
+reasonable reading -- median profit is still negative even with
+pyramiding (-3.15%), profit factor is still below 1 in the median window
+(0.90), and concentration remains high in most windows (pyramiding
+doesn't reduce reliance on outlier winners, it makes that reliance pay
+off more when it works). This is nowhere near an 80%-win-rate/100%-YoY
+bar and isn't going to get there through further parameter tuning on
+this same historical data -- that path leads to overfitting, not a real
+improvement, which is the discipline this whole file has tried to hold
+to all session.
