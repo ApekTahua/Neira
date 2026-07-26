@@ -7,6 +7,16 @@ numbers look better than they were. Full plan/spec context:
 `docs/superpowers/specs/2026-07-15-v2-hmm-screener-design.md` (that's the
 V2 HMM-gate plan — superseded, see below).
 
+**UPDATE, most important finding in this file**: everything below the
+TL;DR was written from 3 hand-picked windows. A real 9-window rolling
+walk-forward (`walk_forward_v3.py`, see "Walk-forward validation" section
+near the end) shows the true picture is meaningfully weaker and more
+fragile than the 3-window story suggested — only 4/9 windows clear 50%
+win rate, median profit and median profit factor are both net losers,
+and 6/9 windows show >65% concentration (a few tickers carrying most of
+the result, not the broad distributed edge Phase 0g originally found).
+Read that section before trusting anything below at face value.
+
 ## TL;DR status
 
 - **V1** (`src/screener.py`, `src/backtest.py`) — live production, Telegram bot. Never touch.
@@ -373,11 +383,9 @@ likely a genuinely different playbook for "weak/choppy bullish" vs
 
 ## Known open items / next steps
 
-- **Run more OOS windows.** Two (now three effectively, pre/post
-  hysteresis) is enough to prove the edge is unstable across regimes,
-  not enough to characterize *how* unstable — a third genuinely
-  different window (ideally a longer sideways multi-year stretch) would
-  help quantify a realistic worst case.
+- ~~Run more OOS windows~~ — **done**, see "Walk-forward validation"
+  section near the end. 9 rolling windows instead of 3: the real picture
+  is weaker and more fragile than the 3-window story suggested.
 - **`HYSTERESIS_BAND = 0.02` was picked, not tuned/validated** — it
   helped both windows on the first try, which is a good sign, but a
   single a-priori guess isn't a validated hyperparameter. Worth testing
@@ -537,3 +545,81 @@ completes, which the old code no longer did for the two windows that
 matter most for validating anything session-wide. Worth revisiting the
 chunk size/count tradeoff if this becomes a recurring bottleneck, but
 correctness over speed for now.
+
+## Walk-forward validation: the real picture is weaker than 3 windows suggested
+
+Refactored `backtest_v3.py` (`simulate_window()` extracted from `main()`,
+behavior-preserving — verified by rerunning window 3 post-refactor,
+exact match to -5.44%/41.7%/PF0.29/DD-6.22%/12 trades) and built
+`walk_forward_v3.py`: fetches the full history ONCE, then runs 9 rolling
+non-overlapping 6-month test windows (2022-01-01..2026-06-30), train
+always expanding from FETCH_START (2021-01-01) — same methodology as
+every single-window run before this, just repeated across the whole
+available history instead of 3 hand-picked slices. Window 3 in this
+schedule (2023-01-01..2023-06-30) reproduces the known -5.44%/41.7% win
+exactly, confirming the harness itself is correct, not a new simulation
+path with its own bugs.
+
+| Window | Test period | Trades | Win% | Profit% | Alpha% | PF | Concentration% |
+|---|---|---|---|---|---|---|---|
+| 1 | 2022 H1 | 57 | 45.6 | -5.86 | -9.55 | 0.85 | 84 |
+| 2 | 2022 H2 | 30 | 40.0 | -11.76 | -12.59 | 0.42 | 79 |
+| 3 | 2023 H1 | 12 | 41.7 | -5.44 | -2.68 | 0.29 | 96 |
+| 4 | 2023 H2 | 53 | 52.8 | +9.22 | +0.61 | 1.23 | 74 |
+| 5 | 2024 H1 | 26 | 38.5 | -11.01 | -7.46 | 0.38 | 96 |
+| 6 | 2024 H2 | 46 | 67.4 | +30.26 | +31.10 | 2.82 | 68 |
+| 7 | 2025 H1 | 20 | 75.0 | +20.95 | +24.24 | 3.61 | 92 |
+| 8 | 2025 H2 | 109 | 53.2 | +33.59 | +8.55 | 1.31 | 53 |
+| 9 | 2026 H1 | 23 | 43.5 | -9.63 | +25.86 | 0.68 | 87 |
+
+**Aggregate (9/9 windows traded):**
+- Only **4/9 windows clear 50% win rate** (44%) — not the "clears 50% in
+  every window" pattern the earlier 3-window/trend-strength-gate work
+  seemed to show. That pattern held for windows 1/2/3 specifically, not
+  for the wider history.
+- **5/9 beat the benchmark** (55%) — genuinely better than a coin flip,
+  but not decisively so at n=9.
+- **Median profit is -5.44% (negative).** Mean profit is +5.59% —
+  positive only because 2-3 strong windows (W6 +30%, W7 +21%, W8 +34%)
+  pull the average up. The *typical* window is a small loss, not a win.
+- **Median profit factor is 0.85** (a net loser on a risk-adjusted
+  basis). Mean profit factor 1.29 is, again, pulled up by the same few
+  strong windows.
+- **Mean alpha is +6.45%, genuinely positive** — this is the strongest
+  honest claim the data supports: on average, across a real 9-window
+  battery, this rule beats the IHSG benchmark. But median alpha is only
+  +0.61% — barely above zero, meaning the *typical* window is roughly a
+  wash against benchmark, not a clear win.
+- **Concentration is high in most windows: 6 of 9 exceed 65%** (84, 79,
+  96, 96, 92, 87%), several near-total (96%, 96%). Phase 0g's original
+  validation found 12.6% concentration — "a genuinely distributed
+  right-skew, not five lottery tickets carrying the whole result." That
+  finding does **not** generalize across this wider battery. Most
+  out-of-sample windows *are* carried by a handful of tickers — closer
+  to the failure mode this whole project has spent all session guarding
+  against than the distributed-edge story the rule was chosen for.
+
+**Honest read, and how this changes the overall picture**: the edge is
+real in an expected-value sense (positive mean alpha, and the earlier
+Monte Carlo permutation test — p=0.0000 in the original two windows —
+already established this rule beats random draws from the same
+opportunity set). But per-window *reliability* is considerably weaker
+than the flagship +152%/+267% numbers implied, and most windows'
+outcomes hinge on a small number of trades going very right, not a
+broadly distributed edge across many positions. This is a genuinely
+different, more sobering statement than "somewhere between the two
+windows, not the flagship number alone" (the previous honest caveat) —
+it's closer to: **a real but noisy, regime-dependent, and often
+concentration-fragile edge, nowhere near reliable enough per-window to
+call deployment-ready**, and meaningfully further from any
+80%-win-rate/consistent-100%-YoY bar than the 3-window sample suggested.
+
+**Why this matters for what to do next**: the high concentration finding
+reframes where effort is best spent. If most windows' results come down
+to a few large winners rather than a broad base of small edges, then
+**position sizing / letting winners run further matters more than
+further win-rate-focused entry filtering** — a filter can't fix a
+distribution that's inherently carried by outliers; sizing that
+captures more of those outliers when they occur might. This is the
+concrete link back to "risk-based position sizing" as the next
+priority, not a coincidence.
