@@ -42,6 +42,18 @@ from supabase import create_client
 import config as cfg
 import data_fetch
 import risk
+
+# config.py is SHARED with V1's live backtest.py/screener.py (confirmed:
+# both import cfg.TP1_MULT/TRAILING_PCT directly) -- never edit the file.
+# These overrides mutate the cfg module object in THIS process's memory
+# only, for sweeping exit mechanics in V3 experiments; the file on disk
+# is untouched, so V1 (a separate process, re-importing config.py fresh
+# each run) is unaffected regardless of what gets tested here. No env
+# var set = cfg's own file defaults, unchanged behavior.
+if os.environ.get("V3_TP1_MULT"):
+    cfg.TP1_MULT = float(os.environ["V3_TP1_MULT"])
+if os.environ.get("V3_TRAILING_PCT"):
+    cfg.TRAILING_PCT = float(os.environ["V3_TRAILING_PCT"])
 from strategy import add_features
 from phase0c_rrg_validation import fetch_sector_indices, fetch_sector_map, compute_rs_momentum
 from phase0d_multitimeframe_validation import attach_weekly_trend
@@ -115,7 +127,7 @@ FETCH_START = date.fromisoformat(os.environ.get("V3_FETCH_START", "2021-01-01"))
 TRAIN_END = date.fromisoformat(os.environ.get("V3_TRAIN_END", "2024-06-30"))
 TEST_START = date.fromisoformat(os.environ.get("V3_TEST_START", "2024-07-31"))
 TEST_END = date.fromisoformat(os.environ.get("V3_TEST_END", "2026-06-30"))
-QUANTILE_CUT = 0.80
+QUANTILE_CUT = float(os.environ.get("V3_QUANTILE_CUT", "0.80"))
 
 INITIAL_CAPITAL = 100_000_000
 LOT_SIZE = 100
