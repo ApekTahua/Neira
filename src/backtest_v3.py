@@ -215,9 +215,14 @@ ALLOC_PCT = float(os.environ.get("V3_ALLOC_PCT", "0.20"))
 # to which trades become the outliers -- off by default until validated
 # across the full walk-forward battery.
 SCORE_SIZING_ENABLED = os.environ.get("V3_SCORE_SIZING", "0") == "1"
-# Real ADTV-based sizing -- see docstring at the trigger site. Off by
-# default, unvalidated.
-LIQ_SIZING_ENABLED = os.environ.get("V3_LIQ_SIZING", "0") == "1"
+# Real ADTV-based sizing -- see docstring at the trigger site. VALIDATED
+# across the 9-window walk-forward: best mean alpha (+21.71%) AND best
+# worst-case drawdown (-21.61%) of every configuration tested this
+# session, simultaneously -- a rare combination pointing at real
+# informational content in the liquidity signal, not just more variance.
+# Real disclosed tradeoff: win-rate-consistency (windows clearing 50%)
+# dropped from 5/9 to 4/9. Default ON. See V3_FINDINGS_LOG.md.
+LIQ_SIZING_ENABLED = os.environ.get("V3_LIQ_SIZING", "1") == "1"
 LIQ_SIZING_MIN = float(os.environ.get("V3_LIQ_SIZING_MIN", "0.5"))
 LIQ_SIZING_MAX = float(os.environ.get("V3_LIQ_SIZING_MAX", "2.0"))
 # Alternative framing to score-weighted sizing (rejected -- see

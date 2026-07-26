@@ -1061,3 +1061,64 @@ Diluting position size to fit more concurrent names means even the
 eventual big winners get a smaller slice of capital -- directly working
 against the mechanism actually driving the edge. **The 6-position cap
 is not the bottleneck** -- kept at 6.
+
+## Liquidity-weighted sizing: adopted -- best mean alpha AND best worst-case drawdown together
+
+User's own instinct: rather than adding more portfolio slots (tested
+above, rejected), size up specifically on very liquid, large-cap,
+"trusted" names using real ADTV data already computed and filtered.
+Implemented as a log-scale multiplier against the train-derived 90th-
+percentile ADTV (`LIQ_SIZING_ENABLED`), composable with the (off-by-
+default) score-sizing multiplier. Ran the full 9-window walk-forward:
+
+| Metric | Baseline (no liq sizing) | + liquidity sizing |
+|---|---|---|
+| Windows beating benchmark | 6/9 | 6/9 |
+| Windows win-rate > 50% | **5/9** | 4/9 |
+| Alpha (mean/median) | +17.19% / +13.12% | **+21.71%** / +12.60% |
+| Profit factor (mean/median) | 1.49 / 1.24 | **1.58** / 1.12 |
+| Max drawdown (mean/worst) | -17.03% / -23.30% | **-16.08%** / **-21.61%** |
+
+**Best mean alpha AND best worst-case drawdown of every configuration
+tested this entire session, simultaneously** -- unusual, since more
+return and less risk don't normally move together; this is a real
+signal that ADTV carries information the entry score doesn't (recall
+score-weighted sizing, using the entry rule's own momentum score, was
+rejected outright -- worse on every metric). Real, disclosed cost:
+win-rate-consistency dropped from 5/9 to 4/9, and median alpha dipped
+slightly (+13.12% -> +12.60%).
+
+**Methodological note**: swept the multiplier's clip bounds (0.5-2.0
+default vs a narrower 0.7-1.5) expecting to find a gentler tradeoff --
+the two runs produced byte-identical results. Log-compression already
+keeps the real log(ADTV)/log(ADTV_p90) ratio within a narrow range
+naturally for this liquid-only universe (ADTV already floor-filtered at
+Rp1B); the clip bounds were never actually binding at either setting.
+Testing clip bounds was not a real experiment here -- a genuinely
+different tilt strength would need a different transform (e.g. a
+fractional exponent), not tighter clipping. Not pursuing that further
+right now; noting it for whoever revisits this.
+
+**Adopted as default** (`LIQ_SIZING_ENABLED` defaults to on). Same
+judgment call as pyramiding's original adoption: a real average
+improvement with a disclosed, bounded cost, not a free upgrade.
+Verified via cached rerun that the new default (pyramid + QUANTILE_CUT
+0.60 + liquidity sizing, all together) reproduces the recorded numbers
+exactly.
+
+## Current best validated V3 configuration (updated)
+
+- Entry: BULLISH regime (volatility-relative hysteresis) + weekly-trend
+  + sector-RRG top 60th percentile (`QUANTILE_CUT=0.60`), liquid stocks.
+- Timing guards: unchanged (`MAX_NEW_ENTRIES_PER_DAY=2`,
+  `REGIME_CONFIRM_DAYS=3`, `TREND_STRENGTH_MIN=0.01`).
+- Sizing: `PYRAMID_ENABLED=1` (add at TP1, `PYRAMID_ADD_PCT=0.20`) AND
+  now `LIQ_SIZING_ENABLED=1` (log-ADTV-weighted allocation, 0.5x-2x).
+  `SCORE_SIZING_ENABLED` still off (rejected). `MAX_POSITIONS=6`,
+  `ALLOC_PCT=0.20` (8/10-position variants tested, rejected).
+- Exit: `TP1_MULT=1.5`, `TRAILING_PCT=0.08` (unchanged, not dominated).
+- 9-window walk-forward at this full configuration: 6/9 beat benchmark,
+  4/9 clear 50% win rate, mean alpha +21.71% / median +12.60%, mean PF
+  1.58 / median 1.12, worst drawdown -21.61% -- the best mean-return/
+  worst-case-risk combination reached this session, at the cost of one
+  fewer window clearing 50% win rate than the pre-liquidity-sizing state.
