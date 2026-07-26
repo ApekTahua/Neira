@@ -409,13 +409,14 @@ likely a genuinely different playbook for "weak/choppy bullish" vs
 - ~~Adaptive hold-time exit~~ — **done**: integrated, bug caught and
   fixed, verified inert for this entry rule's population (see the
   Phase 0 feature table above). Not a lever worth pursuing further here.
-- **CRITICAL, unresolved: entry-timing concentration.** Third OOS window
-  proved `MAX_POSITIONS=6` filling on a single false-start regime-flip
-  day can lose real money. Needs an actual fix (stagger entries over
-  several days even when many signals fire at once, or require some
-  confirmation period after a regime flip before deploying full position
-  count) and re-validation across all three windows before this can be
-  called deployment-ready.
+- ~~CRITICAL: entry-timing concentration~~ — **tested, rejected as a
+  further fix.** See "Entry-cluster-window gate" section below: an
+  additional direct correlated-entry-timing brake (beyond
+  REGIME_CONFIRM_DAYS/MAX_NEW_ENTRIES_PER_DAY, both already in place)
+  helped the strong window and hurt the other two, including the one it
+  targeted. The remaining W3 weakness looks like an entry-rule/regime-
+  character problem, not a timing problem — timing has been addressed
+  about as far as it usefully goes.
 - Not yet tried: shorter forward-return horizons (5/10d instead of 20d)
   for the final entry rule specifically (only tested in the ML attempts,
   not the winning explicit rule); Phase 1-3 items from the original V3
@@ -423,3 +424,85 @@ likely a genuinely different playbook for "weak/choppy bullish" vs
   timeframe confirmation beyond weekly) haven't been built since the
   bullish-regime-gate + weekly-trend + sector-RRG rule already covers
   much of that ground.
+
+## Entry-cluster-window gate: tested, net negative, rejected as default
+
+Followed up on the "CRITICAL, unresolved" item above. Added
+`ENTRY_CLUSTER_WINDOW_DAYS`/`MAX_ENTRIES_PER_CLUSTER_WINDOW` to
+`backtest_v3.py`: caps how many of the *currently open* positions may
+have been entered within a trailing N-day window, independent of
+`MAX_POSITIONS`/`MAX_NEW_ENTRIES_PER_DAY`. Rationale: REGIME_CONFIRM_DAYS
+only gates the *first* entry after a flip — a false rally that persists
+past the 3-day confirm can still fill the whole portfolio over the
+following few days at `MAX_NEW_ENTRIES_PER_DAY=2`/day, which is still
+"everything rides one call," just spread over ~3 days instead of 1.
+
+Swept at (5 days / max 3 entries) across all three OOS windows,
+before/after, same methodology as every other parameter change tonight:
+
+| Window | Metric | Before | After (gate on) |
+|---|---|---|---|
+| 1 (2024-07..2026-06) | Profit / Win / PF / DD | +152.75% / 60.1% / 1.73 / -32.93% | +146.72% / 61.9% / 1.83 / -29.40% |
+| 2 (2023-07..2024-12) | Profit / Win / PF / DD | +26.82% / 54.2% / 1.34 / -30.52% | +14.82% / 53.4% / 1.23 / -29.55% |
+| 3 (2023-01..2023-06) | Profit / Win / PF / DD | -5.44% / 41.7% / 0.29 / -6.22% | -8.30% / 22.2% / 0.16 / -8.41% |
+
+**Verdict: reject as default.** Genuinely improved window 1 (better win
+rate, better PF, better drawdown, small profit cost) — but window 1 was
+already the strong window with the most trades (193) and the least need
+for this kind of protection. Windows 2 and 3 both got worse on every
+axis, including window 3 — the exact window this was built to fix, now
+losing more (-5.44%→-8.30%) with a collapsed win rate (41.7%→22.2%) on
+fewer trades (12→9).
+
+**Reading:** in a weak/choppy regime (windows 2 and 3), the entry rule
+already fires rarely — most of what does fire is a real, usable setup,
+not correlated noise from a false thesis. A concurrency brake can't tell
+those two cases apart; it just removes opportunities in the exact
+regime where opportunities are already scarce. In the strong regime
+(window 1), the rule fires often enough that thinning out clustered
+entries trims genuine correlation risk without meaningfully starving the
+system of real trades. **This closes the loop the earlier diagnostic
+opened**: window 3's problem was already suspected to be entry-rule/
+regime-character, not timing, once REGIME_CONFIRM_DAYS alone didn't fully
+fix it — this result is direct evidence for that, not just a repeated
+guess. Timing has been pushed about as far as it usefully goes; the open
+question is what a genuinely different "weak/choppy bullish" playbook
+would look like, not another timing knob.
+
+Code kept, default set inert (`MAX_ENTRIES_PER_CLUSTER_WINDOW` defaults
+to `MAX_POSITIONS`, so the gate can never bind unless explicitly
+tightened via env var) — same treatment as `ADAPTIVE_HOLDTIME` after it
+tested inert.
+
+### Side-finding: `data_fetch.py`'s OFFSET pagination silently breaks wide windows
+
+Discovered while running the sweep above: windows 1 and 2 (the two
+longer date ranges) failed outright with a Postgres `57014` statement
+timeout on the very first fetch, every time, run alone or concurrently —
+while window 3 (the shortest range) succeeded every time. Root-caused
+via `EXPLAIN ANALYZE` on the actual query shape (`stock_code IN (...) AND
+trade_date BETWEEN ... ORDER BY trade_date LIMIT 1000 OFFSET N`): a deep
+page (`OFFSET 60000`) took 4+ seconds by itself — Postgres has to
+re-sort the *entire* matching row set (external merge, disk spill) on
+every single page, with cost scaling with how deep the offset is. A
+multi-year window needs enough pages per 50-stock chunk that the total
+crosses the project's 2-minute `statement_timeout`; the short window
+happened to stay under it. **Not a flaky network issue — 100%
+reproducible, and would have silently blocked any future validation run
+on a wide window** (this is presumably why the exact `TRAIN_END` used for
+the original windows 2/3 runs was never written down in this log — they
+were one-off manual commands, not a repeatable script call).
+
+Fixed in `data_fetch.py`: the per-stock-batch fetch loop now pages by
+bounded calendar-month range instead of growing `OFFSET`. One month × 50
+stock codes is comfortably under the row limit, so each query is a plain
+indexed range scan — O(1) per page regardless of how deep into history
+it is, no re-sort. Verified against window 1: reproduced the exact
+existing +152.75%/60.1% headline number to the decimal, confirming the
+fix changed performance, not results. Slower in wall-clock terms (many
+more, smaller queries — window 1 now takes ~16 minutes instead of
+whatever it took before this bug started blocking it) but actually
+completes, which the old code no longer did for the two windows that
+matter most for validating anything session-wide. Worth revisiting the
+chunk size/count tradeoff if this becomes a recurring bottleneck, but
+correctness over speed for now.

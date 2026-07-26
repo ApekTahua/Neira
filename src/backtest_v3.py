@@ -161,6 +161,32 @@ REGIME_CONFIRM_DAYS = int(os.environ.get("V3_REGIME_CONFIRM_DAYS", "3"))
 # benchmark instead of badly missing it). Win rate clears 50% in ALL
 # THREE windows simultaneously for the first time all session.
 TREND_STRENGTH_MIN = float(os.environ.get("V3_TREND_STRENGTH_MIN", "0.01"))
+# TESTED, NET NEGATIVE -- kept available (like ADAPTIVE_HOLDTIME below),
+# inert by default. Hypothesis was that window 3's six same-thesis
+# positions (GOTO/BUKA/EMTK/WIRG/ASSA/DMMX, all legit large-caps) needed a
+# direct correlated-ENTRY-TIMING brake beyond REGIME_CONFIRM_DAYS/
+# MAX_NEW_ENTRIES_PER_DAY (neither stops the portfolio filling up over
+# several days on one persisting false thesis once both gates clear).
+# Capped how many currently-open positions may have been entered within a
+# trailing window. Swept at (5 days / max 3) against all three OOS
+# windows with the fetch fix below:
+#   W1 (already good): +152.75%/60.1% win/PF1.73/DD-32.93% -> +146.72%/
+#     61.9% win/PF1.83/DD-29.40% -- genuinely better risk-adjusted, small
+#     profit cost.
+#   W2 (modest): +26.82%/54.2% win/PF1.34 -> +14.82%/53.4% win/PF1.23 --
+#     worse on every axis.
+#   W3 (the one this targeted): -5.44%/41.7% win/PF0.29 -> -8.30%/22.2%
+#     win/PF0.16 -- meaningfully WORSE, not better.
+# Helped the window that needed it least, hurt the other two -- including
+# the exact window that motivated it. Real evidence for what was already
+# suspected: W3's residual weakness isn't timing anymore, it's the entry
+# rule surfacing fewer genuinely good setups in a weak/choppy regime --
+# throttling concurrency there removes real trades more than it removes
+# correlated risk, since there's little signal volume to throttle in the
+# first place. Default below makes the gate unreachable (equals
+# MAX_POSITIONS) without deleting the mechanism.
+ENTRY_CLUSTER_WINDOW_DAYS = int(os.environ.get("V3_ENTRY_CLUSTER_WINDOW_DAYS", "5"))
+MAX_ENTRIES_PER_CLUSTER_WINDOW = int(os.environ.get("V3_MAX_ENTRIES_PER_CLUSTER_WINDOW", "6"))
 ALLOC_PCT = 0.20
 BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
 BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"
@@ -345,6 +371,9 @@ def main():
                 break
             if new_entries_today >= MAX_NEW_ENTRIES_PER_DAY:
                 break
+            recent_entries = sum(1 for p in positions if day_idx - p["entry_day_idx"] <= ENTRY_CLUSTER_WINDOW_DAYS)
+            if recent_entries >= MAX_ENTRIES_PER_CLUSTER_WINDOW:
+                break
             if risk.is_in_cooldown(sig["stock_code"], day_idx, last_sl_idx, cfg.COOLDOWN_DAYS):
                 continue
 
@@ -401,7 +430,7 @@ def main():
 
             cash -= cost_basis
             positions.append({
-                "stock_code": sig["stock_code"], "entry_date": trade_date, "avg_price": entry_price,
+                "stock_code": sig["stock_code"], "entry_date": trade_date, "entry_day_idx": day_idx, "avg_price": entry_price,
                 "tp1_price": tp1_price, "sl_price": sl_price, "total_lots": lots, "remaining_lots": lots,
                 "quantity": quantity, "cost_basis": cost_basis, "hold_days": 0, "tp1_hit": False,
                 "highest_price": entry_price, "trigger": sig["trigger"],
@@ -658,7 +687,10 @@ def main():
         "profit_factor": profit_factor, "max_drawdown": max_drawdown,
         "notes": notes,
     }
-    _save_to_supabase(supabase, df_trades, df_equity, regime_by_date, metrics)
+    if os.environ.get("V3_SKIP_SAVE", "0") == "1":
+        print("[SKIP] V3_SKIP_SAVE=1 -- not writing to Supabase (dev/sweep run).")
+    else:
+        _save_to_supabase(supabase, df_trades, df_equity, regime_by_date, metrics)
 
 
 if __name__ == "__main__":
