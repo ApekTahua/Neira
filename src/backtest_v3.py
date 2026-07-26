@@ -197,6 +197,14 @@ ALLOC_PCT = 0.20
 # to which trades become the outliers -- off by default until validated
 # across the full walk-forward battery.
 SCORE_SIZING_ENABLED = os.environ.get("V3_SCORE_SIZING", "0") == "1"
+# Alternative framing to score-weighted sizing (rejected -- see
+# V3_FINDINGS_LOG.md): instead of predicting at entry which signal will
+# be the outlier winner, add to a position only after it's already
+# proven itself by reaching TP1. Funded fresh (cash), doesn't touch the
+# original tranche's locked-in partial profit; original stop stays at
+# the original entry price regardless.
+PYRAMID_ENABLED = os.environ.get("V3_PYRAMID", "0") == "1"
+PYRAMID_ADD_PCT = float(os.environ.get("V3_PYRAMID_ADD_PCT", "0.20"))  # same as ALLOC_PCT by default
 BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
 BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
@@ -563,9 +571,32 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
                 })
                 if exit_reason == "TP1":
                     pos["tp1_hit"] = True
-                    pos["sl_price"] = pos["avg_price"]
+                    pos["sl_price"] = pos["avg_price"]  # protects the ORIGINAL cost basis, set before any pyramid blend below
                     pos["cost_basis"] -= sell_cost_basis
                     pos["total_lots"] = pos["remaining_lots"]
+                    # Pyramiding into strength: score-weighted sizing (predict
+                    # the winner at entry) tested worse on every metric -- see
+                    # V3_FINDINGS_LOG.md. This is the opposite framing: don't
+                    # predict, add to a position only once it's PROVEN itself
+                    # by reaching TP1, funded fresh (doesn't touch the
+                    # original tranche's already-locked-in profit). sl_price
+                    # above stays at the original entry price regardless of
+                    # the add-on's own cost, so the worst case is still
+                    # "round-trip to breakeven on the base," not a new loss.
+                    if PYRAMID_ENABLED and exit_price > 0:
+                        add_cost_per_share = exit_price * (1 + cfg.BUY_FEE)
+                        add_alloc = min(prev_equity * PYRAMID_ADD_PCT, cash)
+                        add_lots = int(add_alloc / add_cost_per_share) // LOT_SIZE
+                        if add_lots >= cfg.ALLOC_MIN_LOTS:
+                            add_qty = add_lots * LOT_SIZE
+                            add_cost_basis = add_qty * add_cost_per_share
+                            if add_cost_basis <= cash:
+                                cash -= add_cost_basis
+                                new_total_lots = pos["total_lots"] + add_lots
+                                pos["avg_price"] = (pos["avg_price"] * pos["total_lots"] + exit_price * add_lots) / new_total_lots
+                                pos["cost_basis"] += add_cost_basis
+                                pos["total_lots"] = new_total_lots
+                                pos["remaining_lots"] += add_lots
                     remaining_positions.append(pos)
 
             if exit_reason is None or sell_lots == 0:
