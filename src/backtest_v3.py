@@ -188,6 +188,15 @@ TREND_STRENGTH_MIN = float(os.environ.get("V3_TREND_STRENGTH_MIN", "0.01"))
 ENTRY_CLUSTER_WINDOW_DAYS = int(os.environ.get("V3_ENTRY_CLUSTER_WINDOW_DAYS", "5"))
 MAX_ENTRIES_PER_CLUSTER_WINDOW = int(os.environ.get("V3_MAX_ENTRIES_PER_CLUSTER_WINDOW", "6"))
 ALLOC_PCT = 0.20
+# Walk-forward across 9 real windows (see V3_FINDINGS_LOG.md) found most
+# windows' results are carried by a handful of outlier winners, not a
+# broad distributed edge -- 6/9 windows showed >65% concentration. Flat
+# ALLOC_PCT sizes every qualifying signal identically regardless of
+# conviction. Testing whether the entry rule's own score (already
+# computed for ranking, never used for sizing) has any real relationship
+# to which trades become the outliers -- off by default until validated
+# across the full walk-forward battery.
+SCORE_SIZING_ENABLED = os.environ.get("V3_SCORE_SIZING", "0") == "1"
 BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
 BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
@@ -327,6 +336,17 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     print(f"{prefix}[THRESHOLDS from train {FETCH_START}..{train_end} only] "
           f"weekly_ma_spread >= {weekly_cut:.2f}, sector_rs_momentum >= {sector_cut:.4f}")
 
+    # Train-derived reference for score-weighted sizing (SCORE_SIZING_ENABLED
+    # below) -- same score formula used at entry time, applied to the train
+    # qualifying population itself, 90th percentile. Never touches test data.
+    train_scores = (
+        (train_liquid_bullish["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
+        + (train_liquid_bullish["sector_rs_momentum"] - sector_cut) / max(abs(sector_cut), 1e-6)
+    )
+    score_p90 = train_scores.quantile(0.90) if len(train_scores) > 0 else 1.0
+    if not np.isfinite(score_p90) or score_p90 <= 0:
+        score_p90 = 1.0
+
     trading_days = sorted(d for d in df["trade_date"].unique() if test_start <= d <= test_end)
     if not trading_days:
         print(f"{prefix}[SIMULATE] No trading days in range -- skipping.")
@@ -404,7 +424,16 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
                 sl_price = min(sl_price, entry_price * 0.99)
                 expected_hold_days = abs(sig["tp_target"] - entry_price) / atr_val
 
-            alloc = min(prev_equity * ALLOC_PCT, cash)
+            # Score-weighted sizing (tested; see SCORE_SIZING_ENABLED docstring
+            # above): a signal scoring at the train-derived 90th percentile
+            # gets the base allocation; stronger/weaker signals scale up/down,
+            # clipped so no single position can dominate the portfolio the
+            # way concentration already does in most walk-forward windows.
+            # RISK_PCT/LIQ_CAP_PCT sizing below still caps the actual lot
+            # count regardless -- this only raises/lowers the ALLOC_PCT
+            # ceiling those caps work within.
+            size_mult = min(2.0, max(0.5, sig.get("score", score_p90) / score_p90)) if SCORE_SIZING_ENABLED else 1.0
+            alloc = min(prev_equity * ALLOC_PCT * size_mult, cash)
             cost_per_share = entry_price * (1 + cfg.BUY_FEE)
             lots = int(alloc / cost_per_share) // LOT_SIZE
             risk_per_share = entry_price - sl_price
@@ -572,7 +601,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
                     pending_entries.append({
                         "stock_code": sig["stock_code"], "signal_close": float(sig["close_price"]),
                         "atr": sig["atr_14"], "avg_vol_20": float(sig["avg_vol_20"]), "trigger": "V3_regime_weekly_sector",
-                        "tp_target": float(sig["tp_target"]),
+                        "tp_target": float(sig["tp_target"]), "score": float(sig["score"]),
                     })
 
         pos_market_value = 0.0
