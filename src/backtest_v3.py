@@ -138,7 +138,7 @@ QUANTILE_CUT = float(os.environ.get("V3_QUANTILE_CUT", "0.60"))
 INITIAL_CAPITAL = 100_000_000
 LOT_SIZE = 100
 SL_PCT = 0.02
-MAX_POSITIONS = 6
+MAX_POSITIONS = int(os.environ.get("V3_MAX_POSITIONS", "6"))
 # Third OOS window (2023-01..2023-06) lost money because six positions
 # opened SIMULTANEOUSLY on 2023-02-06 -- MAX_POSITIONS filled entirely in
 # one day on a regime flip that turned out to be a false start, and all
@@ -205,7 +205,7 @@ TREND_STRENGTH_MIN = float(os.environ.get("V3_TREND_STRENGTH_MIN", "0.01"))
 # MAX_POSITIONS) without deleting the mechanism.
 ENTRY_CLUSTER_WINDOW_DAYS = int(os.environ.get("V3_ENTRY_CLUSTER_WINDOW_DAYS", "5"))
 MAX_ENTRIES_PER_CLUSTER_WINDOW = int(os.environ.get("V3_MAX_ENTRIES_PER_CLUSTER_WINDOW", "6"))
-ALLOC_PCT = 0.20
+ALLOC_PCT = float(os.environ.get("V3_ALLOC_PCT", "0.20"))
 # Walk-forward across 9 real windows (see V3_FINDINGS_LOG.md) found most
 # windows' results are carried by a handful of outlier winners, not a
 # broad distributed edge -- 6/9 windows showed >65% concentration. Flat
