@@ -493,6 +493,37 @@ on a wide window** (this is presumably why the exact `TRAIN_END` used for
 the original windows 2/3 runs was never written down in this log — they
 were one-off manual commands, not a repeatable script call).
 
+### Window 3 trade-level audit: one bull-trap episode, not sustained weakness
+
+Pulled the actual 12-trade CSV rather than reasoning from aggregates only.
+All 12 trades enter between **2023-02-08 and 2023-02-20** — a 12-day
+span, 9 distinct tickers (GOTO, WIRG, ASSA, TRJA, BIRD, TMAS, GGRM, MIDI,
+ELPI). **Zero trades in the other ~5.5 months of the 6-month window.**
+This is not "the rule performs badly across a weak regime" as a sustained
+pattern — it's one cluster, one episode.
+
+Checked IHSG itself over the same span: 2023-02-01 close 6862.26 ->
+2023-02-08 (episode start) 6940.12 (+1.1%, the pop that cleared
+`TREND_STRENGTH_MIN`) -> 2023-02-20 (last entry) 6894.72, already rolling
+over -> 2023-03-07 6766.76. **A real bull trap at the index level** — a
+genuine short rally that reversed within two weeks — not a data artifact
+or a filter that should've caught it; ordinary regime-following risk.
+6 of 9 names (GOTO, WIRG, BIRD, GGRM, MIDI, ELPI) got stopped out as the
+rally failed; 2 (ASSA, TMAS) genuinely worked; TRJA was a wash.
+
+**Why this matters for what to do next**: engineering any filter around
+9 stocks from one 12-day episode is very likely to just reverse-engineer
+a rule that would've saved these specific six names — exactly the
+single-window overfitting risk this whole project has been guarding
+against all session (same category of trap as the hysteresis-band walk-
+back). **Not attempting a targeted fix here.** The window 3 "problem" is
+better described as "small-sample variance from one bull-trap episode"
+than "a systematic regime-character flaw" — and distinguishing those two
+honestly requires more episodes than one 6-month window can provide.
+Reinforces the already-logged open item: a real walk-forward battery
+(many rolling windows) is needed before trusting any further tuning
+aimed at window-3-shaped scenarios specifically.
+
 Fixed in `data_fetch.py`: the per-stock-batch fetch loop now pages by
 bounded calendar-month range instead of growing `OFFSET`. One month × 50
 stock codes is comfortably under the row limit, so each query is a plain
