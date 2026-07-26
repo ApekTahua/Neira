@@ -215,6 +215,9 @@ ALLOC_PCT = float(os.environ.get("V3_ALLOC_PCT", "0.20"))
 # to which trades become the outliers -- off by default until validated
 # across the full walk-forward battery.
 SCORE_SIZING_ENABLED = os.environ.get("V3_SCORE_SIZING", "0") == "1"
+# Real ADTV-based sizing -- see docstring at the trigger site. Off by
+# default, unvalidated.
+LIQ_SIZING_ENABLED = os.environ.get("V3_LIQ_SIZING", "0") == "1"
 # Alternative framing to score-weighted sizing (rejected -- see
 # V3_FINDINGS_LOG.md): instead of predicting at entry which signal will
 # be the outlier winner, add to a position only after it's already
@@ -386,6 +389,17 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     if not np.isfinite(score_p90) or score_p90 <= 0:
         score_p90 = 1.0
 
+    # Train-derived reference for liquidity-weighted sizing
+    # (LIQ_SIZING_ENABLED below): log-scale, since qualifying ADTV spans
+    # ~1B-100B+ Rp and a raw ratio would produce extreme multipliers for
+    # the most liquid names. log() compresses that range the way the
+    # existing score-sizing multiplier already assumes. Never touches
+    # test data.
+    train_log_adtv = np.log(train_liquid_bullish["adtv_20"].clip(lower=1))
+    log_adtv_p90 = train_log_adtv.quantile(0.90) if len(train_log_adtv) > 0 else 1.0
+    if not np.isfinite(log_adtv_p90) or log_adtv_p90 <= 0:
+        log_adtv_p90 = 1.0
+
     trading_days = sorted(d for d in df["trade_date"].unique() if test_start <= d <= test_end)
     if not trading_days:
         print(f"{prefix}[SIMULATE] No trading days in range -- skipping.")
@@ -472,7 +486,17 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             # count regardless -- this only raises/lowers the ALLOC_PCT
             # ceiling those caps work within.
             size_mult = min(2.0, max(0.5, sig.get("score", score_p90) / score_p90)) if SCORE_SIZING_ENABLED else 1.0
-            alloc = min(prev_equity * ALLOC_PCT * size_mult, cash)
+            # Liquidity-weighted sizing: entering bigger on very liquid,
+            # large-cap names specifically, using real ADTV (already
+            # computed/filtered) rather than adding more portfolio slots --
+            # MAX_POSITIONS 8/10 tested worse (see V3_FINDINGS_LOG.md, most
+            # return comes from a few outlier winners, diluting position
+            # size to fit more names shrinks their slice too). log-scale
+            # against the train-derived 90th-percentile ADTV, same clip
+            # bounds as score-sizing. Composes with size_mult (both default
+            # to 1.0 when their own toggle is off).
+            liq_mult = min(2.0, max(0.5, np.log(max(sig.get("adtv_20", 1.0), 1.0)) / log_adtv_p90)) if LIQ_SIZING_ENABLED else 1.0
+            alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult, cash)
             cost_per_share = entry_price * (1 + cfg.BUY_FEE)
             lots = int(alloc / cost_per_share) // LOT_SIZE
             risk_per_share = entry_price - sl_price
@@ -710,6 +734,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
                         "stock_code": sig["stock_code"], "signal_close": float(sig["close_price"]),
                         "atr": sig["atr_14"], "avg_vol_20": float(sig["avg_vol_20"]), "trigger": "V3_regime_weekly_sector",
                         "tp_target": float(sig["tp_target"]), "score": float(sig["score"]),
+                        "adtv_20": float(sig["adtv_20"]),
                     })
 
         pos_market_value = 0.0
