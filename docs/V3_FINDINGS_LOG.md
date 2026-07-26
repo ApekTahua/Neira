@@ -1037,3 +1037,27 @@ Still not deployment-ready by any honest reading (median profit +5.91%
 across windows sounds fine but individual windows still lose real
 money, e.g. window 3 above), but this is a materially better, more
 thoroughly validated state than where this session started.
+
+## Portfolio breadth (MAX_POSITIONS 8/10): tested, rejected
+
+User question: is a full 6-position portfolio actually missing real
+opportunity (a new qualifying signal shows up, no slot free, it's just
+dropped, no queue)? Tested by increasing `MAX_POSITIONS` to 8/10 while
+proportionally shrinking `ALLOC_PCT` (15%/12%) to hold total exposure
+at the same ~120% as today's 6x20% -- isolates breadth (more concurrent
+names) from leverage (more total capital at risk).
+
+| Config | Beat bench | Win-rate>50% | Alpha (mean/median) | PF (mean/median) | Worst DD |
+|---|---|---|---|---|---|
+| **6 x 20% (current)** | 6/9 | **5/9** | **+17.19% / +13.12%** | **1.49 / 1.24** | -23.30% |
+| 8 x 15% | 6/9 | 5/9 | +11.46% / +7.84% | 1.39 / 1.17 | -22.27% |
+| 10 x 12% | 6/9 | **3/9** | +13.82% / +11.43% | 1.43 / 1.17 | -22.33% |
+
+**Rejected -- more breadth consistently hurt, didn't help**, and
+win-rate-consistency collapsed at 10 slots. Consistent with everything
+else learned this session: most of the return comes from a handful of
+outlier winners (the concentration finding), amplified by pyramiding.
+Diluting position size to fit more concurrent names means even the
+eventual big winners get a smaller slice of capital -- directly working
+against the mechanism actually driving the edge. **The 6-position cap
+is not the bottleneck** -- kept at 6.
