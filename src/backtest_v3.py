@@ -202,8 +202,13 @@ SCORE_SIZING_ENABLED = os.environ.get("V3_SCORE_SIZING", "0") == "1"
 # be the outlier winner, add to a position only after it's already
 # proven itself by reaching TP1. Funded fresh (cash), doesn't touch the
 # original tranche's locked-in partial profit; original stop stays at
-# the original entry price regardless.
-PYRAMID_ENABLED = os.environ.get("V3_PYRAMID", "0") == "1"
+# the original entry price regardless. VALIDATED across the 9-window
+# walk-forward (median alpha +0.61%->+17.50%, median PF 0.85->0.90,
+# 4/9->5/9 windows clearing 50% win rate) -- default ON. Real tradeoff,
+# not a free upgrade: amplifies whichever direction a window is already
+# going (6/9 windows improved, 3/9 got worse), mean max drawdown
+# slightly worse (-15.56%->-17.21%). See V3_FINDINGS_LOG.md.
+PYRAMID_ENABLED = os.environ.get("V3_PYRAMID", "1") == "1"
 PYRAMID_ADD_PCT = float(os.environ.get("V3_PYRAMID_ADD_PCT", "0.20"))  # same as ALLOC_PCT by default
 BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
 BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"

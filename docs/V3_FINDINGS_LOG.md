@@ -675,3 +675,47 @@ working before adding size (pyramiding into strength post-TP1) instead
 of trying to predict the winner at entry -- a different, more
 commonly-validated approach in real systematic trend-following, and one
 this result doesn't rule out.
+
+## Pyramiding into strength: tested, net positive, adopted as default
+
+Alternative to score-weighted sizing (rejected above): instead of
+predicting at entry which signal becomes the outlier winner, add to a
+position only after it's already proven itself by reaching TP1 --
+funded fresh from cash, original stop stays at the original entry price
+regardless of the add-on's cost. Ran the full 9-window walk-forward with
+`V3_PYRAMID=1`, `PYRAMID_ADD_PCT=0.20` (same size as the base
+`ALLOC_PCT` tranche):
+
+| Metric | Baseline (no pyramid) | Pyramiding |
+|---|---|---|
+| Windows beating benchmark | 5/9 | 5/9 |
+| Windows win-rate > 50% | 4/9 | **5/9** |
+| Win rate (mean / median) | 50.9% / 45.6% | 50.6% / **52.1%** |
+| Profit (mean / median) | +5.59% / -5.44% | **+9.60%** / **-3.15%** |
+| Alpha (mean / median) | +6.45% / +0.61% | **+10.47%** / **+17.50%** |
+| Profit factor (mean / median) | 1.29 / 0.85 | **1.46** / 0.90 |
+| Max drawdown (mean) | -15.56% | -17.21% |
+
+**Window-by-window, not just the aggregate**: 6 of 9 windows improved
+(1, 4, 6, 7, 8, 9), 3 got worse (2, 3, 5). This is exactly what
+pyramiding should do mechanically -- it **amplifies whichever direction
+a window is already going**, since it only adds exposure to positions
+that already hit TP1 (proven, in that window's own terms). Already-
+strong windows got much stronger (W4: PF 1.23->1.89, alpha +0.6%->
++24.1%; W7: PF 3.61->5.01), already-weak windows got weaker (W2: alpha
+-12.6%->-21.0%, PF 0.42->0.16). Net positive across this 9-window
+battery because good windows outweigh bad ones in this sample, but this
+is a genuine variance tradeoff, not a free upgrade -- mean max drawdown
+got slightly worse (-15.56%->-17.21%), consistent with amplifying both
+tails, not just the good one.
+
+**Adopted as the new default** (same status `TREND_STRENGTH_MIN`/
+`REGIME_CONFIRM_DAYS` earned after their own validation) -- median alpha
+alone moving from near-zero to +17.5% is a real, substantial
+improvement, and the concentration problem this was meant to address is
+addressed by construction (capturing more of the outlier winners is
+the explicit mechanism, not a side effect). Not sweeping this in from
+one try, though -- `PYRAMID_ADD_PCT=0.20` was picked to match the
+existing `ALLOC_PCT`, not tuned. Sweeping it next before fully trusting
+the exact size, same discipline `HYSTERESIS_BAND`/`VOL_BAND_MULT`
+required.
