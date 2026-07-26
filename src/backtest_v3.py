@@ -218,6 +218,8 @@ SCORE_SIZING_ENABLED = os.environ.get("V3_SCORE_SIZING", "0") == "1"
 # Real ADTV-based sizing -- see docstring at the trigger site. Off by
 # default, unvalidated.
 LIQ_SIZING_ENABLED = os.environ.get("V3_LIQ_SIZING", "0") == "1"
+LIQ_SIZING_MIN = float(os.environ.get("V3_LIQ_SIZING_MIN", "0.5"))
+LIQ_SIZING_MAX = float(os.environ.get("V3_LIQ_SIZING_MAX", "2.0"))
 # Alternative framing to score-weighted sizing (rejected -- see
 # V3_FINDINGS_LOG.md): instead of predicting at entry which signal will
 # be the outlier winner, add to a position only after it's already
@@ -495,7 +497,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             # against the train-derived 90th-percentile ADTV, same clip
             # bounds as score-sizing. Composes with size_mult (both default
             # to 1.0 when their own toggle is off).
-            liq_mult = min(2.0, max(0.5, np.log(max(sig.get("adtv_20", 1.0), 1.0)) / log_adtv_p90)) if LIQ_SIZING_ENABLED else 1.0
+            liq_mult = min(LIQ_SIZING_MAX, max(LIQ_SIZING_MIN, np.log(max(sig.get("adtv_20", 1.0), 1.0)) / log_adtv_p90)) if LIQ_SIZING_ENABLED else 1.0
             alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult, cash)
             cost_per_share = entry_price * (1 + cfg.BUY_FEE)
             lots = int(alloc / cost_per_share) // LOT_SIZE
