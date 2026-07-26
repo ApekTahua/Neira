@@ -808,3 +808,55 @@ problem the way PYRAMID_ADD_PCT was; the conditioning signal itself
 isn't discriminating well enough for tuning to fix. Unconditional
 pyramiding (`PYRAMID_ADD_PCT=0.20`, no trend gate) remains the adopted
 default.
+
+## Second pyramid tier: rejected -- past the point of diminishing returns
+
+Extended the validated single-tier pyramid (add at TP1) with a second
+add-on if the position proves itself further (a fixed additional leg
+from the ORIGINAL entry price/ATR). Ran the full 9-window walk-forward:
+
+| Metric | Single-tier pyramid (0.20) | + second tier |
+|---|---|---|
+| Windows beating benchmark | 5/9 | 5/9 |
+| Windows win-rate > 50% | 5/9 | **3/9** |
+| Alpha (mean/median) | +10.47% / +17.50% | +6.24% / +8.08% |
+| Profit factor (mean/median) | 1.46 / 0.90 | 1.62 / 0.88 |
+| Max drawdown (worst) | -31.84% | **-38.32%** -- the worst drawdown seen across every configuration tested this session |
+
+**Rejected.** Same amplification mechanism as the ADD_PCT sweep (more
+exposure to already-proven winners), but here it clearly crosses from
+"worthwhile tradeoff" into "not worth it" -- win-rate-consistency
+collapsed (5/9 -> 3/9), both mean and median alpha declined, and the
+worst-case drawdown got meaningfully worse than anything else tried.
+Only mean profit factor improved (1.46->1.62), and that alone doesn't
+justify the cost on every other axis. Kept off by default
+(`V3_PYRAMID_TP2`, unset).
+
+## Where this leaves V3 after this round of position-sizing work
+
+Four experiments run this round, one adopted: score-weighted sizing
+(rejected), unconditional single-tier pyramiding at TP1 (**adopted,
+`PYRAMID_ADD_PCT=0.20` default**), conditional trend-gated pyramiding
+(rejected), second pyramid tier (rejected). The adopted change is real
+and disclosed: median alpha +0.61%->+17.50%, median profit factor
+0.85->0.90, windows clearing 50% win rate 4/9->5/9, at the cost of a
+modest drawdown increase (mean -15.56%->-17.21%).
+
+**Not continuing to add more tuning knobs on top of this right now.**
+Three of the last four ideas tried were rejected; that ratio, plus the
+diminishing/negative returns of the last two attempts specifically
+(trend gate and second tier both made things worse, not better), is the
+signal to stop turning this particular set of knobs rather than keep
+searching for one that happens to look good -- exactly the overfitting
+risk this file has flagged and walked back from more than once already
+tonight (`HYSTERESIS_BAND`, `VOL_BAND_MULT`). The honest current state:
+a real, validated, but modest and noisy edge (mean alpha positive,
+Monte Carlo p=0.0000 on the original test, pyramiding genuinely helps),
+nowhere near reliable enough per-window or broadly enough distributed
+to call deployment-ready, and not going to get meaningfully closer
+through more parameter search on this same historical data. The next
+genuinely new thread (not a further tweak on this one) would be either
+a real news-sentiment feature once the separate news pipeline is live,
+or investigating window 3/5's specific "weak/choppy bullish" character
+directly rather than through sizing -- both bigger, different pieces of
+work than another knob on the existing rule.
