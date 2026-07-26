@@ -978,3 +978,62 @@ caches its fetch locally, since every sweep point (11 full walk-forward
 runs across both rounds) had been re-downloading the identical 5.5-year
 dataset from Supabase -- real, avoidable load that contributed to a
 Supabase compute-exhaustion alert mid-session.
+
+## Window 3/5 character, revisited under the current best config
+
+With pyramiding + `QUANTILE_CUT=0.60` adopted, re-checked the two
+windows flagged as weakest in the original 3-window era.
+
+**Window 5 (2024 H1) looks fixed as a side effect.** Was -11.01% profit
+/ -7.46% alpha under the old 0.80 threshold; now **+5.91% profit /
++9.46% alpha** with more candidates let in. Not a targeted fix -- the
+threshold change that helped the whole battery happened to resolve this
+window too. No longer a standing concern.
+
+**Window 3 (2023 H1) is still a net loser, but the character is better
+understood now.** Pulled a fresh 19-trade audit (up from 12 under the
+old threshold): **two distinct episodes, not one.** The already-known
+Feb 2023 bull-trap cluster (13 tickers: GOTO, WIRG, BUKA, DMMX, TMAS,
+ASSA, TRJA, GULA, BIRD, TRUK, ELPI, MMIX, MEDS -- more names than before
+since the looser threshold admits more candidates into the same false-
+start episode), mostly losses -- plus a **genuine second opportunity in
+May 2023 (KING, HOMI)** that the rule correctly caught and profited
+from: HOMI gained ~26% over 23 days, amplified further by the pyramid
+add-on (+181 then +842 across the two tranches, exactly the mechanism
+working as designed).
+
+**Conclusion: not pursuing further tuning here.** The rule isn't blind
+in this window -- it found and profited from a real opportunity in the
+same 6 months. February's concentrated bull-trap losses are simply
+larger than May's genuine gain. This is the bounded, structural cost of
+a regime-following rule occasionally riding a false start, not a
+correctable flaw -- trying to design that away specifically would mean
+reverse-engineering a rule that filters out GOTO/WIRG/BUKA/etc.'s
+February entries without also filtering out KING/HOMI's May entries,
+using the same signal that can't distinguish them in advance (this is
+exactly what the entry-cluster-window gate and trend-gated pyramid
+already tried and both made things worse elsewhere). Window 3 stands as
+disclosed: a real loss, understood, not evidence the rule is broken.
+
+## Current best validated V3 configuration (as of this session)
+
+- Entry: BULLISH regime (volatility-relative hysteresis, `VOL_BAND_MULT=2.0`)
+  + weekly-trend-alignment + sector-RRG top **60th percentile**
+  (`QUANTILE_CUT=0.60`, changed from 0.80 this session), liquid stocks only.
+- Timing guards: `MAX_NEW_ENTRIES_PER_DAY=2`, `REGIME_CONFIRM_DAYS=3`,
+  `TREND_STRENGTH_MIN=0.01`. `ENTRY_CLUSTER_WINDOW_DAYS`/
+  `MAX_ENTRIES_PER_CLUSTER_WINDOW` present but inert by default (tested,
+  rejected).
+- Sizing: `PYRAMID_ENABLED=1` (default on this session), add at TP1,
+  `PYRAMID_ADD_PCT=0.20`. `SCORE_SIZING_ENABLED`, `PYRAMID_TREND_GATE`,
+  `PYRAMID_TP2` all present but off by default (tested, rejected).
+- Exit: `TP1_MULT=1.5`, `TRAILING_PCT=0.08` (both swept this session,
+  kept -- not dominated by tested alternatives).
+- 9-window walk-forward result at this configuration: 6/9 beat
+  benchmark, 5/9 clear 50% win rate, mean alpha +17.19% / median
+  +13.12%, mean PF 1.49 / median 1.24, worst drawdown -23.30%.
+
+Still not deployment-ready by any honest reading (median profit +5.91%
+across windows sounds fine but individual windows still lose real
+money, e.g. window 3 above), but this is a materially better, more
+thoroughly validated state than where this session started.
