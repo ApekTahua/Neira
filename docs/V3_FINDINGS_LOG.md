@@ -762,3 +762,49 @@ bar and isn't going to get there through further parameter tuning on
 this same historical data -- that path leads to overfitting, not a real
 improvement, which is the discipline this whole file has tried to hold
 to all session.
+
+## Conditional pyramid trend gate: mixed, rejected -- too blunt an instrument
+
+Tested whether gating the pyramid add-on on IHSG's trend strength at the
+moment of the add-on (`PYRAMID_TREND_GATE_MIN=0.03`, i.e. require a
+stronger separation from ma50 than the base 1% entry gate) could
+suppress pyramiding's downside in the windows it hurt (2, 3, 5) without
+giving up the upside in the windows it helped. Ran the full 9-window
+walk-forward with the gate on:
+
+| Metric | Unconditional pyramid | + trend gate @ 3% |
+|---|---|---|
+| Windows beating benchmark | 5/9 | 5/9 |
+| Windows win-rate > 50% | 5/9 | **4/9** |
+| Alpha (mean/median) | +10.47% / +17.50% | **+7.38% / +0.51%** |
+| Profit factor (mean/median) | 1.46 / 0.90 | 1.35 / 0.97 |
+| Max drawdown (mean) | -17.21% | -16.04% |
+
+**The gate worked exactly as designed for windows 3 and 5** -- both
+revert to almost EXACTLY their no-pyramid baseline numbers (W3:
+-5.44%/-2.68%/PF0.29, matching the original baseline to the decimal;
+W5: -11.01%/-7.46%/PF0.38, same), confirming the gate correctly detects
+these as weak-trend windows on the days TP1 fires and suppresses the
+add-on entirely. Window 2 barely changed (still bad) -- apparently has
+enough individually-strong-trend days scattered through an otherwise
+weak window that the gate doesn't consistently block it there.
+
+**But the same gate also suppressed genuine upside in windows 4 and
+6 -- two of unconditional pyramiding's best beneficiaries**: W4's PF
+dropped from 1.89 back to 1.23 (essentially erasing the pyramid benefit
+entirely), W6's PF dropped from 2.40 to 1.74. These were GOOD windows
+that pyramiding correctly amplified; the trend gate filtered out
+productive add-on opportunities there too, not just in the weak windows
+it was designed to protect.
+
+**Rejected.** Trend strength at the moment of TP1 is too blunt an
+instrument to cleanly separate "this add-on will pay off" from "this
+add-on won't" at the individual-trade level -- it correlates with
+window-level character on average (the original diagnostic: 5.49%/
+2.18%/1.13% across great/modest/losing windows) but not tightly enough
+day-to-day to gate a trade-level decision without meaningful collateral
+cost. Not sweeping the threshold further -- this isn't a calibration
+problem the way PYRAMID_ADD_PCT was; the conditioning signal itself
+isn't discriminating well enough for tuning to fix. Unconditional
+pyramiding (`PYRAMID_ADD_PCT=0.20`, no trend gate) remains the adopted
+default.
