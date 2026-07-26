@@ -214,6 +214,10 @@ PYRAMID_ADD_PCT = float(os.environ.get("V3_PYRAMID_ADD_PCT", "0.20"))  # same as
 # off by default. See docstring at the pyramid trigger site.
 PYRAMID_TREND_GATE_ENABLED = os.environ.get("V3_PYRAMID_TREND_GATE", "0") == "1"
 PYRAMID_TREND_GATE_MIN = float(os.environ.get("V3_PYRAMID_TREND_GATE_MIN", "0.03"))
+# Second add-on tier: extends the validated single pyramid to a position
+# that proves itself further (see docstring at the trigger site). Off by
+# default -- unvalidated.
+PYRAMID_TP2_ENABLED = os.environ.get("V3_PYRAMID_TP2", "0") == "1"
 BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
 BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
@@ -479,10 +483,12 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             positions.append({
                 "stock_code": sig["stock_code"], "entry_date": trade_date, "entry_day_idx": day_idx, "avg_price": entry_price,
                 "tp1_price": tp1_price, "sl_price": sl_price, "total_lots": lots, "remaining_lots": lots,
-                "quantity": quantity, "cost_basis": cost_basis, "hold_days": 0, "tp1_hit": False,
+                "quantity": quantity, "cost_basis": cost_basis, "hold_days": 0, "tp1_hit": False, "tp2_hit": False,
                 "highest_price": entry_price, "trigger": sig["trigger"],
                 "no_data_days": 0, "last_valid_close": entry_price,
                 "checkpoint_day": checkpoint_day, "target_price": sig["tp_target"],
+                "entry_price_original": entry_price,
+                "atr_at_entry": atr_val if not (pd.isna(atr_val) or atr_val <= 0) else None,
             })
             new_entries_today += 1
         pending_entries = []
@@ -550,6 +556,36 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
                         exit_reason, exit_price = "TIME", close_price
                         sell_lots = pos["remaining_lots"]
             else:
+                # Second pyramid tier: extends the validated TP1 add-on
+                # (see V3_FINDINGS_LOG.md) to a position that keeps proving
+                # itself further, rather than a new/different conditioning
+                # signal (the trend-strength gate tested there was rejected).
+                # Uses the ORIGINAL entry price/ATR, not the post-TP1-blend
+                # avg_price, so the target is a fixed further leg regardless
+                # of how the first add-on shifted the average. sl_price
+                # stays at the original breakeven set at TP1 -- unaffected
+                # by this second blend, same "worst case is round-trip to
+                # original entry" protection as the first add-on.
+                if (PYRAMID_ENABLED and PYRAMID_TP2_ENABLED and not pos["tp2_hit"]
+                        and pos["atr_at_entry"] is not None):
+                    tp2_price = pos["entry_price_original"] + pos["atr_at_entry"] * cfg.TP1_MULT * 2
+                    if high_price >= tp2_price:
+                        pos["tp2_hit"] = True
+                        add_fill_price = o if (o is not None and o > tp2_price) else tp2_price
+                        add_cost_per_share = add_fill_price * (1 + cfg.BUY_FEE)
+                        add_alloc = min(prev_equity * PYRAMID_ADD_PCT, cash)
+                        add_lots = int(add_alloc / add_cost_per_share) // LOT_SIZE
+                        if add_lots >= cfg.ALLOC_MIN_LOTS:
+                            add_qty = add_lots * LOT_SIZE
+                            add_cost_basis = add_qty * add_cost_per_share
+                            if add_cost_basis <= cash:
+                                cash -= add_cost_basis
+                                new_total_lots = pos["total_lots"] + add_lots
+                                pos["avg_price"] = (pos["avg_price"] * pos["total_lots"] + add_fill_price * add_lots) / new_total_lots
+                                pos["cost_basis"] += add_cost_basis
+                                pos["total_lots"] = new_total_lots
+                                pos["remaining_lots"] += add_lots
+
                 if low_price <= pos["sl_price"]:
                     exit_reason, exit_price = "SL", (o if (o is not None and o < pos["sl_price"]) else pos["sl_price"])
                     sell_lots = pos["remaining_lots"]
