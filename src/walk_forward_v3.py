@@ -31,6 +31,7 @@ Usage:
 """
 
 import os
+import pickle
 import sys
 from datetime import date, timedelta
 
@@ -77,8 +78,26 @@ def main():
     for i, (tr_end, te_start, te_end) in enumerate(schedule, 1):
         print(f"  W{i}: train<= {tr_end}  test {te_start}..{te_end}")
 
-    print("\n[FETCH] One fetch for the whole schedule (this is the slow part) ...")
-    df, idx_df = bt.build_full_dataset(supabase)
+    # Local cache: every sweep run tonight (TP1_MULT, TRAILING_PCT,
+    # QUANTILE_CUT, PYRAMID*) used the exact same FETCH_START/TEST_END,
+    # meaning identical data was re-downloaded from Supabase ~10+ times in
+    # a few hours -- real, avoidable load on a live production project.
+    # None of those parameters affect what data gets fetched, only how
+    # simulate_window() uses it, so one fetch can serve every sweep point.
+    cache_dir = os.path.join(os.path.dirname(__file__), "..", ".cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"walk_forward_data_{bt.FETCH_START}_{bt.TEST_END}.pkl")
+    if os.path.exists(cache_path) and os.environ.get("V3_FORCE_REFETCH", "0") != "1":
+        print(f"\n[FETCH] Using local cache ({cache_path}) -- no Supabase query. "
+              f"Set V3_FORCE_REFETCH=1 to force a fresh pull.")
+        with open(cache_path, "rb") as f:
+            df, idx_df = pickle.load(f)
+    else:
+        print("\n[FETCH] One fetch for the whole schedule (this is the slow part) ...")
+        df, idx_df = bt.build_full_dataset(supabase)
+        with open(cache_path, "wb") as f:
+            pickle.dump((df, idx_df), f)
+        print(f"[OK] Cached to {cache_path} for reuse by future sweep runs.")
 
     results = []
     for i, (tr_end, te_start, te_end) in enumerate(schedule, 1):

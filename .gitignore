@@ -9,3 +9,4 @@ src/w1_hyst_trades.csv
 src/w1_hyst_equity.csv
 src/w3_trades.csv
 src/w3_equity.csv
+.cache/
