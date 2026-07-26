@@ -209,7 +209,11 @@ SCORE_SIZING_ENABLED = os.environ.get("V3_SCORE_SIZING", "0") == "1"
 # going (6/9 windows improved, 3/9 got worse), mean max drawdown
 # slightly worse (-15.56%->-17.21%). See V3_FINDINGS_LOG.md.
 PYRAMID_ENABLED = os.environ.get("V3_PYRAMID", "1") == "1"
-PYRAMID_ADD_PCT = float(os.environ.get("V3_PYRAMID_ADD_PCT", "0.20"))  # same as ALLOC_PCT by default
+PYRAMID_ADD_PCT = float(os.environ.get("V3_PYRAMID_ADD_PCT", "0.20"))  # same as ALLOC_PCT by default; swept 0.10/0.20/0.30, see V3_FINDINGS_LOG.md
+# Unvalidated refinement on top of the adopted unconditional pyramid --
+# off by default. See docstring at the pyramid trigger site.
+PYRAMID_TREND_GATE_ENABLED = os.environ.get("V3_PYRAMID_TREND_GATE", "0") == "1"
+PYRAMID_TREND_GATE_MIN = float(os.environ.get("V3_PYRAMID_TREND_GATE_MIN", "0.03"))
 BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
 BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
@@ -588,7 +592,21 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
                     # above stays at the original entry price regardless of
                     # the add-on's own cost, so the worst case is still
                     # "round-trip to breakeven on the base," not a new loss.
-                    if PYRAMID_ENABLED and exit_price > 0:
+                    # Optional extra gate: pyramiding amplifies whichever
+                    # direction a window is already going (see
+                    # V3_FINDINGS_LOG.md) -- it helped the already-strong
+                    # windows and hurt the already-weak ones (2, 3, 5).
+                    # Testing whether requiring IHSG to still be strongly
+                    # separated from ma50 (not just past the base entry
+                    # gate) AT THE MOMENT of the add-on suppresses the
+                    # downside in weak windows without giving up the
+                    # upside in strong ones. Off by default -- an
+                    # unvalidated refinement on top of the already-adopted
+                    # unconditional pyramid, not a replacement for it.
+                    pyramid_ok = PYRAMID_ENABLED and exit_price > 0
+                    if pyramid_ok and PYRAMID_TREND_GATE_ENABLED:
+                        pyramid_ok = trend_strength_by_date.get(trade_date, 0.0) >= PYRAMID_TREND_GATE_MIN
+                    if pyramid_ok:
                         add_cost_per_share = exit_price * (1 + cfg.BUY_FEE)
                         add_alloc = min(prev_equity * PYRAMID_ADD_PCT, cash)
                         add_lots = int(add_alloc / add_cost_per_share) // LOT_SIZE
