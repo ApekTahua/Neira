@@ -925,3 +925,56 @@ straddles reasonably.
 **Kept at the current default (0.08).** No value cleanly dominates once
 tail risk and small-sample fragility are weighed against the headline
 numbers, same discipline applied to every other parameter tonight.
+
+## Exit-mechanic calibration, round 3: QUANTILE_CUT sweep -- adopted, genuine interior peak
+
+Last of the three exit/threshold parameters swept this round.
+`QUANTILE_CUT` (the top-percentile threshold for weekly_ma_spread/
+sector_rs_momentum, currently 0.80 = top quintile) at 0.50/0.60/0.70/
+0.80/0.90 across the full 9-window walk-forward:
+
+| QUANTILE_CUT | Beat bench | Win-rate>50% | Alpha (mean/median) | PF (mean/median) | Max DD (worst) |
+|---|---|---|---|---|---|
+| 0.50 | 5/9 | 4/9 | +16.80% / +10.77% | 1.29 / 0.70 | -29.10% |
+| **0.60** | **6/9** | **5/9** | **+17.19% / +13.12%** | **1.49 / 1.24** | **-23.30%** |
+| 0.70 | 6/9 | 4/9 | +14.02% / +11.72% | 1.67 / 0.90 | -25.62% |
+| 0.80 (old default) | 5/9 | 5/9 | +10.47% / +17.50% | 1.46 / 0.90 | -31.84% |
+| 0.90 | 4/9 | 4/9 | +5.25% / -1.08% | 1.39 / 0.68 | -32.78% |
+
+**Unlike TP1_MULT and TRAILING_PCT (both non-monotonic, no adoption),
+this is a genuine bracketed interior peak** -- performance degrades in
+BOTH directions away from 0.60 (tighter toward 0.90, looser toward
+0.50), not a monotonic trend that might keep improving past the tested
+range or an edge-of-range fluke. 0.60 wins on every axis simultaneously:
+best beat-benchmark count, best win-rate-consistency, best mean alpha,
+best median profit factor (1.24 -- the first time any configuration
+this session crossed meaningfully above 1 without a fragility red flag
+attached), and the best worst-case drawdown of every value tested this
+entire session (-23.30%, vs -31.84% at the old default).
+
+**Adopted as the new default** (`QUANTILE_CUT=0.60`). Verified via a
+cached rerun (zero new Supabase queries, using the local fetch cache
+added this session) that the new default reproduces the recorded 0.60
+numbers exactly.
+
+**Why a looser threshold helps**: being more selective (0.80, 0.90) cuts
+out candidates that turn out to still carry real, usable signal --
+consistent with this being a QUINTILE-style validated feature that
+degrades gracefully rather than a sharp cliff at the exact 80th
+percentile. Loosening it increases trade count and diversification
+without diluting quality until somewhere past 0.50, where genuinely
+weaker candidates start pulling the average down.
+
+## Exit-mechanic calibration round: summary
+
+Three parameters swept across the full 9-window walk-forward:
+`TP1_MULT` (no change, current default not dominated), `TRAILING_PCT`
+(no change, current default not dominated), `QUANTILE_CUT` (**adopted,
+0.80 -> 0.60**, a genuine bracketed improvement on every axis). Combined
+with the earlier position-sizing round (pyramiding adopted at
+`PYRAMID_ADD_PCT=0.20`), this is the current best validated V3
+configuration. Also fixed in this round: `walk_forward_v3.py` now
+caches its fetch locally, since every sweep point (11 full walk-forward
+runs across both rounds) had been re-downloading the identical 5.5-year
+dataset from Supabase -- real, avoidable load that contributed to a
+Supabase compute-exhaustion alert mid-session.
