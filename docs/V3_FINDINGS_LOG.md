@@ -860,3 +860,33 @@ a real news-sentiment feature once the separate news pipeline is live,
 or investigating window 3/5's specific "weak/choppy bullish" character
 directly rather than through sizing -- both bigger, different pieces of
 work than another knob on the existing rule.
+
+## Exit-mechanic calibration, round 1: TP1_MULT sweep -- no change
+
+First sweep on the exit side (everything tuned so far was entry-side:
+regime, trend strength, sizing). `TP1_MULT` (currently 1.5x ATR, shared
+with V1's config.py -- swept via a process-local override, see the
+override-hook commit, never touching the file) at 1.0/1.5/2.0 across
+the full 9-window walk-forward:
+
+| TP1_MULT | Beat bench | Win-rate>50% | Alpha (mean/median) | PF (mean/median) | Worst single-window win rate |
+|---|---|---|---|---|---|
+| 1.0 | 4/9 | 4/9 | +10.88% / -3.01% | 1.50 / 1.10 | 38.5% |
+| **1.5 (current default)** | 5/9 | **5/9** | +10.47% / +17.50% | 1.46 / 0.90 | 33.3% |
+| 2.0 | 5/9 | 4/9 | +10.99% / **+21.78%** | 1.39 / 1.02 | **12.5%** (window 2) |
+
+Non-monotonic, no value dominates every axis. 2.0 has the best median
+alpha and a median PF just above 1, but window 2 (2022 H2, the choppy
+period) drops to a 12.5% win rate -- 3 winners out of 24 trades, the
+worst single-window result of the entire session. A wider TP1 target
+means more trades never reach it and resolve via SL instead in a
+genuinely difficult period -- real tail risk, not just a worse average.
+1.0 trades some median-profit/PF improvement for a worse median alpha
+and fewer windows beating benchmark.
+
+**Kept at the current default (1.5).** Best win-rate-consistency count
+(5/9) of the three, no concerning single-window blowup, and not clearly
+dominated by either alternative once tail risk is weighed alongside the
+mean/median numbers -- same judgment call as `VOL_BAND_MULT`/
+`PYRAMID_ADD_PCT`: not chasing the highest number on one axis when it
+costs reliability on another.
