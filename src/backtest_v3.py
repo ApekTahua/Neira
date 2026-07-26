@@ -295,28 +295,26 @@ def _save_to_supabase(supabase, df_trades: pd.DataFrame, df_equity: pd.DataFrame
         print(f"WARNING: Failed to save to Supabase: {e}")
 
 
-def main():
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    if not url or not key:
-        sys.exit("Missing SUPABASE_URL / SUPABASE_KEY")
-    supabase = create_client(url, key)
-
-    print("=" * 100)
-    print("BACKTEST V3 — regime + weekly-trend + sector-RRG intersection (Phase 0g validated rule)")
-    print("=" * 100)
-
-    df, idx_df = build_full_dataset(supabase)
-
-    print("[REGIME] Precomputing regime per unique trading day ...")
+def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
+    """Runs the regime + threshold-learning + day-by-day simulation for ONE
+    train/test split against an already-fetched df/idx_df (must cover at
+    least [some date <= train_end, test_end]). Pulled out of main() so a
+    walk-forward driver can call this many times against a single fetch
+    instead of re-fetching per window -- fetching is the expensive part
+    (see data_fetch.py's month-chunked pagination fix). Returns
+    (metrics, df_trades, df_equity, regime_by_date), or (None, None, None,
+    None) if zero trades fired in the window."""
+    prefix = f"[{label}] " if label else ""
+    print(f"{prefix}[REGIME] Precomputing regime per unique trading day ...")
     regime_by_date, bullish_streak_by_date, trend_strength_by_date = compute_regime_with_hysteresis(idx_df)
+    df = df.copy()
     df["_regime"] = df["trade_date"].map(regime_by_date).fillna("NEUTRAL")
     df["_streak"] = df["trade_date"].map(bullish_streak_by_date).fillna(0)
     df["_trend_strength"] = df["trade_date"].map(trend_strength_by_date).fillna(0.0)
 
     # ---- Thresholds learned on TRAIN split only (never touches test data) ----
     train_liquid_bullish = df[
-        (df["trade_date"] <= TRAIN_END)
+        (df["trade_date"] <= train_end)
         & (df["adtv_20"] >= cfg.ADTV_MIN)
         & df["weekly_ma_spread"].notna() & df["sector_rs_momentum"].notna()
         & (df["_regime"] == "BULLISH") & (df["_streak"] >= REGIME_CONFIRM_DAYS)
@@ -326,11 +324,14 @@ def main():
     ]
     weekly_cut = train_liquid_bullish["weekly_ma_spread"].quantile(QUANTILE_CUT)
     sector_cut = train_liquid_bullish["sector_rs_momentum"].quantile(QUANTILE_CUT)
-    print(f"[THRESHOLDS from train {FETCH_START}..{TRAIN_END} only] "
+    print(f"{prefix}[THRESHOLDS from train {FETCH_START}..{train_end} only] "
           f"weekly_ma_spread >= {weekly_cut:.2f}, sector_rs_momentum >= {sector_cut:.4f}")
 
-    trading_days = sorted(d for d in df["trade_date"].unique() if TEST_START <= d <= TEST_END)
-    print(f"[SIMULATE] Test window (out-of-sample only): {trading_days[0]} .. {trading_days[-1]} ({len(trading_days)} days)")
+    trading_days = sorted(d for d in df["trade_date"].unique() if test_start <= d <= test_end)
+    if not trading_days:
+        print(f"{prefix}[SIMULATE] No trading days in range -- skipping.")
+        return None, None, None, None
+    print(f"{prefix}[SIMULATE] Test window (out-of-sample only): {trading_days[0]} .. {trading_days[-1]} ({len(trading_days)} days)")
 
     close_lookup = df.set_index(["stock_code", "trade_date"])["close_price"]
     bar_lookup = {
@@ -617,8 +618,8 @@ def main():
 
     total_trades = len(trades)
     if total_trades == 0:
-        print("\n[BACKTEST V3] No trades executed in test window.")
-        return
+        print(f"\n{prefix}[BACKTEST V3] No trades executed in test window.")
+        return None, None, None, None
 
     df_trades = pd.DataFrame(trades)
     df_equity = pd.DataFrame(equity_curve)
@@ -656,12 +657,8 @@ def main():
     total_pos_contrib = contrib[contrib > 0].sum()
     top5 = contrib.head(5)
     top5_pct = 100 * top5.clip(lower=0).sum() / total_pos_contrib if total_pos_contrib > 0 else float("nan")
-    print(f"\n[CONCENTRATION CHECK] top-5 tickers ({', '.join(top5.index.tolist())}) = {top5_pct:.1f}% of total positive PnL")
-    print(f"[EXIT BREAKDOWN] {df_trades['exit_reason'].value_counts(normalize=True).round(3).to_dict()}")
-
-    df_trades.to_csv("backtest_v3_trades.csv", index=False)
-    df_equity.to_csv("backtest_v3_equity.csv", index=False)
-    print(f"\n[OK] Saved backtest_v3_trades.csv ({len(df_trades)} rows), backtest_v3_equity.csv ({len(df_equity)} rows).")
+    print(f"\n{prefix}[CONCENTRATION CHECK] top-5 tickers ({', '.join(top5.index.tolist())}) = {top5_pct:.1f}% of total positive PnL")
+    print(f"{prefix}[EXIT BREAKDOWN] {df_trades['exit_reason'].value_counts(normalize=True).round(3).to_dict()}")
 
     notes = (
         f"V3: BULLISH regime (volatility-relative hysteresis band, {VOL_BAND_MULT}x trailing 20d vol) "
@@ -671,7 +668,7 @@ def main():
         f"separated from its own ma50 by >={TREND_STRENGTH_MIN*100:.0f}% (not just direction) before any "
         f"entry -- all three added after a 2023 H1 out-of-sample window showed correlated same-day entries "
         f"on a false-start regime flip could lose money. ATR/price <= {ATR_PRICE_RATIO_MAX*100:.0f}% caps "
-        f"entries on hypervolatile penny stocks. Thresholds learned on {FETCH_START}..{TRAIN_END} only, "
+        f"entries on hypervolatile penny stocks. Thresholds learned on {FETCH_START}..{train_end} only, "
         f"this run's metrics are the held-out test window, never seen during threshold-fitting. "
         f"Replaces V1/V2's squeeze+volume-spike signal, which was proven to have no statistical edge on "
         f"liquid stocks in any regime (Monte Carlo permutation test vs the same opportunity set: p=0.0000 "
@@ -687,6 +684,29 @@ def main():
         "profit_factor": profit_factor, "max_drawdown": max_drawdown,
         "notes": notes,
     }
+    return metrics, df_trades, df_equity, regime_by_date
+
+
+def main():
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        sys.exit("Missing SUPABASE_URL / SUPABASE_KEY")
+    supabase = create_client(url, key)
+
+    print("=" * 100)
+    print("BACKTEST V3 — regime + weekly-trend + sector-RRG intersection (Phase 0g validated rule)")
+    print("=" * 100)
+
+    df, idx_df = build_full_dataset(supabase)
+    metrics, df_trades, df_equity, regime_by_date = simulate_window(df, idx_df, TRAIN_END, TEST_START, TEST_END)
+    if metrics is None:
+        return
+
+    df_trades.to_csv("backtest_v3_trades.csv", index=False)
+    df_equity.to_csv("backtest_v3_equity.csv", index=False)
+    print(f"\n[OK] Saved backtest_v3_trades.csv ({len(df_trades)} rows), backtest_v3_equity.csv ({len(df_equity)} rows).")
+
     if os.environ.get("V3_SKIP_SAVE", "0") == "1":
         print("[SKIP] V3_SKIP_SAVE=1 -- not writing to Supabase (dev/sweep run).")
     else:
