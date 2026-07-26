@@ -890,3 +890,38 @@ dominated by either alternative once tail risk is weighed alongside the
 mean/median numbers -- same judgment call as `VOL_BAND_MULT`/
 `PYRAMID_ADD_PCT`: not chasing the highest number on one axis when it
 costs reliability on another.
+
+## Exit-mechanic calibration, round 2: TRAILING_PCT sweep -- no change
+
+`TRAILING_PCT` (currently 8% from highest price, also shared with V1's
+config.py via the same safe override) at 0.05/0.08/0.12 across the full
+9-window walk-forward:
+
+| TRAILING_PCT | Beat bench | Win-rate>50% | Alpha (mean/median) | Profit (median) | Median PF | Max DD (mean/worst) |
+|---|---|---|---|---|---|---|
+| 0.05 | 5/9 | 5/9 | +7.32% / +0.37% | +1.19% | 1.08 | -15.89% / -34.24% |
+| **0.08 (current default)** | 5/9 | **5/9** | +10.47% / +17.50% | -3.15% | 0.90 | -17.21% / -31.84% |
+| 0.12 | **6/9** | 4/9 | +9.82% / +17.71% | **+14.00%** | **1.42** | -18.77% / **-38.49%** |
+
+(Mean PF at 0.12 is not reported -- window 7 posted a PF of 85.77 on
+just 16 trades at a 93.75% win rate, which explodes the mean into a
+meaningless number; that result carries the same small-sample fragility
+signature flagged earlier this session (a handful of trades producing
+an extreme, likely-lucky number), not something to trust or chase.)
+
+0.12 has the best median profit and profit factor and the best
+beat-benchmark count -- genuinely tempting on the surface -- but the
+window 7 result looks like exactly the kind of fluke this project has
+repeatedly walked back from trusting, worst-case drawdown ties for the
+worst of the whole session (-38.49%), and win-rate-consistency regresses
+to 4/9. 0.05 keeps the win-rate-consistency and improves median profit/
+PF modestly, but at a real cost to median/mean alpha (+17.50%->+0.37%).
+Window 2 (the choppy window) is highly sensitive to this parameter in
+both directions -- 61.3% win rate at 0.05, only 23.1% at 0.12 -- more
+evidence that a tighter trailing stop suits choppy conditions and a
+looser one suits trending ones, which the current 0.08 already
+straddles reasonably.
+
+**Kept at the current default (0.08).** No value cleanly dominates once
+tail risk and small-sample fragility are weighed against the headline
+numbers, same discipline applied to every other parameter tonight.
