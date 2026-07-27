@@ -1224,4 +1224,63 @@ entry-clustering bug, the OFFSET pagination bug). What's left is the
 market itself being smaller and choppier than the original target
 assumed. The honest path forward is the list above, not one more clever
 parameter.
-  fewer window clearing 50% win rate than the pre-liquidity-sizing state.
+
+## Roadmap item #1 executed: regime-strength capital sizing -- tested, rejected
+
+First item off the 2026-07-27 roadmap: scale allocation by how strongly
+IHSG is separated from its own ma50 on the day of execution, not just
+gate entries on/off by it. Implemented as `TREND_SIZING_ENABLED` (off by
+default), `trend_mult = clip(trend_strength_today / trend_strength_p90,
+TREND_SIZING_MIN, TREND_SIZING_MAX)`, composing with `size_mult` and
+`liq_mult` at the same allocation line -- exact same pattern as
+liquidity sizing. `trend_strength_p90` is the 90th percentile of
+`_trend_strength` among train-qualifying BULLISH days (never touches
+test data).
+
+Verified inert first: full 9-window run with the flag off reproduced
+the recorded baseline exactly (mean alpha +21.71%, PF 1.58/1.12, DD
+-16.08%/-21.61%, 6/9 beat bench, 4/9 win-rate>50%) -- no regression from
+adding the toggle.
+
+Then ran ON at two bound settings, learning from the hysteresis-band
+lesson not to trust a single point:
+
+| Config | Beat bench | Win-rate>50% | Alpha (mean/median) | PF (mean/median) | Max DD (mean/worst) |
+|---|---|---|---|---|---|
+| Baseline (off) | 6/9 | 4/9 | +21.71% / +12.60% | 1.58 / 1.12 | -16.08% / -21.61% |
+| Trend sizing 0.5x-1.5x | 6/9 | 4/9 | +17.15% / +18.08% | 1.75 / 1.66 | -14.06% / -19.30% |
+| Trend sizing 0.7x-1.3x (gentler) | **7/9** | 4/9 | +21.82% / +8.13% | 1.67 / 1.26 | -15.15% / -20.56% |
+
+Aggregate metrics alone look encouraging both ways, but the per-window
+detail is why this gets rejected: **window 4** (a strong baseline
+window at +50.49% profit / 50.0% win rate) goes to +52.06%/54.2% under
+0.5x-1.5x but collapses to +16.73%/39.6% under 0.7x-1.3x -- a "gentler"
+setting doing far more damage than the "more aggressive" one, no
+monotonic relationship between bound width and outcome. **Window 8**
+(the big outlier winner, +129.13% baseline) gets compressed to +55.32%
+under 0.5x-1.5x but *improves* to +142.60% under 0.7x-1.3x -- opposite
+direction again. This is the exact fragility signature the hysteresis-
+band sweep already taught this project to distrust: a parameter whose
+effect flips sign window-to-window depending on the bound chosen isn't
+capturing something real about regime strength, it's just reshuffling
+which train-period p90 threshold a handful of test days happen to sit
+near.
+
+**More importantly, it didn't do the one thing it was built for.**
+Window 3 -- the specific target, the one still losing money in the
+current default config -- barely moved (alpha -3.31% baseline to
+-2.85%/-2.48% under the two settings, essentially noise) and its **win
+rate got worse in both variants** (42.1% baseline down to 31.6% and
+36.8%). Regime-strength sizing dampens or amplifies bets on days that
+already passed the binary `TREND_STRENGTH_MIN` gate; it has nothing to
+say about days that never qualify at all, which is what actually
+starves window 3 of opportunities. Solving that needs a different
+mechanism (a complementary weak-trend signal, roadmap item #2 below),
+not a sizing tweak on top of the same entry rule.
+
+**Rejected. `TREND_SIZING_ENABLED` stays off by default** (code kept in
+place, inert, for whoever revisits this with a different transform).
+Logging this as a real negative result, not a quiet walk-back: the
+instinct behind it (size down when the regime is barely qualifying) was
+reasonable and worth testing, and testing it honestly is exactly what
+avoided adopting a fragile, order-of-magnitude-sensitive parameter.

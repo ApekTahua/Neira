@@ -225,6 +225,18 @@ SCORE_SIZING_ENABLED = os.environ.get("V3_SCORE_SIZING", "0") == "1"
 LIQ_SIZING_ENABLED = os.environ.get("V3_LIQ_SIZING", "1") == "1"
 LIQ_SIZING_MIN = float(os.environ.get("V3_LIQ_SIZING_MIN", "0.5"))
 LIQ_SIZING_MAX = float(os.environ.get("V3_LIQ_SIZING_MAX", "2.0"))
+# Regime-conditional capital allocation (roadmap item #1 from the
+# 2026-07-27 strategic assessment): TREND_STRENGTH_MIN already gates
+# *whether* new entries fire at all; this scales *how much* capital
+# each entry gets by how strongly IHSG is separated from its own ma50
+# on the day of execution, relative to the train-derived 90th
+# percentile among qualifying train days. A signal firing right at the
+# TREND_STRENGTH_MIN threshold (weak trend, window-3-like) gets less
+# capital than one firing well clear of it (window-1-like). Off by
+# default until validated across the full walk-forward battery.
+TREND_SIZING_ENABLED = os.environ.get("V3_TREND_SIZING", "0") == "1"
+TREND_SIZING_MIN = float(os.environ.get("V3_TREND_SIZING_MIN", "0.5"))
+TREND_SIZING_MAX = float(os.environ.get("V3_TREND_SIZING_MAX", "1.5"))
 # Alternative framing to score-weighted sizing (rejected -- see
 # V3_FINDINGS_LOG.md): instead of predicting at entry which signal will
 # be the outlier winner, add to a position only after it's already
@@ -407,6 +419,16 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     if not np.isfinite(log_adtv_p90) or log_adtv_p90 <= 0:
         log_adtv_p90 = 1.0
 
+    # Train-derived reference for regime-strength sizing
+    # (TREND_SIZING_ENABLED below): train_liquid_bullish is already
+    # filtered to qualifying BULLISH days, so its own _trend_strength
+    # values are the right population to rank "how strong is strong."
+    # Never touches test data.
+    train_trend_strength = train_liquid_bullish["_trend_strength"]
+    trend_strength_p90 = train_trend_strength.quantile(0.90) if len(train_trend_strength) > 0 else TREND_STRENGTH_MIN
+    if not np.isfinite(trend_strength_p90) or trend_strength_p90 <= 0:
+        trend_strength_p90 = TREND_STRENGTH_MIN
+
     trading_days = sorted(d for d in df["trade_date"].unique() if test_start <= d <= test_end)
     if not trading_days:
         print(f"{prefix}[SIMULATE] No trading days in range -- skipping.")
@@ -503,7 +525,13 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             # bounds as score-sizing. Composes with size_mult (both default
             # to 1.0 when their own toggle is off).
             liq_mult = min(LIQ_SIZING_MAX, max(LIQ_SIZING_MIN, np.log(max(sig.get("adtv_20", 1.0), 1.0)) / log_adtv_p90)) if LIQ_SIZING_ENABLED else 1.0
-            alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult, cash)
+            # Regime-strength sizing: ranked against the day of EXECUTION
+            # (today, when cash actually deploys), not the day the signal
+            # was generated -- capital allocation should reflect the
+            # regime's current strength, not its strength when queued.
+            trend_val = trend_strength_by_date.get(trade_date, 0.0)
+            trend_mult = min(TREND_SIZING_MAX, max(TREND_SIZING_MIN, trend_val / trend_strength_p90)) if TREND_SIZING_ENABLED else 1.0
+            alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult, cash)
             cost_per_share = entry_price * (1 + cfg.BUY_FEE)
             lots = int(alloc / cost_per_share) // LOT_SIZE
             risk_per_share = entry_price - sl_price
