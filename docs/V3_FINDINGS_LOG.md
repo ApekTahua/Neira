@@ -1122,3 +1122,106 @@ exactly.
   1.58 / median 1.12, worst drawdown -21.61% -- the best mean-return/
   worst-case-risk combination reached this session, at the cost of one
   fewer window clearing 50% win rate than the pre-liquidity-sizing state.
+
+## Honest strategic assessment (2026-07-27): why we keep hitting walls, and what an actually-robust system looks like
+
+Asked directly, after three weeks of intense work, whether we're close to
+a "bulletproof, perfect" system. Answering honestly instead of
+reassuringly, because every prior instance of overpromising in this log
+(80% win rate, the 2% hysteresis band, V2's +668%) had to be walked back
+later, and that walk-back cost more trust than an early "no" would have.
+
+**"Bulletproof" is not a real category in trading, and chasing it is
+itself the mistake.** Every edge that has ever existed in a liquid public
+market is: (a) small relative to what people hope for, (b) regime-
+dependent, and (c) discoverable by imitators the moment it's big enough
+to matter, which caps how big it can get before it decays. A system that
+"always wins" isn't undiscovered -- it isn't possible on daily-bar public
+data. That was true before this session and is still true now; nothing
+found in three weeks contradicts it, and nothing will.
+
+**What we actually have, stated plainly:** a real, positive, statistically
+validated edge (Monte Carlo permutation p=0.0000 against 5000 random
+draws from the same opportunity set, in two separate windows) that is
+inconsistent across regimes -- strong in trending windows (window 1:
++152.75%, 60.1% win rate), weak-but-no-longer-catastrophic in choppy ones
+(window 3: -5.44%, was -22.10% before three separate fixes this session).
+That is a legitimate result. It is also not what "80% win rate, 100%
+YoY" meant when that target was set, and closing that gap isn't a
+matter of one more parameter sweep -- see below for why.
+
+**Why we hit walls (the real reasons, not a list of bugs left to fix):**
+
+1. **The edge is real but genuinely small and regime-conditional.** The
+   trend-strength diagnostic this session (IHSG's own separation from
+   ma50: 5.49% / 2.18% / 1.13% across windows 1/2/3) shows window 3 wasn't
+   a bug, it was a market that was barely trending at all. No entry rule
+   built on trend/momentum can perform well in a period with weak trend to
+   detect -- that's not a fixable flaw, it's the rule correctly running out
+   of signal.
+2. **Small sample size limits how far tuning can safely go.** IHSG has a
+   few years of clean, survivorship-bias-free data. Nine 6-month windows
+   is already stretching that thin -- the hysteresis-band sensitivity
+   sweep earlier this session (2% looking great, then swinging 61%-501%
+   profit across nearby values) is the concrete proof: with this little
+   data, a parameter can look "optimized" while actually just being a
+   lucky draw. Every additional free parameter this system gains makes
+   this worse, not better -- which is why sizing/exit sweeps this session
+   were judged on "not dominated" rather than "found the true optimum."
+3. **Every "reserve" of easy return is a known trap we deliberately fenced
+   off.** V2's headline +668% was 99% concentrated in microcap "gorengan"
+   names -- real return, but not repeatable at any real capital and not
+   safe to rely on. The liquidity floor (Rp1B ADTV) that excludes those
+   names is exactly what keeps the current numbers honest, and exactly
+   what caps how large the numbers can look.
+4. **Scalping/intraday is not a harder version of this system -- it's a
+   different system we've never built.** Every backtest this entire
+   project has ever run (V1's live pipeline, V2, all of V3) holds
+   positions over days, using daily OHLCV bars. Scalping needs intraday
+   price action, bid-ask spread, order-book depth or at minimum
+   minute-bars -- data this system has never ingested and logic this
+   system has never tested. Today's Quant Signals list being unsuitable
+   for scalping tomorrow (flagged separately today) isn't a symptom of
+   the model being weak; it's a symptom of asking a multi-day model an
+   intraday question.
+
+**What I'd actually build next, in priority order, if the goal is the
+most robust practical system rather than a bigger number:**
+
+1. **Regime-conditional capital allocation, not just regime-conditional
+   entry filtering.** Everything this session gates *which stocks* enter
+   in a given regime; nothing yet reduces *how much capital trades at
+   all* when the regime is weak. Window 3's remaining -5.44% is a market
+   where the honest move might be smaller size or no size, not a smaller
+   loss on the same size. Not yet tried -- the natural next experiment.
+2. **A second, complementary signal for weak-trend regimes** (e.g.
+   mean-reversion or range-bound logic) so choppy periods are a different
+   trade, not a starved version of the trending one. Higher effort, real
+   payoff if it works -- an ensemble that knows which regime it's in and
+   switches character, not just switches on/off.
+3. **Keep the walk-forward-only discipline permanently**, including for
+   any new signal above -- every adoption this session went through
+   inert-by-default -> exact-match regression -> full 9-window run ->
+   honest reject-or-adopt, and that discipline is the actual reason this
+   log is trustworthy. Loosening it to move faster would undo the one
+   thing that's working.
+4. **A separate, explicitly-scoped intraday research track if scalping
+   matters enough to invest in** -- different data source, different
+   validation, do not bolt it onto V3. Trying to stretch the current
+   system to cover it would produce exactly the kind of false confidence
+   this log has walked back before.
+5. **Paper-trade the current best configuration before any of the above**,
+   in parallel with more research, not instead of it. Backtesting -- even
+   honest, walk-forward, permutation-tested backtesting -- cannot see
+   live slippage, fills, or a regime this data has never contained. The
+   remaining gap between "validated on history" and "safe to deploy" is
+   time forward, not more sweeps backward.
+
+**Bottom line:** the walls aren't a mistake still hiding somewhere in the
+code -- three weeks of work already found and fixed the real mistakes
+(survivorship bias, delisted-position handling, the liquidity gap, the
+entry-clustering bug, the OFFSET pagination bug). What's left is the
+market itself being smaller and choppier than the original target
+assumed. The honest path forward is the list above, not one more clever
+parameter.
+  fewer window clearing 50% win rate than the pre-liquidity-sizing state.
