@@ -365,6 +365,154 @@ def _save_to_supabase(supabase, df_trades: pd.DataFrame, df_equity: pd.DataFrame
         print(f"WARNING: Failed to save to Supabase: {e}")
 
 
+def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: float, top_n: int = 15) -> list:
+    """Filters a single trading day's cross-section to qualifying candidates (liquidity,
+    weekly-trend, sector-momentum, ATR sanity) and returns the top-N by score as plain dicts.
+    Extracted so the live paper-trading signal scan (src/paper_signal_scan.py) calls the exact
+    same candidate logic as this backtest, instead of a re-typed copy that could drift. `day_slice`
+    must already be filtered to one trade_date (backtest: a historical day; live: today)."""
+    candidates = day_slice[
+        (day_slice["adtv_20"] >= cfg.ADTV_MIN)
+        & (day_slice["weekly_ma_spread"] >= weekly_cut)
+        & (day_slice["sector_rs_momentum"] >= sector_cut)
+        & day_slice["atr_14"].notna() & (day_slice["atr_14"] > 0)
+        & day_slice["avg_vol_20"].notna()
+        & ((day_slice["atr_14"] / day_slice["close_price"]) <= ATR_PRICE_RATIO_MAX)
+    ].copy()
+    if candidates.empty:
+        return []
+    candidates["score"] = (
+        (candidates["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
+        + (candidates["sector_rs_momentum"] - sector_cut) / max(abs(sector_cut), 1e-6)
+    )
+    return [{
+        "stock_code": sig["stock_code"], "signal_close": float(sig["close_price"]),
+        "atr": sig["atr_14"], "avg_vol_20": float(sig["avg_vol_20"]), "trigger": "V3_regime_weekly_sector",
+        "tp_target": float(sig["tp_target"]), "score": float(sig["score"]),
+        "adtv_20": float(sig["adtv_20"]),
+    } for _, sig in candidates.nlargest(top_n, "score").iterrows()]
+
+
+def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: float,
+                            trade_date, prev_equity: float, cash: float):
+    """SL/TP1/TRAILING/CHECKPOINT/TIME exit decision + the TP1/TP2 pyramid-add-on, for ONE
+    open position on ONE day. Extracted so the live paper-trading monitor
+    (src/paper_monitor.py) makes exit decisions through the exact same code path as this
+    backtest -- zero drift between the validated rule and what runs live.
+
+    `bar` = (open, close, high, low): the backtest passes a real historical daily OHLC bar;
+    the live monitor passes (day_open, current_live_price, day_high_so_far, day_low_so_far)
+    built up from repeated intraday polls -- a disclosed proxy for true intrabar H/L, not real
+    tick data (see docs/V3_FINDINGS_LOG.md paper-trading section).
+
+    Mutates `pos`'s own bookkeeping fields in place (highest_price, tp1_hit, tp2_hit, sl_price,
+    avg_price, total_lots, remaining_lots, cost_basis) -- these belong to the position, not the
+    caller's loop state. Returns (trade_record | None, cash_delta): the caller applies
+    cash_delta to its own cash variable, appends trade_record to its trades list, and (on
+    exit_reason == "SL") records the cooldown timestamp -- none of that is this position's own
+    state, so it stays the caller's responsibility.
+    """
+    o, close_price, high_price, low_price = bar
+    hold_ok = risk.min_hold_elapsed(pos["hold_days"], cfg.MIN_HOLD_DAYS)
+    if close_price > pos["highest_price"]:
+        pos["highest_price"] = close_price
+
+    exit_reason, exit_price, sell_lots = None, None, 0
+    cash_delta = 0.0
+
+    if not pos["tp1_hit"]:
+        if low_price <= pos["sl_price"]:
+            exit_reason, exit_price = "SL", (o if (o is not None and o < pos["sl_price"]) else pos["sl_price"])
+            sell_lots = pos["remaining_lots"]
+        elif hold_ok and high_price >= pos["tp1_price"]:
+            exit_reason, exit_price = "TP1", (o if (o is not None and o > pos["tp1_price"]) else pos["tp1_price"])
+            sell_lots = max(1, int(pos["remaining_lots"] * cfg.TP1_PCT))
+        elif pos["checkpoint_day"] is not None and pos["hold_days"] == pos["checkpoint_day"]:
+            dist_to_target = pos["target_price"] - pos["avg_price"]
+            progress = (close_price - pos["avg_price"]) / dist_to_target if dist_to_target > 0 else 1.0
+            if progress < HOLDTIME_PROGRESS_THRESHOLD:
+                exit_reason, exit_price = "CHECKPOINT", close_price
+                sell_lots = pos["remaining_lots"]
+        elif pos["hold_days"] >= cfg.MAX_HOLD_DAYS - 1:
+            pnl_check = (close_price / pos["avg_price"] - 1) * 100
+            if not (pnl_check > 0 and regime == "BULLISH"):
+                exit_reason, exit_price = "TIME", close_price
+                sell_lots = pos["remaining_lots"]
+    else:
+        if (PYRAMID_ENABLED and PYRAMID_TP2_ENABLED and not pos["tp2_hit"]
+                and pos["atr_at_entry"] is not None):
+            tp2_price = pos["entry_price_original"] + pos["atr_at_entry"] * cfg.TP1_MULT * 2
+            if high_price >= tp2_price:
+                pos["tp2_hit"] = True
+                add_fill_price = o if (o is not None and o > tp2_price) else tp2_price
+                add_cost_per_share = add_fill_price * (1 + cfg.BUY_FEE)
+                add_alloc = min(prev_equity * PYRAMID_ADD_PCT, cash)
+                add_lots = int(add_alloc / add_cost_per_share) // LOT_SIZE
+                if add_lots >= cfg.ALLOC_MIN_LOTS:
+                    add_qty = add_lots * LOT_SIZE
+                    add_cost_basis = add_qty * add_cost_per_share
+                    if add_cost_basis <= cash:
+                        cash_delta -= add_cost_basis
+                        new_total_lots = pos["total_lots"] + add_lots
+                        pos["avg_price"] = (pos["avg_price"] * pos["total_lots"] + add_fill_price * add_lots) / new_total_lots
+                        pos["cost_basis"] += add_cost_basis
+                        pos["total_lots"] = new_total_lots
+                        pos["remaining_lots"] += add_lots
+
+        if low_price <= pos["sl_price"]:
+            exit_reason, exit_price = "SL", (o if (o is not None and o < pos["sl_price"]) else pos["sl_price"])
+            sell_lots = pos["remaining_lots"]
+        elif hold_ok:
+            trailing_stop = pos["highest_price"] * (1 - cfg.TRAILING_PCT)
+            stop_eff = max(trailing_stop, pos["sl_price"])
+            if close_price <= stop_eff:
+                exit_reason, exit_price = "TRAILING", close_price
+                sell_lots = pos["remaining_lots"]
+
+    trade_record = None
+    if exit_reason is not None and sell_lots > 0:
+        sell_qty = sell_lots * LOT_SIZE
+        sell_cost_basis = pos["cost_basis"] * (sell_lots / pos["total_lots"])
+        gross_return = exit_price * sell_qty
+        fee = risk.apply_fee(gross_return, "sell", cfg.BUY_FEE, cfg.SELL_FEE)
+        net_return = gross_return - fee
+        pnl = net_return - sell_cost_basis
+        pnl_pct = (exit_price / pos["avg_price"] - 1) * 100
+        cash_delta += net_return
+        pos["remaining_lots"] -= sell_lots
+        trade_record = {
+            "stock_code": pos["stock_code"], "entry_date": pos["entry_date"], "exit_date": trade_date,
+            "entry_price": pos["avg_price"], "exit_price": exit_price, "quantity": sell_qty, "lots": sell_lots,
+            "pnl": pnl, "pnl_pct": pnl_pct, "exit_reason": exit_reason, "trigger": pos["trigger"],
+            "hold_days": pos["hold_days"],
+        }
+        if exit_reason == "TP1":
+            pos["tp1_hit"] = True
+            pos["sl_price"] = pos["avg_price"]  # protects the ORIGINAL cost basis, set before any pyramid blend below
+            pos["cost_basis"] -= sell_cost_basis
+            pos["total_lots"] = pos["remaining_lots"]
+
+            pyramid_ok = PYRAMID_ENABLED and exit_price > 0
+            if pyramid_ok and PYRAMID_TREND_GATE_ENABLED:
+                pyramid_ok = trend_strength >= PYRAMID_TREND_GATE_MIN
+            if pyramid_ok:
+                add_cost_per_share = exit_price * (1 + cfg.BUY_FEE)
+                add_alloc = min(prev_equity * PYRAMID_ADD_PCT, cash + cash_delta)
+                add_lots = int(add_alloc / add_cost_per_share) // LOT_SIZE
+                if add_lots >= cfg.ALLOC_MIN_LOTS:
+                    add_qty = add_lots * LOT_SIZE
+                    add_cost_basis = add_qty * add_cost_per_share
+                    if add_cost_basis <= cash + cash_delta:
+                        cash_delta -= add_cost_basis
+                        new_total_lots = pos["total_lots"] + add_lots
+                        pos["avg_price"] = (pos["avg_price"] * pos["total_lots"] + exit_price * add_lots) / new_total_lots
+                        pos["cost_basis"] += add_cost_basis
+                        pos["total_lots"] = new_total_lots
+                        pos["remaining_lots"] += add_lots
+
+    return trade_record, cash_delta
+
+
 def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     """Runs the regime + threshold-learning + day-by-day simulation for ONE
     train/test split against an already-fetched df/idx_df (must cover at
@@ -609,133 +757,25 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             pos["no_data_days"] = 0
             pos["last_valid_close"] = close_price
 
-            exit_reason, exit_price, sell_lots = None, None, 0
-            hold_ok = risk.min_hold_elapsed(pos["hold_days"], cfg.MIN_HOLD_DAYS)
-            if close_price > pos["highest_price"]:
-                pos["highest_price"] = close_price
+            # Exit decision + TP1/TP2 pyramid-add-on: extracted to
+            # evaluate_position_exit() so the live paper-trading monitor
+            # (src/paper_monitor.py) makes exit decisions through the exact
+            # same code path as this backtest -- see that function's
+            # docstring for the full mechanics (unchanged from before the
+            # extraction, verified via exact walk-forward regression match).
+            trade_record, cash_delta = evaluate_position_exit(
+                pos, bar, regime, trend_strength_by_date.get(trade_date, 0.0),
+                trade_date, prev_equity, cash,
+            )
+            cash += cash_delta
 
-            if not pos["tp1_hit"]:
-                if low_price <= pos["sl_price"]:
-                    exit_reason, exit_price = "SL", (o if (o is not None and o < pos["sl_price"]) else pos["sl_price"])
-                    sell_lots = pos["remaining_lots"]
-                elif hold_ok and high_price >= pos["tp1_price"]:
-                    exit_reason, exit_price = "TP1", (o if (o is not None and o > pos["tp1_price"]) else pos["tp1_price"])
-                    sell_lots = max(1, int(pos["remaining_lots"] * cfg.TP1_PCT))
-                elif pos["checkpoint_day"] is not None and pos["hold_days"] == pos["checkpoint_day"]:
-                    dist_to_target = pos["target_price"] - pos["avg_price"]
-                    progress = (close_price - pos["avg_price"]) / dist_to_target if dist_to_target > 0 else 1.0
-                    if progress < HOLDTIME_PROGRESS_THRESHOLD:
-                        exit_reason, exit_price = "CHECKPOINT", close_price
-                        sell_lots = pos["remaining_lots"]
-                elif pos["hold_days"] >= cfg.MAX_HOLD_DAYS - 1:
-                    pnl_check = (close_price / pos["avg_price"] - 1) * 100
-                    if not (pnl_check > 0 and regime == "BULLISH"):
-                        exit_reason, exit_price = "TIME", close_price
-                        sell_lots = pos["remaining_lots"]
-            else:
-                # Second pyramid tier: extends the validated TP1 add-on
-                # (see V3_FINDINGS_LOG.md) to a position that keeps proving
-                # itself further, rather than a new/different conditioning
-                # signal (the trend-strength gate tested there was rejected).
-                # Uses the ORIGINAL entry price/ATR, not the post-TP1-blend
-                # avg_price, so the target is a fixed further leg regardless
-                # of how the first add-on shifted the average. sl_price
-                # stays at the original breakeven set at TP1 -- unaffected
-                # by this second blend, same "worst case is round-trip to
-                # original entry" protection as the first add-on.
-                if (PYRAMID_ENABLED and PYRAMID_TP2_ENABLED and not pos["tp2_hit"]
-                        and pos["atr_at_entry"] is not None):
-                    tp2_price = pos["entry_price_original"] + pos["atr_at_entry"] * cfg.TP1_MULT * 2
-                    if high_price >= tp2_price:
-                        pos["tp2_hit"] = True
-                        add_fill_price = o if (o is not None and o > tp2_price) else tp2_price
-                        add_cost_per_share = add_fill_price * (1 + cfg.BUY_FEE)
-                        add_alloc = min(prev_equity * PYRAMID_ADD_PCT, cash)
-                        add_lots = int(add_alloc / add_cost_per_share) // LOT_SIZE
-                        if add_lots >= cfg.ALLOC_MIN_LOTS:
-                            add_qty = add_lots * LOT_SIZE
-                            add_cost_basis = add_qty * add_cost_per_share
-                            if add_cost_basis <= cash:
-                                cash -= add_cost_basis
-                                new_total_lots = pos["total_lots"] + add_lots
-                                pos["avg_price"] = (pos["avg_price"] * pos["total_lots"] + add_fill_price * add_lots) / new_total_lots
-                                pos["cost_basis"] += add_cost_basis
-                                pos["total_lots"] = new_total_lots
-                                pos["remaining_lots"] += add_lots
-
-                if low_price <= pos["sl_price"]:
-                    exit_reason, exit_price = "SL", (o if (o is not None and o < pos["sl_price"]) else pos["sl_price"])
-                    sell_lots = pos["remaining_lots"]
-                elif hold_ok:
-                    trailing_stop = pos["highest_price"] * (1 - cfg.TRAILING_PCT)
-                    stop_eff = max(trailing_stop, pos["sl_price"])
-                    if close_price <= stop_eff:
-                        exit_reason, exit_price = "TRAILING", close_price
-                        sell_lots = pos["remaining_lots"]
-
-            if exit_reason is not None and sell_lots > 0:
-                sell_qty = sell_lots * LOT_SIZE
-                sell_cost_basis = pos["cost_basis"] * (sell_lots / pos["total_lots"])
-                gross_return = exit_price * sell_qty
-                fee = risk.apply_fee(gross_return, "sell", cfg.BUY_FEE, cfg.SELL_FEE)
-                net_return = gross_return - fee
-                pnl = net_return - sell_cost_basis
-                pnl_pct = (exit_price / pos["avg_price"] - 1) * 100
-                cash += net_return
-                pos["remaining_lots"] -= sell_lots
-                if exit_reason == "SL":
+            if trade_record is not None:
+                if trade_record["exit_reason"] == "SL":
                     last_sl_idx[pos["stock_code"]] = day_idx
-                trades.append({
-                    "stock_code": pos["stock_code"], "entry_date": pos["entry_date"], "exit_date": trade_date,
-                    "entry_price": pos["avg_price"], "exit_price": exit_price, "quantity": sell_qty, "lots": sell_lots,
-                    "pnl": pnl, "pnl_pct": pnl_pct, "exit_reason": exit_reason, "trigger": pos["trigger"],
-                    "hold_days": pos["hold_days"],
-                })
-                if exit_reason == "TP1":
-                    pos["tp1_hit"] = True
-                    pos["sl_price"] = pos["avg_price"]  # protects the ORIGINAL cost basis, set before any pyramid blend below
-                    pos["cost_basis"] -= sell_cost_basis
-                    pos["total_lots"] = pos["remaining_lots"]
-                    # Pyramiding into strength: score-weighted sizing (predict
-                    # the winner at entry) tested worse on every metric -- see
-                    # V3_FINDINGS_LOG.md. This is the opposite framing: don't
-                    # predict, add to a position only once it's PROVEN itself
-                    # by reaching TP1, funded fresh (doesn't touch the
-                    # original tranche's already-locked-in profit). sl_price
-                    # above stays at the original entry price regardless of
-                    # the add-on's own cost, so the worst case is still
-                    # "round-trip to breakeven on the base," not a new loss.
-                    # Optional extra gate: pyramiding amplifies whichever
-                    # direction a window is already going (see
-                    # V3_FINDINGS_LOG.md) -- it helped the already-strong
-                    # windows and hurt the already-weak ones (2, 3, 5).
-                    # Testing whether requiring IHSG to still be strongly
-                    # separated from ma50 (not just past the base entry
-                    # gate) AT THE MOMENT of the add-on suppresses the
-                    # downside in weak windows without giving up the
-                    # upside in strong ones. Off by default -- an
-                    # unvalidated refinement on top of the already-adopted
-                    # unconditional pyramid, not a replacement for it.
-                    pyramid_ok = PYRAMID_ENABLED and exit_price > 0
-                    if pyramid_ok and PYRAMID_TREND_GATE_ENABLED:
-                        pyramid_ok = trend_strength_by_date.get(trade_date, 0.0) >= PYRAMID_TREND_GATE_MIN
-                    if pyramid_ok:
-                        add_cost_per_share = exit_price * (1 + cfg.BUY_FEE)
-                        add_alloc = min(prev_equity * PYRAMID_ADD_PCT, cash)
-                        add_lots = int(add_alloc / add_cost_per_share) // LOT_SIZE
-                        if add_lots >= cfg.ALLOC_MIN_LOTS:
-                            add_qty = add_lots * LOT_SIZE
-                            add_cost_basis = add_qty * add_cost_per_share
-                            if add_cost_basis <= cash:
-                                cash -= add_cost_basis
-                                new_total_lots = pos["total_lots"] + add_lots
-                                pos["avg_price"] = (pos["avg_price"] * pos["total_lots"] + exit_price * add_lots) / new_total_lots
-                                pos["cost_basis"] += add_cost_basis
-                                pos["total_lots"] = new_total_lots
-                                pos["remaining_lots"] += add_lots
-                    remaining_positions.append(pos)
-
-            if exit_reason is None or sell_lots == 0:
+                trades.append(trade_record)
+                if trade_record["exit_reason"] == "TP1":
+                    remaining_positions.append(pos)  # partial exit only -- position continues
+            else:
                 pos["hold_days"] += 1
                 remaining_positions.append(pos)
 
@@ -749,28 +789,11 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
         # crossed it (see TREND_STRENGTH_MIN comment above).
         if (regime == "BULLISH" and bullish_streak_by_date.get(trade_date, 0) >= REGIME_CONFIRM_DAYS
                 and trend_strength_by_date.get(trade_date, 0.0) >= TREND_STRENGTH_MIN):
-            day_data = df[
-                (df["trade_date"] == trade_date)
-                & (df["adtv_20"] >= cfg.ADTV_MIN)
-                & (df["weekly_ma_spread"] >= weekly_cut)
-                & (df["sector_rs_momentum"] >= sector_cut)
-                & df["atr_14"].notna() & (df["atr_14"] > 0)
-                & df["avg_vol_20"].notna()
-                & ((df["atr_14"] / df["close_price"]) <= ATR_PRICE_RATIO_MAX)
-            ].copy()
-
-            if not day_data.empty:
-                day_data["score"] = (
-                    (day_data["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
-                    + (day_data["sector_rs_momentum"] - sector_cut) / max(abs(sector_cut), 1e-6)
-                )
-                for _, sig in day_data.nlargest(15, "score").iterrows():
-                    pending_entries.append({
-                        "stock_code": sig["stock_code"], "signal_close": float(sig["close_price"]),
-                        "atr": sig["atr_14"], "avg_vol_20": float(sig["avg_vol_20"]), "trigger": "V3_regime_weekly_sector",
-                        "tp_target": float(sig["tp_target"]), "score": float(sig["score"]),
-                        "adtv_20": float(sig["adtv_20"]),
-                    })
+            # Candidate filtering/scoring extracted to score_candidates() so the live
+            # paper-trading signal scan (src/paper_signal_scan.py) uses the exact same
+            # candidate logic as this backtest -- see that function's docstring.
+            day_data = df[df["trade_date"] == trade_date]
+            pending_entries.extend(score_candidates(day_data, weekly_cut, sector_cut, top_n=15))
 
         pos_market_value = 0.0
         for pos in positions:
