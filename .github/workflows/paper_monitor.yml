@@ -1,0 +1,37 @@
+name: Paper Trading -- Intraday Monitor
+
+on:
+  schedule:
+    # Every 15 min during IDX hours (~09:00-11:30 & 13:30-15:00 WIB ->
+    # UTC 02:00-04:30 & 06:30-08:00). A little overrun at the session
+    # edges (and through the midday break) is harmless -- the script
+    # just finds no fresh price movement and no-ops.
+    - cron: '*/15 2-4,6-8 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Ambil kode dari repository
+      uses: actions/checkout@v4
+
+    - name: Pasang Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+
+    - name: Install Library Pendukung
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Jalankan Paper Trading Monitor
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+      run: python src/paper_monitor.py
