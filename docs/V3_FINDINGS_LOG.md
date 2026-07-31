@@ -1364,3 +1364,74 @@ current best validated configuration going forward, since that's the
 one place additional real evidence can still come from without needing
 more historical data). #4 (a separate intraday research track) remains
 a distinct, larger investment decision, not something to fold into V3.
+
+## Live paper trading built (2026-07-31): roadmap item #5, executed
+
+Built the full live paper-trading system from the roadmap: Rp100,000,000
+simulated capital, real fees (config.py's BUY_FEE 0.18%/SELL_FEE 0.28%
+plus a new flat Rp10,000 surcharge on any single buy over
+Rp10,000,000 -- a real broker rule the user reported, paper-trading-
+specific, not added to config.py), `ihsg_realtime`-based live pricing
+polled every 15 minutes, target launch Monday 2026-08-03.
+
+**Governance (binding for the life of this run)**: trades the exact
+"current best validated V3 configuration" recorded above
+(`LIQ_SIZING_ENABLED=1`, `PYRAMID_ENABLED=1`, `QUANTILE_CUT=0.60`,
+`TP1_MULT=1.5`, `TRAILING_PCT=0.08`, `MAX_POSITIONS=6`,
+`ALLOC_PCT=0.20`, `TREND_STRENGTH_MIN=0.01`, `REGIME_CONFIRM_DAYS=3`),
+frozen for this run's lifetime. No retroactive tweaks -- that would
+contaminate the track record the same way test-data leakage
+contaminates a backtest. Further research continues on this branch,
+walk-forward validated as always; an improvement only ever ships as a
+new run (e.g. `V3.1_PAPER`), never a silent edit to this one. 100%
+deterministic Python -- no LLM anywhere in signal generation, sizing,
+or exit decisions (the user's explicit requirement).
+
+**Zero-drift design**: rather than re-implement the trading rule for a
+live context, extracted three pure functions out of `simulate_window`'s
+day-loop so the backtest and the live engine call the *exact same code*:
+- `score_candidates()` -- entry filtering/ranking.
+- `compute_entry_fill()` -- sizing (score/liq/trend multipliers,
+  RISK_PCT/LIQ_CAP_PCT caps, ALLOC_MIN_LOTS floor) and the ATR-based
+  TP1/SL calc.
+- `evaluate_position_exit()` -- SL/TP1/TRAILING/CHECKPOINT/TIME exits
+  plus the TP1/TP2 pyramid-add-on.
+
+Each extraction was verified via the full 9-window walk-forward
+regression check before proceeding -- byte-identical to the recorded
+baseline every time (mean alpha +21.71%, PF 1.58/1.12, DD
+-16.08%/-21.61%, 6/9 beat bench, 4/9 win-rate>50%). A dedicated dry-run
+(`src/test_paper_trading_math.py`, no Supabase needed) then verified
+the money math itself against independently hand-computed expected
+values -- fees, SL/TP1/TRAILING pnl, the pyramid add-on's cash outflow,
+candidate ranking -- all 8 checks pass.
+
+**Architecture**: two new daily/intraday scripts
+(`src/paper_signal_scan.py` once/day after close, `src/paper_monitor.py`
+every 15 min during trading hours) plus two new Supabase tables
+(`paper_positions` -- permanent, append-only position audit log;
+`paper_account` -- cash ledger), reusing `backtest_runs`/
+`backtest_trades`/`backtest_equity` as-is so the existing frontend
+chart component needed zero changes. New `/paper-trading` page on the
+website (stat cards, equity-vs-IHSG chart, live open-positions table,
+closed-trade history) plus a fix for a real bug found the same day
+(`ihsg_realtime`'s live-price query had no ORDER BY/dedupe and no
+tab-foreground refresh -- both fixed, since the paper-trading engine
+depends on the same feed for live pricing).
+
+**Known, disclosed simplifications** (not gaps found by accident --
+decided against explicitly to hit the deadline): no ARA/ARB or
+order-book depth (assumes a full fill at the observed price, same as
+the backtest); no true intraday tick data (`day_high`/`day_low` are
+built up from 15-minute polls, a proxy for the backtest's real daily
+H/L -- disclosed, not silently assumed equivalent); no IDX holiday
+calendar (relies on `ihsg_eod` simply not advancing, same assumption
+`screener.py` already makes in production); one continuous run, no
+versioning/reset UI for v1.
+
+**Blocked on a manual step**: Supabase MCP was disconnected for this
+entire session, so `sql/paper_trading_schema.sql` (the two new tables
++ the seed row) has not been applied yet -- needs to be run once,
+manually or once the MCP reconnects, before the first
+`paper_signal_scan.py` run. Everything else (code, workflows, frontend)
+is pushed and ready.
