@@ -1435,3 +1435,39 @@ entire session, so `sql/paper_trading_schema.sql` (the two new tables
 manually or once the MCP reconnects, before the first
 `paper_signal_scan.py` run. Everything else (code, workflows, frontend)
 is pushed and ready.
+
+**Update same day**: Supabase MCP reconnected -- applied
+`sql/paper_trading_schema.sql` directly (fixed one real bug found in
+the process: Postgres has no `CREATE POLICY IF NOT EXISTS`, swapped to
+`DROP POLICY IF EXISTS` + `CREATE POLICY`, and guarded the seed insert
+against re-runs). Confirmed live: run id 32, `V3_PAPER`,
+Rp100,000,000 cash, `last_signal_date` null. User confirmed the site
+and paper run are live and checked in.
+
+## Paper-trading hardening (same day): DELISTED_GAP + failure alerting
+
+Two gaps identified right after launch, both closed same day:
+
+1. **`DELISTED_GAP` wasn't ported to the live engine.** The backtest
+   force-exits a position after `DELISTING_GAP_DAYS` (10) consecutive
+   trading days with no EOD print -- without it, a suspended/delisted
+   stock in the live run would sit "open" forever, frozen at its last
+   mark-to-market price, the same blind spot fixed in the backtest
+   itself earlier this session. Ported into `paper_signal_scan.py`'s
+   EOD reconciliation pass: two new `paper_positions` columns
+   (`no_data_days`, `last_valid_close`, applied live via the MCP),
+   incremented/reset exactly like the backtest's own position dict.
+2. **No alerting if the jobs themselves fail.** GitHub Actions emails
+   on a red run, but that's easy to miss for days on a background cron.
+   Added `paper_common.run_guarded()`, wrapping both scripts'
+   entry points: any uncaught exception now sends a Telegram alert with
+   the traceback before re-raising (the workflow still shows red too).
+
+Also added a "How This Works" explainer to `/paper-trading` (frozen
+config, real fee structure, cadence, the day-high/day-low intrabar
+proxy, explicit not-investment-advice disclosure) -- verified via
+`tsc --noEmit` and a full `next build`, both clean. Backend changes
+verified via syntax check + the existing money-math dry-run
+(`src/test_paper_trading_math.py`, still 8/8) -- neither touches
+`compute_entry_fill`/`evaluate_position_exit`, so no walk-forward
+regression re-check was needed this round.
