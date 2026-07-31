@@ -199,4 +199,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    pc.run_guarded(main, "paper_monitor.py")

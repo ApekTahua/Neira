@@ -32,6 +32,8 @@ create table if not exists paper_positions (
   day_high numeric,                   -- reset daily, built up from 15-min polls
   day_low numeric,
   hold_days int not null default 0,
+  no_data_days int not null default 0, -- consecutive trading days with no EOD print -- DELISTED_GAP detection
+  last_valid_close numeric,           -- forced-exit price once no_data_days hits DELISTING_GAP_DAYS
   checkpoint_day int,
   target_price numeric,
   exit_date date,

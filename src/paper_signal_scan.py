@@ -144,8 +144,36 @@ def main():
     for row in open_positions:
         if row["entry_date"] == today.isoformat():
             continue  # filled today by paper_monitor.py -- don't exit-check same-day, matches backtest_v3.py's own guard
+
         if row["stock_code"] not in today_bars.index:
-            continue  # no EOD print today (suspension/no trade) -- leave open as-is
+            # No EOD print today -- suspension or delisting. Same DELISTING_GAP_DAYS force-exit
+            # the backtest applies (src/backtest_v3.py's simulate_window "no bar found" branch):
+            # without this, a delisted position would sit open forever, frozen at its last
+            # mark-to-market price, never contributing its real loss.
+            no_data_days = int(row["no_data_days"]) + 1
+            hold_days = int(row["hold_days"]) + 1
+            if no_data_days >= bt.DELISTING_GAP_DAYS and row["last_valid_close"] is not None:
+                exit_price = float(row["last_valid_close"])
+                remaining_lots = int(row["remaining_lots"])
+                sell_qty = remaining_lots * LOT_SIZE
+                gross_return = exit_price * sell_qty
+                fee = gross_return * cfg.SELL_FEE
+                net_return = gross_return - fee
+                pnl = net_return - float(row["cost_basis"])
+                pnl_pct = (exit_price / float(row["avg_price"]) - 1) * 100
+                cash += net_return
+                trade_record = {
+                    "stock_code": row["stock_code"], "entry_date": date.fromisoformat(row["entry_date"]),
+                    "exit_date": today, "entry_price": float(row["avg_price"]), "exit_price": exit_price,
+                    "lots": remaining_lots, "pnl": pnl, "pnl_pct": pnl_pct, "exit_reason": "DELISTED_GAP",
+                    "trigger": row["trigger"], "hold_days": hold_days,
+                }
+                _close_position(supabase, run_id, row["id"], {"remaining_lots": 0}, trade_record)
+                print(f"  [EOD-RECONCILE] {row['stock_code']}: DELISTED_GAP (no print for {no_data_days}d) pnl={pnl:+,.0f}")
+            else:
+                supabase.table("paper_positions").update({"no_data_days": no_data_days, "hold_days": hold_days}).eq("id", row["id"]).execute()
+            continue
+
         bar_row = today_bars.loc[row["stock_code"]]
         bar = (float(bar_row["open_price"]), float(bar_row["close_price"]), float(bar_row["high"]), float(bar_row["low"]))
 
@@ -160,10 +188,12 @@ def main():
             if trade_record["exit_reason"] == "TP1":
                 pos["hold_days"] += 1
                 _persist_position(supabase, row["id"], pos)
+                supabase.table("paper_positions").update({"no_data_days": 0, "last_valid_close": bar[1]}).eq("id", row["id"]).execute()
             continue
 
         pos["hold_days"] += 1
         _persist_position(supabase, row["id"], pos)
+        supabase.table("paper_positions").update({"no_data_days": 0, "last_valid_close": bar[1]}).eq("id", row["id"]).execute()
 
     # ---- New candidates for tomorrow's open ----
     train_liquid_bullish = df[
@@ -284,4 +314,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    pc.run_guarded(main, "paper_signal_scan.py")

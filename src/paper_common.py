@@ -12,6 +12,8 @@ only ever ships as a new run (e.g. V3.1_PAPER), never a silent edit here.
 """
 
 import os
+import sys
+import traceback
 import requests
 
 PAPER_VERSION = "V3_PAPER"
@@ -88,3 +90,18 @@ def notify(text: str) -> None:
         resp.raise_for_status()
     except Exception as e:
         print(f"WARNING: Failed to send Telegram message: {e}")
+
+
+def run_guarded(main_fn, script_name: str) -> None:
+    """Runs main_fn(); on any uncaught exception, sends a Telegram alert
+    (GitHub Actions already emails on a failed run, but that's easy to
+    miss for days -- this makes a broken paper-trading job impossible to
+    miss) and re-raises so the workflow still shows red.
+    """
+    try:
+        main_fn()
+    except Exception:
+        tb = traceback.format_exc()
+        print(tb, file=sys.stderr)
+        notify(f"\U0001F6A8 *{script_name} crashed*\n```\n{tb[-500:]}\n```")
+        raise
