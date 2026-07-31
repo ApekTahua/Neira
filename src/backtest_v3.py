@@ -393,6 +393,66 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
     } for _, sig in candidates.nlargest(top_n, "score").iterrows()]
 
 
+def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: float,
+                        log_adtv_p90: float, score_p90: float = 1.0, trend_strength: float = 0.0,
+                        trend_strength_p90: float = 1.0):
+    """Sizing + fee math for filling ONE queued candidate at its execution-day open price.
+    Extracted so the live paper-trading monitor (src/paper_monitor.py) fills entries through
+    the exact same sizing formulas as this backtest -- score_mult/liq_mult/trend_mult, the
+    ATR-based TP1/SL calc, and every cap (RISK_PCT, LIQ_CAP_PCT, ALLOC_MIN_LOTS). Does NOT
+    include the gap-check, portfolio-slot count, or cooldown gating -- those are loop-level
+    concerns the caller still owns (they differ between "iterating a historical day" and
+    "checking one live candidate"). Returns None if the fill doesn't clear ALLOC_MIN_LOTS,
+    else a dict with lots/cost_basis/tp1_price/sl_price/checkpoint_day/expected_hold_days.
+    """
+    atr_val = sig["atr"]
+    if atr_val is None or (isinstance(atr_val, float) and (np.isnan(atr_val) or atr_val <= 0)):
+        tp1_price = entry_price * 1.02
+        sl_price = entry_price * (1 - SL_PCT)
+        expected_hold_days = None
+        atr_val = None
+    else:
+        tp1_price = entry_price + atr_val * cfg.TP1_MULT
+        sl_price = entry_price - atr_val * 1.5
+        tp1_price = max(tp1_price, entry_price * 1.01)
+        sl_price = min(sl_price, entry_price * 0.99)
+        expected_hold_days = abs(sig["tp_target"] - entry_price) / atr_val
+
+    size_mult = min(2.0, max(0.5, sig.get("score", score_p90) / score_p90)) if SCORE_SIZING_ENABLED else 1.0
+    liq_mult = min(LIQ_SIZING_MAX, max(LIQ_SIZING_MIN, np.log(max(sig.get("adtv_20", 1.0), 1.0)) / log_adtv_p90)) if LIQ_SIZING_ENABLED else 1.0
+    trend_mult = min(TREND_SIZING_MAX, max(TREND_SIZING_MIN, trend_strength / trend_strength_p90)) if TREND_SIZING_ENABLED else 1.0
+    alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult, cash)
+    cost_per_share = entry_price * (1 + cfg.BUY_FEE)
+    lots = int(alloc / cost_per_share) // LOT_SIZE
+    risk_per_share = entry_price - sl_price
+    if risk_per_share > 0:
+        lots_risk = int(prev_equity * cfg.RISK_PCT / risk_per_share) // LOT_SIZE
+        lots = min(lots, lots_risk)
+    liq_lots = int(sig["avg_vol_20"] * cfg.LIQ_CAP_PCT) // LOT_SIZE
+    lots = min(lots, liq_lots)
+    if lots < cfg.ALLOC_MIN_LOTS:
+        return None
+
+    quantity = lots * LOT_SIZE
+    cost_basis = quantity * cost_per_share
+    if cost_basis > cash:
+        lots = int(cash / cost_per_share) // LOT_SIZE
+        if lots < 1:
+            return None
+        quantity = lots * LOT_SIZE
+        cost_basis = quantity * cost_per_share
+
+    checkpoint_day = None
+    if ADAPTIVE_HOLDTIME and expected_hold_days is not None and expected_hold_days >= HOLDTIME_MIN_DAYS:
+        checkpoint_day = int(np.clip(round(expected_hold_days), HOLDTIME_MIN_CHECKPOINT, HOLDTIME_CAP_DAYS))
+
+    return {
+        "lots": lots, "quantity": quantity, "cost_basis": cost_basis,
+        "tp1_price": tp1_price, "sl_price": sl_price, "checkpoint_day": checkpoint_day,
+        "atr_at_entry": atr_val,
+    }
+
+
 def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: float,
                             trade_date, prev_equity: float, cash: float):
     """SL/TP1/TRAILING/CHECKPOINT/TIME exit decision + the TP1/TP2 pyramid-add-on, for ONE
@@ -642,78 +702,26 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             if abs(entry_price / sc_price - 1) > gap_limit:
                 continue
 
-            atr_val = sig["atr"]
-            if pd.isna(atr_val) or atr_val <= 0:
-                tp1_price = entry_price * 1.02
-                sl_price = entry_price * (1 - SL_PCT)
-                expected_hold_days = None  # unreliable ATR -- don't gate a checkpoint on it
-            else:
-                tp1_price = entry_price + atr_val * cfg.TP1_MULT
-                sl_price = entry_price - atr_val * 1.5
-                tp1_price = max(tp1_price, entry_price * 1.01)
-                sl_price = min(sl_price, entry_price * 0.99)
-                expected_hold_days = abs(sig["tp_target"] - entry_price) / atr_val
-
-            # Score-weighted sizing (tested; see SCORE_SIZING_ENABLED docstring
-            # above): a signal scoring at the train-derived 90th percentile
-            # gets the base allocation; stronger/weaker signals scale up/down,
-            # clipped so no single position can dominate the portfolio the
-            # way concentration already does in most walk-forward windows.
-            # RISK_PCT/LIQ_CAP_PCT sizing below still caps the actual lot
-            # count regardless -- this only raises/lowers the ALLOC_PCT
-            # ceiling those caps work within.
-            size_mult = min(2.0, max(0.5, sig.get("score", score_p90) / score_p90)) if SCORE_SIZING_ENABLED else 1.0
-            # Liquidity-weighted sizing: entering bigger on very liquid,
-            # large-cap names specifically, using real ADTV (already
-            # computed/filtered) rather than adding more portfolio slots --
-            # MAX_POSITIONS 8/10 tested worse (see V3_FINDINGS_LOG.md, most
-            # return comes from a few outlier winners, diluting position
-            # size to fit more names shrinks their slice too). log-scale
-            # against the train-derived 90th-percentile ADTV, same clip
-            # bounds as score-sizing. Composes with size_mult (both default
-            # to 1.0 when their own toggle is off).
-            liq_mult = min(LIQ_SIZING_MAX, max(LIQ_SIZING_MIN, np.log(max(sig.get("adtv_20", 1.0), 1.0)) / log_adtv_p90)) if LIQ_SIZING_ENABLED else 1.0
-            # Regime-strength sizing: ranked against the day of EXECUTION
-            # (today, when cash actually deploys), not the day the signal
-            # was generated -- capital allocation should reflect the
-            # regime's current strength, not its strength when queued.
-            trend_val = trend_strength_by_date.get(trade_date, 0.0)
-            trend_mult = min(TREND_SIZING_MAX, max(TREND_SIZING_MIN, trend_val / trend_strength_p90)) if TREND_SIZING_ENABLED else 1.0
-            alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult, cash)
-            cost_per_share = entry_price * (1 + cfg.BUY_FEE)
-            lots = int(alloc / cost_per_share) // LOT_SIZE
-            risk_per_share = entry_price - sl_price
-            if risk_per_share > 0:
-                lots_risk = int(prev_equity * cfg.RISK_PCT / risk_per_share) // LOT_SIZE
-                lots = min(lots, lots_risk)
-            liq_lots = int(sig["avg_vol_20"] * cfg.LIQ_CAP_PCT) // LOT_SIZE
-            lots = min(lots, liq_lots)
-            if lots < cfg.ALLOC_MIN_LOTS:
+            # Sizing/fee/TP1-SL math extracted to compute_entry_fill() so the live
+            # paper-trading monitor (src/paper_monitor.py) fills entries through the exact
+            # same formulas -- see that function's docstring.
+            fill = compute_entry_fill(
+                sig, entry_price, cash, prev_equity, log_adtv_p90, score_p90,
+                trend_strength_by_date.get(trade_date, 0.0), trend_strength_p90,
+            )
+            if fill is None:
                 continue
 
-            quantity = lots * LOT_SIZE
-            cost_basis = quantity * cost_per_share
-            if cost_basis > cash:
-                lots = int(cash / cost_per_share) // LOT_SIZE
-                if lots < 1:
-                    continue
-                quantity = lots * LOT_SIZE
-                cost_basis = quantity * cost_per_share
-
-            checkpoint_day = None
-            if ADAPTIVE_HOLDTIME and expected_hold_days is not None and expected_hold_days >= HOLDTIME_MIN_DAYS:
-                checkpoint_day = int(np.clip(round(expected_hold_days), HOLDTIME_MIN_CHECKPOINT, HOLDTIME_CAP_DAYS))
-
-            cash -= cost_basis
+            cash -= fill["cost_basis"]
             positions.append({
                 "stock_code": sig["stock_code"], "entry_date": trade_date, "entry_day_idx": day_idx, "avg_price": entry_price,
-                "tp1_price": tp1_price, "sl_price": sl_price, "total_lots": lots, "remaining_lots": lots,
-                "quantity": quantity, "cost_basis": cost_basis, "hold_days": 0, "tp1_hit": False, "tp2_hit": False,
+                "tp1_price": fill["tp1_price"], "sl_price": fill["sl_price"], "total_lots": fill["lots"], "remaining_lots": fill["lots"],
+                "quantity": fill["quantity"], "cost_basis": fill["cost_basis"], "hold_days": 0, "tp1_hit": False, "tp2_hit": False,
                 "highest_price": entry_price, "trigger": sig["trigger"],
                 "no_data_days": 0, "last_valid_close": entry_price,
-                "checkpoint_day": checkpoint_day, "target_price": sig["tp_target"],
+                "checkpoint_day": fill["checkpoint_day"], "target_price": sig["tp_target"],
                 "entry_price_original": entry_price,
-                "atr_at_entry": atr_val if not (pd.isna(atr_val) or atr_val <= 0) else None,
+                "atr_at_entry": fill["atr_at_entry"],
             })
             new_entries_today += 1
         pending_entries = []
