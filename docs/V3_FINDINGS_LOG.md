@@ -1284,3 +1284,83 @@ Logging this as a real negative result, not a quiet walk-back: the
 instinct behind it (size down when the regime is barely qualifying) was
 reasonable and worth testing, and testing it honestly is exactly what
 avoided adopting a fragile, order-of-magnitude-sensitive parameter.
+
+## Roadmap item #2 scoped, not built: only one real chop episode exists in the available data
+
+Before designing the complementary weak-trend/mean-reversion signal
+(roadmap item #2), checked whether there's actually enough independent
+evidence to validate one. Computed regime-flip counts (a real chop
+proxy -- how often BULLISH/NEUTRAL/BEARISH actually flips, unlike raw
+trend-strength which also dips during clean downtrends) across all 9
+walk-forward windows:
+
+| Window | Period | Regime flips | Bullish-day frac | Win rate |
+|---|---|---|---|---|
+| W1 | 2022 H1 | 1 | 60% | 54.5% |
+| W2 | 2022 H2 | 2 | 28% | 50.0% |
+| **W3** | **2023 H1** | **4** | 29% | 42.1% |
+| W4 | 2023 H2 | 3 | 62% | 50.0% |
+| W5 | 2024 H1 | 1 | 30% | 40.0% |
+| W6 | 2024 H2 | 2 | 53% | 54.5% |
+| W7 | 2025 H1 | 1 | 33% | 71.4% |
+| W8 | 2025 H2 | 0 | 93% | 65.6% |
+| W9 | 2026 H1 | 1 | 15% | 34.8% |
+
+Low trend-strength/bullish-day-fraction alone does not predict a bad
+window -- W7 and W9 both have low bullish-day fractions but only 1
+regime flip each (clean, sustained trends, just not upward for most of
+the window) and the existing signal does fine (W7: 71.4% win rate) or
+relatively well (W9: loses money outright but still beats a crashing
+benchmark by +19.75%). **Frequent regime flipping, not low trend
+strength, is what actually correlates with a bad window** -- and only
+W3 has more than 3 flips.
+
+Then checked whether more chop episodes exist in the data outside the
+rigid 6-month calendar schedule (a real chop cluster could span two
+windows and get diluted by the arbitrary boundary). Scanned continuously
+-- every rolling 126-trading-day window, stepped monthly, across the
+full cached history back to 2020-06 -- ranked by flip count:
+
+```
+2023-01-06..2023-07-25: 5 flips
+2022-11-09..2023-05-17: 4 flips
+2022-12-08..2023-06-20: 4 flips
+2023-02-07..2023-08-24: 4 flips
+2023-04-11..2023-10-24: 4 flips
+2022-04-01..2022-10-10: 3 flips
+2022-09-12..2023-03-07: 3 flips
+2023-03-08..2023-09-22: 3 flips
+2023-06-21..2023-12-21: 3 flips
+2020-06-15..2020-12-17: 2 flips  <- next-highest era, and still lower
+```
+
+**Every single one of the choppiest rolling windows is the same
+underlying episode** (roughly Nov 2022 - Oct 2023), just measured at
+different overlapping offsets -- not independent chop events. Nothing
+in 2020-06 through 2026-06 comes close outside that one stretch. Real
+answer: **this market has produced exactly one genuinely choppy,
+whipsaw-prone episode in the ~6 years of clean data available**, and
+window 3 sits inside it.
+
+**Conclusion: not building the complementary signal right now.**
+Validating a new signal type against what is honestly a single
+historical episode -- however it's sliced into overlapping windows --
+is the same mistake as the hysteresis-band sweep this session already
+walked back from: a result that looks validated because it's measured
+many times, when it's actually one draw dressed up as several. A signal
+tuned to fit this one stretch would be indistinguishable from curve-
+fitting to it, and there is no way to tell the difference with the data
+that exists. This is a data-availability limit, not a verdict that the
+underlying idea (a different entry logic for genuinely choppy regimes)
+is wrong -- it becomes buildable the day either more history becomes
+available or the market produces a second chop episode to validate
+against independently. Revisit then. Deferring, not abandoning.
+
+**Practical implication for the roadmap**: with item #1 rejected and
+item #2 correctly un-buildable for now, the two items left with a real
+path forward are #3 (keep the walk-forward-only discipline permanent --
+already the practice, nothing new to build) and #5 (paper-trade the
+current best validated configuration going forward, since that's the
+one place additional real evidence can still come from without needing
+more historical data). #4 (a separate intraday research track) remains
+a distinct, larger investment decision, not something to fold into V3.
