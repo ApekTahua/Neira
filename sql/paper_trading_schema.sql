@@ -62,9 +62,11 @@ alter table paper_account enable row level security;
 -- Frontend reads directly with the anon key (same pattern as backtest_trades/
 -- backtest_equity) -- no anon write policy, backend writes with the
 -- service-role SUPABASE_KEY already used by run_screener.yml.
-create policy if not exists paper_positions_select_anon on paper_positions
+drop policy if exists paper_positions_select_anon on paper_positions;
+create policy paper_positions_select_anon on paper_positions
   for select to anon, authenticated using (true);
-create policy if not exists paper_account_select_anon on paper_account
+drop policy if exists paper_account_select_anon on paper_account;
+create policy paper_account_select_anon on paper_account
   for select to anon, authenticated using (true);
 
 -- One-time seed: creates the single ongoing paper-trading run and its cash
@@ -75,19 +77,21 @@ create policy if not exists paper_account_select_anon on paper_account
 -- startup via `select id from backtest_runs where version='V3_PAPER'
 -- order by id desc limit 1` -- never hardcoded, so this seed is the only
 -- manual step.
+-- Guarded so re-running this migration never creates a second paper run.
 with new_run as (
   insert into backtest_runs (
     version, period_start, period_end, initial_capital, final_capital,
     net_profit_pct, benchmark_pct, alpha_pct, total_trades, win_rate,
     profit_factor, max_drawdown, notes, strategy_summary, is_published
-  ) values (
+  )
+  select
     'V3_PAPER', current_date, current_date, 100000000, 100000000,
     0, 0, 0, 0, 0,
     null, 0,
     'Live paper trading, current best validated V3 configuration (LIQ_SIZING on, PYRAMID on, QUANTILE_CUT=0.60, TP1_MULT=1.5, TRAILING_PCT=0.08, MAX_POSITIONS=6, ALLOC_PCT=0.20). Frozen at launch -- see docs/V3_FINDINGS_LOG.md governance note.',
     'V3 Paper Trading (started 2026-08-03)',
     false
-  )
+  where not exists (select 1 from backtest_runs where version = 'V3_PAPER')
   returning id
 )
 insert into paper_account (run_id, cash, last_signal_date)
