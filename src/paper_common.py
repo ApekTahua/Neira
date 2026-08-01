@@ -1,20 +1,25 @@
 """paper_common.py -- shared helpers for the live paper-trading engine
-(src/paper_signal_scan.py, src/paper_monitor.py). Not imported by any V1
-live file; kept separate from notifier.py/config.py deliberately since
-those are frozen production files (see CLAUDE.md).
+(src/paper_signal_scan.py, src/paper_monitor.py), plus run_guarded() and
+notify() reused by src/disclosure_extract.py purely for the generic
+crash-alert wrapper -- that script is NOT part of paper trading and is
+NOT covered by the governance rule below. Not imported by any V1 live
+file; kept separate from notifier.py/config.py deliberately since those
+are frozen production files (see CLAUDE.md).
 
-Governance: the paper run trades the exact configuration recorded as
-"current best validated V3 configuration" in docs/V3_FINDINGS_LOG.md at
-launch (2026-08-03) and that configuration is frozen for the run's
-lifetime -- see the "Live paper trading" section of that log. Further
-algorithm research continues on the backtest side only; an improvement
-only ever ships as a new run (e.g. V3.1_PAPER), never a silent edit here.
+Governance (paper-trading scripts only): the paper run trades the exact
+configuration recorded as "current best validated V3 configuration" in
+docs/V3_FINDINGS_LOG.md at launch (2026-08-03) and that configuration is
+frozen for the run's lifetime -- see the "Live paper trading" section of
+that log. Further algorithm research continues on the backtest side
+only; an improvement only ever ships as a new run (e.g. V3.1_PAPER),
+never a silent edit here.
 """
 
 import os
 import sys
 import traceback
 import requests
+import numpy as np
 
 PAPER_VERSION = "V3_PAPER"
 
@@ -37,10 +42,13 @@ def compute_drawdown_and_cvar(equity_history: list, today_equity: float) -> tupl
       - drawdown_pct: today's distance from the running peak (incl. today),
         <= 0. Previously hardcoded to 0.0 on every insert -- a real gap,
         fixed here.
-      - cvar_95: mean daily return of the worst 5% of days so far, or None
-        before there are at least 20 daily returns to compute one from
-        (same threshold backtest_v3.py's simulate_window uses) -- noisy
-        and misleading on a handful of days, so withheld rather than shown.
+      - cvar_95: mean daily return of the days at/below the 5th-percentile
+        return (same quantile-then-average method as backtest_v3.py's
+        simulate_window -- kept identical on purpose, so a "live CVaR" and
+        a "backtest CVaR" are actually comparable numbers, not two
+        different formulas sharing a label), or None before there are at
+        least 20 daily returns to compute one from -- noisy and misleading
+        on a handful of days, so withheld rather than shown.
     """
     series = equity_history + [today_equity]
     peak = max(series)
@@ -51,10 +59,9 @@ def compute_drawdown_and_cvar(equity_history: list, today_equity: float) -> tupl
     daily_rets = [(series[i] / series[i - 1] - 1) for i in range(1, len(series)) if series[i - 1] > 0]
     if len(daily_rets) < 20:
         return drawdown_pct, None
-    sorted_rets = sorted(daily_rets)
-    cutoff_idx = max(1, round(len(sorted_rets) * 0.05))
-    worst = sorted_rets[:cutoff_idx]
-    cvar_95 = (sum(worst) / len(worst)) * 100
+    var_95 = float(np.quantile(daily_rets, 0.05))
+    worst = [r for r in daily_rets if r <= var_95]
+    cvar_95 = (sum(worst) / len(worst)) * 100 if worst else var_95 * 100
     return drawdown_pct, cvar_95
 
 

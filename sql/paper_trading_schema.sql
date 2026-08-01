@@ -7,6 +7,13 @@
 -- backtest_equity as-is (same schema src/backtest_v3.py already writes) --
 -- only these two tables are new.
 
+-- backtest_runs predates this file and isn't otherwise defined here, but
+-- both src/backtest_v3.py (_save_to_supabase) and src/paper_signal_scan.py
+-- (EOD summary update) now write a cvar_95 value into it -- recorded here
+-- so the column isn't only real in the live Supabase project and missing
+-- from a from-scratch rebuild off this repo's SQL files.
+alter table backtest_runs add column if not exists cvar_95 numeric;
+
 create table if not exists paper_positions (
   id bigserial primary key,
   run_id bigint not null references backtest_runs(id),

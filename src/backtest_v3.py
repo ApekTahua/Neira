@@ -790,7 +790,12 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
                     sell_lots = pos["remaining_lots"]
                     sell_qty = sell_lots * LOT_SIZE
                     sell_cost_basis = pos["cost_basis"] * (sell_lots / pos["total_lots"])
-                    gross_return = exit_price * sell_qty
+                    # This is a forced sale of a stock that hasn't printed in
+                    # DELISTING_GAP_DAYS -- the worst-liquidity exit case that
+                    # exists, so it gets participation=1.0 (not an estimate off
+                    # avg_vol_20, which is meaningless for a name that isn't
+                    # trading) rather than silently skipping slippage here.
+                    gross_return = apply_slippage(exit_price, "sell", 1.0) * sell_qty
                     fee = risk.apply_fee(gross_return, "sell", cfg.BUY_FEE, cfg.SELL_FEE)
                     net_return = gross_return - fee
                     pnl = net_return - sell_cost_basis
@@ -876,7 +881,8 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             exit_price = pos["avg_price"]
         exit_qty = pos["remaining_lots"] * LOT_SIZE
         exit_cost_basis = pos["cost_basis"] * (pos["remaining_lots"] / pos["total_lots"])
-        gross_return = exit_price * exit_qty
+        end_participation = exit_qty / max(pos.get("avg_vol_20", 1.0), 1.0)
+        gross_return = apply_slippage(exit_price, "sell", end_participation) * exit_qty
         fee = risk.apply_fee(gross_return, "sell", cfg.BUY_FEE, cfg.SELL_FEE)
         net_return = gross_return - fee
         pnl = net_return - exit_cost_basis
