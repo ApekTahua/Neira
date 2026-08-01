@@ -1543,6 +1543,58 @@ to real capital, this needs a properly calibrated slippage model (real
 IDX bid-ask/impact data, not an estimate) run against the full
 walk-forward battery, not just this directional check.
 
+## Walking back the slippage number: functional form matters more than expected
+
+Read the actual paper behind the slippage idea in full this session --
+Cont, Kukanov & Stoikov (2011), "The Price Impact of Order Book
+Events" -- rather than just citing it. Their real, validated model is
+`price_change = beta * order_flow_imbalance`, `beta ~ 1/market_depth`,
+estimated on Level-1 bid/ask queue data (65% average R^2 across 50
+NYSE stocks). **This project has no such data for IDX names** -- only
+EOD OHLCV, no bid/ask depth at any timescale -- so that model is
+simply not buildable here, not now and not without a new data source.
+
+The linear-in-participation slippage shipped earlier this session was
+never actually sourced from this paper -- it was an unsourced straight
+line with round-number bps. Going back to CKS's own text, they *do*
+derive a volume-only proxy (`price_change ~ sqrt(volume)`, their
+equation 14) as a byproduct of the real model, for exactly this
+situation -- no book data, only trade/volume data. But they explicitly
+call it noisier than the real model and write "we do not recommend to
+use it." Used it anyway, since a concave shape grounded in a real
+derivation is more defensible than an arbitrary linear one, and it's
+the only proxy that fits what this project actually has.
+
+**Swapped `apply_slippage()`'s impact term from linear to
+`sqrt(participation)`**, recalibrated `SLIPPAGE_IMPACT_BPS` (50 -> 16)
+so impact at the liquidity cap (10% of ADTV, `cfg.LIQ_CAP_PCT`) lands
+near the same ~5bps the old linear model gave at its own cap --
+apples-to-apples at the one point both curves were anchored to.
+Result, full 9-window walk-forward: **mean alpha +21.71% -> +21.25%**
+(previously reported: -> +9.73%), median profit factor 1.12 -> 1.14
+(previously reported: -> 0.90), win-rate-clearing-50% 4/9 -> **5/9**
+(previously reported: unchanged at 4/9). **Window 4's alpha sign flip
+(+41.89% -> -24.03%) does not reproduce** -- under the sqrt model it's
++42.21%, essentially untouched. Slippage-off run re-verified
+byte-identical first, so this is a clean swap, not new drift. Dry-run
+math test still 8/8 (default stays off; live paper engine unaffected
+either way).
+
+**The actual finding here isn't "impact is small after all."** It's
+that this project's own slippage estimate swung from "roughly halves
+the edge and flips a window" to "barely moves anything" purely from
+changing the shape of an unvalidated cost function -- neither version
+is fit to real IDX execution data, both are estimates. That's the
+same failure mode as the hysteresis-band sensitivity sweep earlier
+this session (one config looked great, the neighborhood didn't): a
+number this sensitive to an arbitrary modeling choice isn't a number
+to trust either direction. The honest position is unchanged from
+before this whole detour: **the frictionless backtest number is an
+upper bound, the true real-world number is unknown but not zero, and
+nothing short of real IDX bid-ask/impact data closes that gap** -- not
+another guess at a better-sounding formula. Not deployment-ready
+either way.
+
 **Also added, same session: CVaR(95%) as a second tail-risk metric**
 alongside `max_drawdown` -- mean daily return on the worst 5% of days
 in a window's equity curve. Distinct signal from drawdown (one

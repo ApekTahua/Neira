@@ -267,9 +267,20 @@ PYRAMID_TP2_ENABLED = os.environ.get("V3_PYRAMID_TP2", "0") == "1"
 # earlier this session. The live paper engine NEVER sets V3_SLIPPAGE
 # (not in any GitHub Actions workflow env), so this cannot change its
 # frozen behavior -- it only fires inside backtest/walk-forward runs.
+# Impact term uses sqrt(participation), not participation itself -- Cont,
+# Kukanov & Stoikov (2011), "The Price Impact of Order Book Events",
+# read in full this session. Their real model (price change = beta * order
+# flow imbalance, beta ~ 1/depth) needs Level-1 bid/ask queue data we don't
+# have for IDX names -- EOD OHLCV only. The one piece of their paper usable
+# with volume-only data is the "square-root" price-impact-vs-volume relation
+# they derive as a byproduct -- concave, matching the wider market-impact
+# literature's consensus shape -- but the authors explicitly call it noisier
+# and "not recommended" versus their real OFI-based model. Used here anyway
+# because it's still a better-justified functional form than an unsourced
+# straight line, not because it's validated for this market.
 SLIPPAGE_ENABLED = os.environ.get("V3_SLIPPAGE", "0") == "1"
 SLIPPAGE_BASE_BPS = float(os.environ.get("V3_SLIPPAGE_BASE_BPS", "5"))  # always-on cost of crossing the spread
-SLIPPAGE_IMPACT_BPS = float(os.environ.get("V3_SLIPPAGE_IMPACT_BPS", "50"))  # extra bps per 100% of a stock's own ADTV taken
+SLIPPAGE_IMPACT_BPS = float(os.environ.get("V3_SLIPPAGE_IMPACT_BPS", "16"))  # bps at 100% of a stock's own ADTV taken (sqrt-scaled below that)
 BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
 BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
@@ -385,7 +396,7 @@ def apply_slippage(price: float, side: str, participation: float = 0.0) -> float
     the live paper engine calls compute_entry_fill/evaluate_position_exit."""
     if not SLIPPAGE_ENABLED:
         return price
-    slip = (SLIPPAGE_BASE_BPS + SLIPPAGE_IMPACT_BPS * max(participation, 0.0)) / 10000.0
+    slip = (SLIPPAGE_BASE_BPS + SLIPPAGE_IMPACT_BPS * max(participation, 0.0) ** 0.5) / 10000.0
     return price * (1 + slip) if side == "buy" else price * (1 - slip)
 
 
