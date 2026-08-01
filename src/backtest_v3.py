@@ -358,6 +358,7 @@ def _save_to_supabase(supabase, df_trades: pd.DataFrame, df_equity: pd.DataFrame
             "win_rate": metrics["win_rate"],
             "profit_factor": None if metrics["profit_factor"] == float("inf") else metrics["profit_factor"],
             "max_drawdown": metrics["max_drawdown"],
+            "cvar_95": None if pd.isna(metrics["cvar_95"]) else metrics["cvar_95"],
             "notes": metrics["notes"],
             "strategy_summary": metrics["notes"],
             "is_published": BACKTEST_PUBLISH,
