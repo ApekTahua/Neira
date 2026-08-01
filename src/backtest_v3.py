@@ -258,6 +258,18 @@ PYRAMID_TREND_GATE_MIN = float(os.environ.get("V3_PYRAMID_TREND_GATE_MIN", "0.03
 # that proves itself further (see docstring at the trigger site). Off by
 # default -- unvalidated.
 PYRAMID_TP2_ENABLED = os.environ.get("V3_PYRAMID_TP2", "0") == "1"
+# Realism check on a known, disclosed simplification: every fill so far
+# (backtest AND live paper engine) executes at the exact observed
+# price, no cost for actually crossing the spread or moving an illiquid
+# name's own volume. Off by default -- exists to test whether that
+# assumption is inflating the headline numbers, the same category of
+# bug as the survivorship/delisted-handling/liquidity-filter fixes
+# earlier this session. The live paper engine NEVER sets V3_SLIPPAGE
+# (not in any GitHub Actions workflow env), so this cannot change its
+# frozen behavior -- it only fires inside backtest/walk-forward runs.
+SLIPPAGE_ENABLED = os.environ.get("V3_SLIPPAGE", "0") == "1"
+SLIPPAGE_BASE_BPS = float(os.environ.get("V3_SLIPPAGE_BASE_BPS", "5"))  # always-on cost of crossing the spread
+SLIPPAGE_IMPACT_BPS = float(os.environ.get("V3_SLIPPAGE_IMPACT_BPS", "50"))  # extra bps per 100% of a stock's own ADTV taken
 BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
 BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
@@ -365,6 +377,18 @@ def _save_to_supabase(supabase, df_trades: pd.DataFrame, df_equity: pd.DataFrame
         print(f"WARNING: Failed to save to Supabase: {e}")
 
 
+def apply_slippage(price: float, side: str, participation: float = 0.0) -> float:
+    """Widens a fill price against the trader: buys pay more, sells receive less.
+    `participation` = order quantity / a stock's own avg_vol_20 -- how big a bite
+    out of the stock's own daily liquidity this single order represents. No-op
+    (returns price unchanged) unless SLIPPAGE_ENABLED, so this is inert everywhere
+    the live paper engine calls compute_entry_fill/evaluate_position_exit."""
+    if not SLIPPAGE_ENABLED:
+        return price
+    slip = (SLIPPAGE_BASE_BPS + SLIPPAGE_IMPACT_BPS * max(participation, 0.0)) / 10000.0
+    return price * (1 + slip) if side == "buy" else price * (1 - slip)
+
+
 def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: float, top_n: int = 15) -> list:
     """Filters a single trading day's cross-section to qualifying candidates (liquidity,
     weekly-trend, sector-momentum, ATR sanity) and returns the top-N by score as plain dicts.
@@ -422,7 +446,12 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
     liq_mult = min(LIQ_SIZING_MAX, max(LIQ_SIZING_MIN, np.log(max(sig.get("adtv_20", 1.0), 1.0)) / log_adtv_p90)) if LIQ_SIZING_ENABLED else 1.0
     trend_mult = min(TREND_SIZING_MAX, max(TREND_SIZING_MIN, trend_strength / trend_strength_p90)) if TREND_SIZING_ENABLED else 1.0
     alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult, cash)
-    cost_per_share = entry_price * (1 + cfg.BUY_FEE)
+    # Participation estimated from the pre-slippage desired size (one-pass
+    # approximation, not an iterative solver -- good enough given lots is
+    # further capped by liq_lots below regardless of this estimate).
+    est_participation = (alloc / max(entry_price, 1e-6)) / max(sig.get("avg_vol_20", 1.0), 1.0)
+    slipped_entry_price = apply_slippage(entry_price, "buy", est_participation)
+    cost_per_share = slipped_entry_price * (1 + cfg.BUY_FEE)
     lots = int(alloc / cost_per_share) // LOT_SIZE
     risk_per_share = entry_price - sl_price
     if risk_per_share > 0:
@@ -505,8 +534,9 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
             if high_price >= tp2_price:
                 pos["tp2_hit"] = True
                 add_fill_price = o if (o is not None and o > tp2_price) else tp2_price
-                add_cost_per_share = add_fill_price * (1 + cfg.BUY_FEE)
                 add_alloc = min(prev_equity * PYRAMID_ADD_PCT, cash)
+                add_participation = (add_alloc / max(add_fill_price, 1e-6)) / max(pos.get("avg_vol_20", 1.0), 1.0)
+                add_cost_per_share = apply_slippage(add_fill_price, "buy", add_participation) * (1 + cfg.BUY_FEE)
                 add_lots = int(add_alloc / add_cost_per_share) // LOT_SIZE
                 if add_lots >= cfg.ALLOC_MIN_LOTS:
                     add_qty = add_lots * LOT_SIZE
@@ -533,7 +563,8 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
     if exit_reason is not None and sell_lots > 0:
         sell_qty = sell_lots * LOT_SIZE
         sell_cost_basis = pos["cost_basis"] * (sell_lots / pos["total_lots"])
-        gross_return = exit_price * sell_qty
+        sell_participation = sell_qty / max(pos.get("avg_vol_20", 1.0), 1.0)
+        gross_return = apply_slippage(exit_price, "sell", sell_participation) * sell_qty
         fee = risk.apply_fee(gross_return, "sell", cfg.BUY_FEE, cfg.SELL_FEE)
         net_return = gross_return - fee
         pnl = net_return - sell_cost_basis
@@ -556,8 +587,9 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
             if pyramid_ok and PYRAMID_TREND_GATE_ENABLED:
                 pyramid_ok = trend_strength >= PYRAMID_TREND_GATE_MIN
             if pyramid_ok:
-                add_cost_per_share = exit_price * (1 + cfg.BUY_FEE)
                 add_alloc = min(prev_equity * PYRAMID_ADD_PCT, cash + cash_delta)
+                add_participation = (add_alloc / max(exit_price, 1e-6)) / max(pos.get("avg_vol_20", 1.0), 1.0)
+                add_cost_per_share = apply_slippage(exit_price, "buy", add_participation) * (1 + cfg.BUY_FEE)
                 add_lots = int(add_alloc / add_cost_per_share) // LOT_SIZE
                 if add_lots >= cfg.ALLOC_MIN_LOTS:
                     add_qty = add_lots * LOT_SIZE
@@ -722,6 +754,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
                 "checkpoint_day": fill["checkpoint_day"], "target_price": sig["tp_target"],
                 "entry_price_original": entry_price,
                 "atr_at_entry": fill["atr_at_entry"],
+                "avg_vol_20": sig.get("avg_vol_20", 1.0),  # for exit-side slippage's participation estimate
             })
             new_entries_today += 1
         pending_entries = []
@@ -866,6 +899,18 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     max_drawdown = df_equity["drawdown"].min()
     total_return_pct = (final_capital / INITIAL_CAPITAL - 1) * 100
 
+    # CVaR(95%) -- mean daily return on the worst 5% of days, distinct from
+    # max_drawdown (one peak-to-trough episode): a window can have a mild
+    # max_drawdown but a fat left tail of bad days, or vice versa. Sharper
+    # lens on "how bad do the bad days actually get" for diagnosing windows
+    # like the 2023 H1 weak-trend loss.
+    daily_ret = df_equity["total"].pct_change().dropna()
+    if len(daily_ret) >= 20:
+        var_95 = daily_ret.quantile(0.05)
+        cvar_95 = daily_ret[daily_ret <= var_95].mean() * 100
+    else:
+        cvar_95 = float("nan")
+
     bench = idx_df[(idx_df["trade_date"] >= trading_days[0]) & (idx_df["trade_date"] <= trading_days[-1])]
     bench_ret = (bench["close"].iloc[-1] / bench["close"].iloc[0] - 1) * 100 if len(bench) >= 2 else float("nan")
 
@@ -879,6 +924,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     print(f"  Win Rate        : {win_rate:.1f}%")
     print(f"  Profit Factor   : {profit_factor:.2f}")
     print(f"  Max Drawdown    : {max_drawdown:.2f}%")
+    print(f"  CVaR(95%) daily : {cvar_95:.2f}%")
     print("=" * 70)
 
     contrib = df_trades.groupby("stock_code")["pnl"].sum().sort_values(ascending=False)
@@ -910,6 +956,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
         "total_return_pct": total_return_pct, "bench_ret": bench_ret,
         "total_trades": total_trades, "win_rate": win_rate,
         "profit_factor": profit_factor, "max_drawdown": max_drawdown,
+        "cvar_95": cvar_95,
         "notes": notes,
     }
     return metrics, df_trades, df_equity, regime_by_date

@@ -115,6 +115,7 @@ def main():
             "profit_pct": metrics["total_return_pct"], "bench_pct": metrics["bench_ret"],
             "alpha_pct": metrics["total_return_pct"] - metrics["bench_ret"],
             "profit_factor": metrics["profit_factor"], "max_dd": metrics["max_drawdown"],
+            "cvar_95": metrics["cvar_95"],
             "concentration_pct": conc_pct,
         })
 
@@ -140,6 +141,7 @@ def main():
         print(f"  Alpha      : mean {traded['alpha_pct'].mean():+.2f}%  median {traded['alpha_pct'].median():+.2f}%")
         print(f"  Profit fac : mean {traded['profit_factor'].mean():.2f}  median {traded['profit_factor'].median():.2f}")
         print(f"  Max DD     : mean {traded['max_dd'].mean():.2f}%  worst {traded['max_dd'].min():.2f}%")
+        print(f"  CVaR(95%)  : mean {traded['cvar_95'].mean():.2f}%  worst {traded['cvar_95'].min():.2f}%")
 
     res_df.to_csv("walk_forward_v3_summary.csv", index=False)
     print("\n[OK] Saved walk_forward_v3_summary.csv")

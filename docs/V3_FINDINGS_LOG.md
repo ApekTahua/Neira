@@ -1471,3 +1471,87 @@ verified via syntax check + the existing money-math dry-run
 (`src/test_paper_trading_math.py`, still 8/8) -- neither touches
 `compute_entry_fill`/`evaluate_position_exit`, so no walk-forward
 regression re-check was needed this round.
+
+## Fill-realism check: participation-scaled slippage -- major disclosed
+## finding, kept OFF by default
+
+Prompted by a scan of github.com/wangzhe3224/awesome-systematic-trading
+for transferable techniques (most of the list is AI/RL trading
+platforms -- explicitly out of scope, paper-trading is 100%
+algorithmic by design -- or alternative backtest engines, not worth
+the migration risk given the existing walk-forward/Monte-Carlo
+validation already built here). The one genuinely relevant idea:
+realistic fill-cost modeling (the category `hftbacktest` /
+`flashalpha-fill-simulator` occupy). Every fill so far, backtest AND
+live paper engine, executes at the exact observed price with zero cost
+for crossing the spread or moving an illiquid name's own volume -- a
+known, disclosed simplification, but never actually quantified.
+
+**Added `apply_slippage()`** in `backtest_v3.py`: widens buys / narrows
+sells by `SLIPPAGE_BASE_BPS` (5, a flat spread-crossing cost) +
+`SLIPPAGE_IMPACT_BPS` (50, scaled by `participation` = order quantity
+/ the stock's own `avg_vol_20` -- how big a bite out of its daily
+liquidity the order represents). Wired into every buy/sell path in
+`compute_entry_fill` and `evaluate_position_exit`, including both
+pyramid add-on tiers. Gated behind `SLIPPAGE_ENABLED` (env
+`V3_SLIPPAGE`, default `"0"`) -- a no-op unless explicitly turned on.
+**The live paper engine's GitHub Actions workflows never set
+`V3_SLIPPAGE`, so this cannot change the running `V3_PAPER` run's
+behavior** -- required by this session's own frozen-config governance
+rule (no silent drift into an already-live track record). Verified:
+full 9-window walk-forward with `V3_SLIPPAGE` unset reproduces the
+pre-change numbers exactly, row for row (confirmed against a
+stashed-changes rerun of the unmodified file, not just eyeballing);
+`test_paper_trading_math.py` still 8/8 unchanged.
+
+**With `V3_SLIPPAGE=1`** (default bps, un-calibrated against real IDX
+execution data -- a reasonable estimate, not a validated cost model):
+mean alpha across the 9 windows roughly halves, **+21.71% -> +9.73%**;
+median alpha barely moves (+12.60% -> +11.71%), so the drop is driven
+by a handful of concentrated windows, not a broad-based effect --
+consistent with the standing concentration finding (6/9 windows
+>65% of positive PnL from their top-5 tickers). Windows beating
+benchmark: 6/9 -> 5/9. Profit factor: mean 1.58 -> 1.29, **median
+1.12 -> 0.90** -- the typical window is now marginally unprofitable on
+a per-trade basis once fill cost is priced in, not just the mean.
+Most striking: **window 4 (2023 H2) flips from +41.89% alpha to
+-24.03% alpha** -- a full sign flip on what was the second-best
+window, traced to its own 92-93% top-5 concentration meaning a few
+large fills in thin names ate most of the round-trip via slippage.
+Win-rate-clearing-50% held steady at 4/9 either way -- the entry rule
+itself still picks real winners more than half the time; it's the
+economics of actually executing size in illiquid names that's fragile.
+
+**Kept `SLIPPAGE_ENABLED` off by default** -- this is not a "tested,
+rejected" strategy toggle like `TREND_SIZING`; it's a diagnostic on
+whether the existing headline numbers are honest. Two reasons not to
+flip the switch: (1) the bps values are a reasonable estimate, not
+calibrated against real IDX brokerage/market-impact data, so treating
+them as gospel and quietly ratcheting down every published number
+would trade one kind of overconfidence for another; (2) flipping the
+default would also silently move the live paper engine's economics if
+its workflows ever start setting `V3_SLIPPAGE`, which is exactly the
+kind of drift the frozen-config rule exists to prevent. **What this
+finding actually does**: hardens the "not deployment-ready" verdict
+with a number. The 3-week validated edge (Monte Carlo p=0.0000, real
+selection skill) survives realistic fill costs directionally -- still
+beats benchmark most windows, still keeps win rate above 50% in the
+same windows -- but the *magnitude* investors would actually see is
+meaningfully smaller than the frictionless backtest suggests, and at
+least one window's story flips entirely. Before ever moving from paper
+to real capital, this needs a properly calibrated slippage model (real
+IDX bid-ask/impact data, not an estimate) run against the full
+walk-forward battery, not just this directional check.
+
+**Also added, same session: CVaR(95%) as a second tail-risk metric**
+alongside `max_drawdown` -- mean daily return on the worst 5% of days
+in a window's equity curve. Distinct signal from drawdown (one
+peak-to-trough episode): a window can have a mild max drawdown but a
+fat left tail of bad days, or the reverse. Baseline (slippage off):
+mean -3.72%, worst -5.64% (window 8, the standout winner -- its
+CVaR is also its worst, a reminder that the best-returning window
+isn't the smoothest one). Printed per-window and in the aggregate
+summary in `walk_forward_v3.py`; stored in `simulate_window()`'s
+returned `metrics` dict as `cvar_95` (not yet wired into the
+`backtest_runs` Supabase insert -- only feeds console/CSV reporting
+for now, add if it earns a spot on the website).
