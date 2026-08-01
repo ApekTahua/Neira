@@ -1633,3 +1633,102 @@ history exist -- noisy and misleading on a handful of days otherwise.
 9/9 dry-run checks pass. No walk-forward re-check needed -- doesn't
 touch `backtest_v3.py`'s shared entry/exit functions, only the live-only
 EOD snapshot step.
+
+## NEXT ENHANCEMENT (queued, not started) -- full-universe daily scoreboard
+
+User request (2026-08-01, weekend before paper trading's Monday launch):
+today the daily scan only surfaces the stocks that actually qualify as
+new candidates (`score_candidates` in `backtest_v3.py`, currently called
+with `top_n=15` from `paper_signal_scan.py`; V1's separate Telegram bot
+posts its own top-10, `src/screener.py:162`). Everything else in the
+IHSG universe is invisible -- if a user searches a specific ticker on
+the website, there is currently no answer to "where does this stock
+stand today." Ask: score **every** ticker daily, not just qualifiers,
+with a confidence label (something like Strong Buy / Buy / Watch / Wait)
+and, ideally, a target price to wait for.
+
+**Why this is cheaper than it sounds, for the classification half.**
+`score_candidates` (`backtest_v3.py:404-429`) currently does two things
+in one step: (1) a hard gate -- `adtv_20 >= ADTV_MIN AND weekly_ma_spread
+>= weekly_cut AND sector_rs_momentum >= sector_cut AND ATR sanity`,
+which is why anything failing the gate never gets a score at all today
+-- then (2) a score for whatever survives the gate:
+`(weekly_ma_spread - weekly_cut)/|weekly_cut| + (sector_rs_momentum -
+sector_cut)/|sector_cut|`. That score formula is just a normalized
+distance above both cuts -- it's equally well-defined for a stock
+*below* the cuts (it just comes out negative). So computing a score for
+the whole liquid universe is not new modeling, it's removing the gate
+before scoring and keeping it only as a label:
+  - Above both cuts + passes ATR/regime sanity -> **Strong Buy** if score
+    also clears `score_p90` (the same threshold `SCORE_SIZING_ENABLED`
+    already uses to size positions), else **Buy**.
+  - Below one or both cuts but regime is BULLISH -> **Watch** (bucket by
+    how close: near-miss vs far below is just the same score number,
+    now negative).
+  - Regime not BULLISH, or `REGIME_CONFIRM_DAYS` hasn't been cleared yet
+    -> **Wait** (this is a real, already-computed piece of state --
+    `compute_regime_with_hysteresis`, not a new signal).
+  - Liquidity gate itself fails (`adtv_20 < ADTV_MIN`) -> excluded
+    entirely, not scored, not shown as "Strong Sell" or anything else.
+    **This matters**: the ADTV liquidity filter is the exact fix for the
+    hypervolatile-penny-stock bug that inflated an earlier headline
+    backtest number (see the bug/gap section near the top of this log).
+    Scoring illiquid names "for completeness" would quietly reopen that
+    same hole in a user-facing feature instead of a backtest, which is
+    worse, not better.
+
+**Why "Strong Sell" is the wrong label to promise.** This system has
+no short/sell-signal model -- it's a long-only entry screener. A stock
+scoring badly here means "doesn't qualify as a new long entry today,"
+not "sell this if you own it." Labeling that Strong Sell implies a
+fundamental/technical view the algorithm was never validated to hold.
+Plan is to use Buy-side-only language (Strong Buy/Buy/Watch/Wait) and
+be explicit in the UI copy that this is an entry screener, not a full
+buy-and-sell advisory.
+
+**Why "what price to wait for" is the part that needs real caution, not
+a quick add.** Nothing in `backtest_v3.py` today computes a pullback or
+support target -- entries fire at next available open once the gate
+clears, full stop. Any "wait for Rp X" number would have to come from a
+brand-new heuristic (e.g. distance back to `weekly_cut`/`sector_cut` in
+price terms, or a moving-average level) that has never been walked
+forward or validated the way the entry rule itself was (Monte Carlo
+p=0.0000, 9-window walk-forward, three real bug fixes along the way).
+Shipping an unvalidated number as if it were advice is exactly the
+failure mode this whole project has spent three weeks trying to avoid
+in the backtest -- doing it live, to users, without the same rigor,
+would be worse. **Do not ship a "wait for this price" figure until it
+has its own backtest**: does entering when price retraces to that
+computed level actually perform better than entering at the gate-clear
+open, on held-out data? If not (or if not tested), the honest v1 is to
+show *only* "how far the score currently is from qualifying" (a number
+already computed, zero new modeling) and leave the price target out
+rather than fabricate one.
+
+**Where it plugs in, with zero risk to the live paper track record.**
+`paper_signal_scan.py` already runs the full feature pipeline
+(`add_features`, `compute_rs_momentum`, `attach_weekly_trend`,
+`compute_regime_with_hysteresis`) and recomputes `weekly_cut`/
+`sector_cut`/`score_p90` once per day for the whole liquid universe,
+before it ever calls `score_candidates` to pick actual trade candidates.
+This enhancement is a pure read/display addition *after* that existing
+step -- score everything the pipeline already touched, write it to a
+new table (e.g. `daily_scoreboard`, one row per ticker per day: score,
+label, gate distances), and never feed it back into `paper_positions`/
+`paper_account`. It cannot touch the frozen live config or the actual
+trading decisions -- same isolation guarantee the CVaR fix above relied
+on.
+
+**Scope for a first version (skip the price-target piece for now):**
+1. New pure function alongside `score_candidates` (same file, same
+   signature style) that scores the full liquid-universe day-slice
+   without the gate, returns score + label for every ticker instead of
+   only the top-N that pass.
+2. `paper_signal_scan.py` calls it once daily (already has all the
+   inputs in hand), upserts one row per ticker into a new
+   `daily_scoreboard` table.
+3. Frontend: ticker search/detail page reads that table for "today's
+   score" -- this is the newscraper.ai repo, not this one.
+4. Explicitly deferred: the "wait for this price" target, until it has
+   its own validation pass. Note it here so it isn't silently dropped,
+   not because it's being built next.
