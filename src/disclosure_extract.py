@@ -32,6 +32,8 @@ import cloudscraper
 import pdfplumber
 from supabase import create_client
 
+import paper_common as pc  # run_guarded() is a generic crash-alerter, not paper-trading-specific
+
 # IDX's static file server sits behind Cloudflare and 403s plain requests
 # (a JS "Just a moment..." challenge) -- cloudscraper solves it. Confirmed
 # against a real filing PDF during development; plain `requests` does not
@@ -129,4 +131,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    pc.run_guarded(main, "disclosure_extract.py")
