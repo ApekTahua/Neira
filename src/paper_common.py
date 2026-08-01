@@ -26,6 +26,38 @@ EXTRA_BUY_FEE_FLAT = 10_000
 EXTRA_BUY_FEE_THRESHOLD = 10_000_000
 
 
+def compute_drawdown_and_cvar(equity_history: list, today_equity: float) -> tuple:
+    """Pure function so it's independently testable (see
+    test_paper_trading_math.py) -- extracted rather than left inline in
+    paper_signal_scan.py so the same money-math discipline used for
+    compute_entry_fill/evaluate_position_exit in backtest_v3.py applies here.
+
+    `equity_history` = prior days' portfolio_value in date order (today's
+    NOT included). Returns (drawdown_pct, cvar_95):
+      - drawdown_pct: today's distance from the running peak (incl. today),
+        <= 0. Previously hardcoded to 0.0 on every insert -- a real gap,
+        fixed here.
+      - cvar_95: mean daily return of the worst 5% of days so far, or None
+        before there are at least 20 daily returns to compute one from
+        (same threshold backtest_v3.py's simulate_window uses) -- noisy
+        and misleading on a handful of days, so withheld rather than shown.
+    """
+    series = equity_history + [today_equity]
+    peak = max(series)
+    drawdown_pct = (today_equity - peak) / peak * 100 if peak > 0 else 0.0
+
+    if len(series) < 21:  # need >=20 day-over-day returns
+        return drawdown_pct, None
+    daily_rets = [(series[i] / series[i - 1] - 1) for i in range(1, len(series)) if series[i - 1] > 0]
+    if len(daily_rets) < 20:
+        return drawdown_pct, None
+    sorted_rets = sorted(daily_rets)
+    cutoff_idx = max(1, round(len(sorted_rets) * 0.05))
+    worst = sorted_rets[:cutoff_idx]
+    cvar_95 = (sum(worst) / len(worst)) * 100
+    return drawdown_pct, cvar_95
+
+
 def total_buy_fee(gross_value: float, buy_fee_pct: float) -> float:
     """Percentage broker fee plus the flat Rp10,000 surcharge on buys over
     Rp10,000,000 gross. Sells only ever use the plain percentage SELL_FEE

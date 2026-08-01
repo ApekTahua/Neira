@@ -1604,6 +1604,32 @@ mean -3.72%, worst -5.64% (window 8, the standout winner -- its
 CVaR is also its worst, a reminder that the best-returning window
 isn't the smoothest one). Printed per-window and in the aggregate
 summary in `walk_forward_v3.py`; stored in `simulate_window()`'s
-returned `metrics` dict as `cvar_95` (not yet wired into the
-`backtest_runs` Supabase insert -- only feeds console/CSV reporting
-for now, add if it earns a spot on the website).
+returned `metrics` dict as `cvar_95`. **Update, same day**: wired into
+the `backtest_runs` Supabase insert (`cvar_95` column added via MCP
+migration) and shown on `/backtest` next to Max Drawdown.
+
+## Live paper engine: drawdown_pct was hardcoded to 0.0, now real (plus live CVaR)
+
+Found while looking for something useful to close during the weekend
+lull before paper trading's first real trading day. `paper_signal_scan.py`'s
+daily equity snapshot wrote `drawdown_pct: 0.0` on every single insert --
+a placeholder that was never filled in, and `backtest_runs.max_drawdown`
+for the live run was never updated at all after the seed row's initial 0.
+Not yet visibly wrong on the website only because no paper-trading day
+had happened yet to expose it (0 rows in `paper_positions`/`backtest_equity`
+as of this check) -- the exact right moment to fix it, before any real
+row would need correcting.
+
+Added `paper_common.compute_drawdown_and_cvar(equity_history, today_equity)`
+-- a pure function (extracted for the same reason `compute_entry_fill`/
+`evaluate_position_exit` were: independently testable, see
+`test_paper_trading_math.py`'s new `test_compute_drawdown_and_cvar`,
+3 hand-computed cases). Real drawdown = today's distance from the
+running peak including today; `backtest_runs.max_drawdown` now tracks
+the running min (worst) drawdown ever seen, not a stale seed value.
+CVaR(95%) computed the same way as the batch backtest's (worst-5%-of-
+days mean daily return) but withheld (`None`) until 20+ days of live
+history exist -- noisy and misleading on a handful of days otherwise.
+9/9 dry-run checks pass. No walk-forward re-check needed -- doesn't
+touch `backtest_v3.py`'s shared entry/exit functions, only the live-only
+EOD snapshot step.

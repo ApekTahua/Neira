@@ -14,7 +14,9 @@ Responsibilities:
      queue today's new PENDING candidates -- filled at tomorrow's open
      by paper_monitor.py. Uses the exact same score_candidates() the
      backtest uses (src/backtest_v3.py) -- zero drift.
-  4. Snapshot today's EOD equity, update the backtest_runs summary row.
+  4. Snapshot today's EOD equity (real drawdown_pct off the running peak,
+     not a placeholder), update the backtest_runs summary row (including
+     max_drawdown and cvar_95, the latter once 20+ days of history exist).
   5. Telegram notification.
 
 Governance: frozen configuration -- see docs/V3_FINDINGS_LOG.md "Live
@@ -288,13 +290,21 @@ def main():
     initial_capital = float(run_res.data[0]["initial_capital"])
     net_profit_pct = (total_equity / initial_capital - 1) * 100
 
+    prior_equity_res = supabase.table("backtest_equity").select("portfolio_value").eq("run_id", run_id).order("date").execute()
+    prior_equity = [float(row["portfolio_value"]) for row in prior_equity_res.data]
+    drawdown_pct, cvar_95 = pc.compute_drawdown_and_cvar(prior_equity, total_equity)
+    prior_max_dd_res = supabase.table("backtest_runs").select("max_drawdown").eq("id", run_id).limit(1).execute()
+    prior_max_dd = float(prior_max_dd_res.data[0]["max_drawdown"] or 0.0)
+    running_max_dd = min(prior_max_dd, drawdown_pct)
+
     supabase.table("backtest_equity").insert({
         "run_id": run_id, "date": today.isoformat(), "portfolio_value": total_equity,
-        "drawdown_pct": 0.0, "regime": regime,
+        "drawdown_pct": drawdown_pct, "regime": regime,
     }).execute()
     supabase.table("backtest_runs").update({
         "period_end": today.isoformat(), "final_capital": total_equity, "net_profit_pct": net_profit_pct,
         "total_trades": total_trades, "win_rate": win_rate, "profit_factor": profit_factor,
+        "max_drawdown": running_max_dd, "cvar_95": cvar_95,
     }).eq("id", run_id).execute()
     supabase.table("paper_account").update({
         "cash": cash, "last_signal_date": today.isoformat(), "log_adtv_p90": float(log_adtv_p90),

@@ -176,6 +176,28 @@ def test_evaluate_position_exit_no_trigger():
     print("[OK] test_evaluate_position_exit_no_trigger")
 
 
+def test_compute_drawdown_and_cvar():
+    # Day 1: no history yet -- today IS the peak, drawdown 0, no CVaR (need 20+ returns).
+    dd, cvar = pc.compute_drawdown_and_cvar([], 100_000_000.0)
+    approx(dd, 0.0, tol=PCT_TOL)
+    assert cvar is None
+
+    # A real drawdown below a prior peak, still not enough history for CVaR.
+    dd, cvar = pc.compute_drawdown_and_cvar([100.0, 110.0, 105.0], 95.0)
+    approx(dd, (95.0 - 110.0) / 110.0 * 100, tol=PCT_TOL)  # peak was 110, not today or 100
+    assert cvar is None
+
+    # 20 daily returns: one -20% day, nineteen +1% days. At the 5% worst-day cutoff
+    # (round(20*0.05)=1), CVaR should equal exactly that one bad day's return.
+    returns = [-0.20] + [0.01] * 19
+    series = [100.0]
+    for r in returns:
+        series.append(series[-1] * (1 + r))
+    dd, cvar = pc.compute_drawdown_and_cvar(series[:-1], series[-1])
+    approx(cvar, -20.0, tol=PCT_TOL)
+    print(f"[OK] test_compute_drawdown_and_cvar (dd={dd:.2f}%, cvar_95={cvar:.2f}%)")
+
+
 def test_score_candidates():
     import pandas as pd
     day_slice = pd.DataFrame([
@@ -207,5 +229,6 @@ if __name__ == "__main__":
     test_evaluate_position_exit_tp1_and_pyramid()
     test_evaluate_position_exit_trailing()
     test_evaluate_position_exit_no_trigger()
+    test_compute_drawdown_and_cvar()
     test_score_candidates()
     print("\nAll paper-trading math checks passed.")
