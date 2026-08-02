@@ -138,6 +138,11 @@ def main():
     )
     open_positions = open_res.data
     today_bars = df[df["trade_date"] == today].set_index("stock_code")
+    # Previous trading day's close per stock, for the corporate-action guard
+    # below -- cheap, one groupby over the full history already in memory.
+    prev_close_by_stock = (
+        df[df["trade_date"] < today].sort_values("trade_date").groupby("stock_code")["close_price"].last()
+    )
     # Cost-basis proxy for total equity (used only to size the optional
     # pyramid add-on tranche, not any exit/risk decision) -- a true
     # mark-to-market figure would need a running valuation ledger this
@@ -181,6 +186,17 @@ def main():
 
         bar_row = today_bars.loc[row["stock_code"]]
         bar = (float(bar_row["open_price"]), float(bar_row["close_price"]), float(bar_row["high"]), float(bar_row["low"]))
+
+        prev_close = prev_close_by_stock.get(row["stock_code"])
+        if pc.looks_like_unadjusted_corporate_action(prev_close, bar[1]):
+            msg = (f"⚠️ *{row['stock_code']}*: close Rp{bar[1]:,.0f} vs prev Rp{prev_close:,.0f} "
+                   f"looks like an unadjusted split/corporate action -- SKIPPING SL/TP check today, "
+                   f"please verify and correct avg_price/sl_price/tp1_price manually.")
+            print(f"  [CORP-ACTION-GUARD] {msg}")
+            pc.notify(msg)
+            hold_days = int(row["hold_days"]) + 1
+            supabase.table("paper_positions").update({"hold_days": hold_days}).eq("id", row["id"]).execute()
+            continue
 
         pos = _position_dict_from_row(row)
         trade_record, cash_delta = bt.evaluate_position_exit(pos, bar, regime, trend_strength, today, prev_equity, cash)

@@ -30,6 +30,31 @@ PAPER_VERSION = "V3_PAPER"
 EXTRA_BUY_FEE_FLAT = 10_000
 EXTRA_BUY_FEE_THRESHOLD = 10_000_000
 
+# ihsg_eod/ihsg_realtime's close_price is NOT split-adjusted -- confirmed
+# against real data (2026-08-02): DSSA 67000->3120, FISH exactly
+# 10350->1035, CUAN 16875->1625, MLPT 25950->1300, PACK 3280->272, all
+# clean round-number ratios on ordinary trading days, not crashes (IDX
+# auto-reject bands don't permit a real single-day move anywhere near
+# this). A position held through an unadjusted split/reverse-split would
+# evaluate SL/TP/trailing against a fabricated price cliff and exit on a
+# loss that never actually happened. These bounds are wide enough that no
+# legitimate single-day IDX move (even ARA/ARB combined with a gap) should
+# ever cross them, so a hit here is a very strong split signal, not noise.
+CORP_ACTION_RATIO_LOW = 0.6
+CORP_ACTION_RATIO_HIGH = 1.7
+
+
+def looks_like_unadjusted_corporate_action(prev_price, current_price) -> bool:
+    """True if current_price vs prev_price is a ratio no real single-day IDX
+    move could produce -- see CORP_ACTION_RATIO_LOW/HIGH above. Callers should
+    skip SL/TP/trailing evaluation for that position this cycle rather than
+    act on a fabricated price cliff, and alert so a human can confirm and
+    manually correct the position's avg_price/sl_price/tp1_price."""
+    if prev_price is None or prev_price <= 0 or current_price is None or current_price <= 0:
+        return False
+    ratio = current_price / prev_price
+    return ratio < CORP_ACTION_RATIO_LOW or ratio > CORP_ACTION_RATIO_HIGH
+
 
 def compute_drawdown_and_cvar(equity_history: list, today_equity: float) -> tuple:
     """Pure function so it's independently testable (see

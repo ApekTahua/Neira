@@ -253,6 +253,25 @@ def test_score_full_universe():
     print("[OK] test_score_full_universe")
 
 
+def test_looks_like_unadjusted_corporate_action():
+    # Real confirmed splits from ihsg_eod (2026-08-02 scan) -- must all trip.
+    assert pc.looks_like_unadjusted_corporate_action(67000, 3120)   # DSSA, ~1:21
+    assert pc.looks_like_unadjusted_corporate_action(10350, 1035)   # FISH, exactly 1:10
+    assert pc.looks_like_unadjusted_corporate_action(16875, 1625)   # CUAN, ~1:10.4
+    # A reverse split (price jumps) must also trip -- symmetric check.
+    assert pc.looks_like_unadjusted_corporate_action(500, 2500)     # 1:5 reverse split
+    # Ordinary trading days, including a rough one -- must NOT trip.
+    assert not pc.looks_like_unadjusted_corporate_action(1000, 950)   # -5%, normal
+    assert not pc.looks_like_unadjusted_corporate_action(1000, 750)   # -25%, a bad ARB day, still real
+    assert not pc.looks_like_unadjusted_corporate_action(1000, 1000)  # flat
+    # Missing/invalid prices -- never trip, never crash (caller has no reliable
+    # prior price to compare against, but that's a different problem than a split).
+    assert not pc.looks_like_unadjusted_corporate_action(None, 1000)
+    assert not pc.looks_like_unadjusted_corporate_action(1000, None)
+    assert not pc.looks_like_unadjusted_corporate_action(0, 1000)
+    print("[OK] test_looks_like_unadjusted_corporate_action")
+
+
 if __name__ == "__main__":
     test_total_buy_fee()
     test_compute_entry_fill_basic()
@@ -264,4 +283,5 @@ if __name__ == "__main__":
     test_compute_drawdown_and_cvar()
     test_score_candidates()
     test_score_full_universe()
+    test_looks_like_unadjusted_corporate_action()
     print("\nAll paper-trading math checks passed.")

@@ -157,6 +157,19 @@ def main():
         day_high = max(float(row["day_high"]), current_price) if row.get("day_high") else current_price
         day_low = min(float(row["day_low"]), current_price) if row.get("day_low") else current_price
 
+        # Same corporate-action guard as paper_signal_scan.py's EOD reconcile
+        # (see paper_common.looks_like_unadjusted_corporate_action's docstring)
+        # -- checked against this position's OWN avg_price, since that's the
+        # anchor SL/TP1/trailing all evaluate against here, not yesterday's close.
+        if pc.looks_like_unadjusted_corporate_action(float(row["avg_price"]), current_price):
+            msg = (f"⚠️ *{row['stock_code']}*: live price Rp{current_price:,.0f} vs entry "
+                   f"Rp{float(row['avg_price']):,.0f} looks like an unadjusted split/corporate "
+                   f"action -- SKIPPING SL/TP check this poll, please verify manually.")
+            print(f"[MONITOR][CORP-ACTION-GUARD] {msg}")
+            pc.notify(msg)
+            supabase.table("paper_positions").update({"day_high": day_high, "day_low": day_low}).eq("id", row["id"]).execute()
+            continue
+
         pos = _position_dict_from_row(row)
         trade_record, cash_delta = bt.evaluate_position_exit(
             pos, (day_open, current_price, day_high, day_low), regime_hint, 0.0,

@@ -1754,3 +1754,63 @@ on.
 4. Explicitly deferred: the "wait for this price" target, until it has
    its own validation pass. Note it here so it isn't silently dropped,
    not because it's being built next.
+
+## Bug found + fixed: ihsg_eod/ihsg_realtime close_price is NOT split-adjusted
+
+Found 2026-08-02, the day before paper trading's Monday launch, while
+checking an external code-review's "does this handle corporate actions"
+question -- the codebase had zero mentions of splits/dividends anywhere,
+so it needed an actual data check, not just a grep. Confirmed with a
+direct query for extreme day-over-day close ratios:
+
+```
+DSSA  2026-04-09  67000 -> 3120   (ratio 0.047, ~1:21)
+FISH  2025-09-09  10350 -> 1035   (ratio 0.100, exactly 1:10)
+CUAN  2025-07-15  16875 -> 1625   (ratio 0.096, ~1:10.4)
+MLPT  2026-07-21  25950 -> 1300   (ratio 0.050, ~1:20)
+PACK  2026-01-12   3280 -> 272    (ratio 0.083, ~1:12)
+```
+
+These are real stock splits sitting unadjusted in the raw feed, not
+crashes -- IDX auto-reject bands don't allow a genuine single-day move
+anywhere near these ratios, and the round numbers are the giveaway. This
+affects `strategy.py`'s `add_features()` (shared by V1 and V3 -- any
+rolling window spanning a split date computes over a fabricated price
+cliff) and, more urgently for tomorrow, the live paper engine: a held
+position's SL/TP1/TRAILING is evaluated against `avg_price` set at entry
+-- an unadjusted split during the hold period would look identical to a
+catastrophic real loss and could force a false exit, corrupting the live
+track record with a loss that never happened.
+
+**Fixed defensively, not by adjusting the feed** (no access to a
+corporate-actions data source, and retroactively adjusting historical
+`ihsg_eod` is a separate, bigger job outside today's scope). Added
+`paper_common.looks_like_unadjusted_corporate_action(prev_price,
+current_price)`: true if the ratio falls outside [0.6, 1.7], bounds wide
+enough that no legitimate single-day IDX move should ever cross them.
+Wired into both live scripts as a guard BEFORE calling
+`evaluate_position_exit` -- zero changes to that shared function, so no
+walk-forward re-check needed (same isolation reasoning as every other
+live-only fix in this log):
+  - `paper_signal_scan.py`'s EOD reconcile: compares today's close
+    against the stock's own previous trading day close (looked up from
+    the already-loaded full history).
+  - `paper_monitor.py`'s intraday check: compares the live price against
+    the position's own `avg_price` (the anchor SL/TP1/trailing actually
+    evaluate against) -- deliberately not `day_open`, since if the split
+    happened overnight, today's open already reflects the new price too
+    and wouldn't trip the guard at all.
+
+On a hit: skips SL/TP/trailing evaluation for that position this cycle
+only, sends a Telegram alert, leaves the position open and untouched for
+manual review (`avg_price`/`sl_price`/`tp1_price` need a human to correct
+against the real split ratio -- not something to guess automatically).
+11/11 dry-run checks pass, including the real confirmed splits above as
+literal test cases, a synthetic reverse-split, a genuine bad-but-real
+-25% day (must NOT trip), and null/zero-price inputs (must not crash).
+
+**Not fixed**: the underlying data still isn't split-adjusted, and V1's
+`add_features()` still computes rolling windows over the raw feed --
+untouched, since that's a protected file and a much bigger job (would
+need a real corporate-actions source, not a threshold guess). This is a
+live-engine safety net, not a data-quality fix.
