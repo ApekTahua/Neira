@@ -1,0 +1,20 @@
+name: Paper Trading -- Intraday Monitor (trigger)
+
+# See paper_signal_scan_trigger.yml -- same bridge pattern, this one
+# fires the 15-min intraday monitor instead of the daily scan.
+on:
+  schedule:
+    - cron: '*/15 2-4,6-8 * * 1-5'  # IDX hours, UTC (see paper_monitor.yml on the worktree branch)
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch paper_monitor.yml on worktree-v2-hmm-screener
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run paper_monitor.yml --repo ${{ github.repository }} --ref worktree-v2-hmm-screener

@@ -1,0 +1,22 @@
+name: Paper Trading -- Daily Signal Scan (trigger)
+
+# Scheduled workflows only fire from the default branch (main), but the
+# actual paper-trading code lives on worktree-v2-hmm-screener (kept off
+# main so V1's protected files stay untouched). This bridge does nothing
+# but dispatch the real workflow on that branch -- no src/ changes here.
+on:
+  schedule:
+    - cron: '10 11 * * 1-5'  # 18:10 WIB, right after run_screener.yml's 18:00 WIB slot
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch paper_signal_scan.yml on worktree-v2-hmm-screener
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run paper_signal_scan.yml --repo ${{ github.repository }} --ref worktree-v2-hmm-screener
