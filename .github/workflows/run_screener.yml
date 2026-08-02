@@ -34,3 +34,17 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
       run: python src/screener.py
+
+    # Silent failure means zero signals sent and no one notices until the
+    # next day. This is workflow-level (not a change to screener.py), so
+    # it doesn't touch the protected file.
+    - name: Alert on failure
+      if: failure()
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+      run: |
+        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+          -d chat_id="${TELEGRAM_USER_ID}" \
+          -d parse_mode="Markdown" \
+          -d text="🚨 *Neira screener FAILED* — run_screener.yml crashed on $(date -u +'%Y-%m-%d %H:%M UTC'). No signals were sent today. Check the GitHub Actions log."

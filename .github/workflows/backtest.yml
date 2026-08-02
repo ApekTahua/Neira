@@ -48,3 +48,14 @@ jobs:
             reports/backtest_report.html
             reports/backtest_report.txt
           retention-days: 90
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_USER_ID}" \
+            -d parse_mode="Markdown" \
+            -d text="🚨 *Neira weekly backtest FAILED* — backtest.yml crashed on $(date -u +'%Y-%m-%d %H:%M UTC'). Check the GitHub Actions log."

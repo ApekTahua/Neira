@@ -18,3 +18,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run paper_monitor.yml --repo ${{ github.repository }} --ref worktree-v2-hmm-screener
+
+      # Deliberately NOT alerting here the same way the daily-scan trigger
+      # does: this fires every 15 minutes, and a single transient dispatch
+      # failure mid-session would spam Telegram all day for something the
+      # next poll (15 min later) usually self-heals. The staleness guard
+      # already inside paper_monitor.py (STALE_MINUTES check) is the real
+      # backstop for "the monitor stopped working," not this dispatch step.
