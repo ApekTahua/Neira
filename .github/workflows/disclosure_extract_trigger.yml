@@ -1,31 +1,55 @@
 name: Disclosure PDF Text Extraction (trigger)
 
-# Same bridge pattern as paper_signal_scan_trigger.yml / paper_monitor_trigger.yml:
-# disclosure_extract.yml lives only on worktree-v2-hmm-screener, but
-# `schedule` triggers only ever fire from the default branch (main).
-# Found 2026-08-02 -- disclosure_extracts had ZERO rows despite the
-# frontend already shipping a feature that reads from it (PDT text
-# snippets on /disclosures), meaning this pipeline has never actually
-# run automatically since it was built. This bridge does nothing but
-# dispatch the real workflow on that branch; no src/ changes here.
+# `schedule` only ever fires from the default branch (main), but
+# disclosure_extract.py lives only on worktree-v2-hmm-screener. Originally
+# this bridged via `gh workflow run disclosure_extract.yml --ref
+# worktree-v2-hmm-screener`, which 404'd: GitHub only resolves
+# dispatch-by-filename against workflows indexed off the DEFAULT branch,
+# and disclosure_extract.yml was never indexed there (confirmed via
+# `GET /repos/{owner}/{repo}/actions/workflows` -- it doesn't list this
+# file or its numeric ID at all). Fixed 2026-08-03: checkout the worktree
+# branch directly and run the script inline instead of dispatching to a
+# separate workflow file -- same pattern run_screener.yml already uses
+# for main. No src/ changes, no cross-workflow dispatch, no ID lookup.
 on:
   schedule:
     - cron: '30 12 * * 1-5'  # 19:30 WIB, matches disclosure_extract.yml's own schedule
   workflow_dispatch:
 
-permissions:
-  actions: write
-
 jobs:
-  dispatch:
+  extract:
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch disclosure_extract.yml on worktree-v2-hmm-screener
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run disclosure_extract.yml --repo ${{ github.repository }} --ref worktree-v2-hmm-screener
+      - name: Ambil kode dari repository
+        uses: actions/checkout@v4
+        with:
+          ref: worktree-v2-hmm-screener
 
-      - name: Alert on dispatch failure
+      - name: Pasang Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Pasang Tesseract + Poppler (OCR fallback dependencies)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr poppler-utils
+
+      - name: Install Library Pendukung
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Jalankan Disclosure Extraction
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+        run: python src/disclosure_extract.py
+
+      - name: Alert on failure
         if: failure()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -34,4 +58,4 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_USER_ID}" \
             -d parse_mode="Markdown" \
-            -d text="🚨 *Disclosure extraction never started* — the bridge dispatch failed on $(date -u +'%Y-%m-%d %H:%M UTC'). Check disclosure_extract_trigger.yml's log."
+            -d text="🚨 *Disclosure extraction FAILED* — disclosure_extract_trigger.yml crashed on $(date -u +'%Y-%m-%d %H:%M UTC'). Check the GitHub Actions log."
