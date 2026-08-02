@@ -469,8 +469,17 @@ def score_full_universe(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: 
         liquid["label"] = np.where(
             passes_gate, np.where(liquid["score"] >= score_p90, "STRONG_BUY", "BUY"), "WATCH",
         )
+    # Percentile rank within TODAY's liquid universe -- a real, honest 0-100
+    # number (unlike the raw score, which is an unbounded "distance above
+    # threshold" and not meaningful on its own). Gives granularity within a
+    # label: two STRONG_BUY tickers aren't equally strong. Computed here
+    # (not on the frontend) since this function already has the full day's
+    # score distribution in memory -- the frontend would otherwise need to
+    # fetch every liquid ticker's row just to rank one.
+    liquid["percentile"] = liquid["score"].rank(pct=True) * 100
     return [{
         "stock_code": sig["stock_code"], "score": float(sig["score"]), "label": sig["label"],
+        "percentile": float(sig["percentile"]),
         "weekly_ma_spread": float(sig["weekly_ma_spread"]), "sector_rs_momentum": float(sig["sector_rs_momentum"]),
         "close_price": float(sig["close_price"]), "adtv_20": float(sig["adtv_20"]),
     } for _, sig in liquid.iterrows()]

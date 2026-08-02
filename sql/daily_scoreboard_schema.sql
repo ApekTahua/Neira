@@ -9,6 +9,7 @@ create table if not exists daily_scoreboard (
   stock_code text not null,
   score numeric not null,
   label text not null check (label in ('STRONG_BUY', 'BUY', 'WATCH', 'WAIT')),
+  percentile numeric,  -- rank within that day's liquid universe, 0-100 (added 2026-08-03)
   weekly_ma_spread numeric,
   sector_rs_momentum numeric,
   close_price numeric,

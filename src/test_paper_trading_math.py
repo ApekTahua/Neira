@@ -245,6 +245,11 @@ def test_score_full_universe():
     assert result["BBB"]["label"] == "BUY", result["BBB"]
     assert result["DDD"]["label"] == "WATCH", "high score from sector_rs_momentum alone must not overrule a failed weekly_ma_spread gate"
     approx(result["DDD"]["score"], 3.2, tol=PCT_TOL)
+    # Percentile rank within today's 3 liquid tickers (CCC excluded): AAA
+    # highest score -> 100th percentile, DDD middle -> ~66.7, BBB lowest -> ~33.3.
+    approx(result["AAA"]["percentile"], 100.0, tol=PCT_TOL)
+    approx(result["DDD"]["percentile"], 66.6667, tol=0.01)
+    approx(result["BBB"]["percentile"], 33.3333, tol=0.01)
 
     # regime not confirmed bullish -- everything liquid is WAIT regardless of gate/score.
     result_wait = {r["stock_code"]: r for r in bt.score_full_universe(day_slice, weekly_cut=5.0, sector_cut=0.01, score_p90=2.0, regime_ok=False)}

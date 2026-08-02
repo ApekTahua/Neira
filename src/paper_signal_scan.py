@@ -253,7 +253,7 @@ def main():
     if scoreboard:
         supabase.table("daily_scoreboard").upsert([{
             "trade_date": today.isoformat(), "stock_code": row["stock_code"], "score": row["score"],
-            "label": row["label"], "weekly_ma_spread": row["weekly_ma_spread"],
+            "label": row["label"], "percentile": row["percentile"], "weekly_ma_spread": row["weekly_ma_spread"],
             "sector_rs_momentum": row["sector_rs_momentum"], "close_price": row["close_price"],
             "adtv_20": row["adtv_20"],
         } for row in scoreboard], on_conflict="trade_date,stock_code").execute()
