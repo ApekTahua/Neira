@@ -17,7 +17,10 @@ Responsibilities:
   4. Snapshot today's EOD equity (real drawdown_pct off the running peak,
      not a placeholder), update the backtest_runs summary row (including
      max_drawdown and cvar_95, the latter once 20+ days of history exist).
-  5. Telegram notification.
+  5. Score the full liquid universe (not just today's qualifying
+     candidates) into daily_scoreboard -- display only, read by the
+     frontend for ticker search, never read back into trading decisions.
+  6. Telegram notification.
 
 Governance: frozen configuration -- see docs/V3_FINDINGS_LOG.md "Live
 paper trading" section and paper_common.py's module docstring. Does not
@@ -218,9 +221,30 @@ def main():
     if not np.isfinite(log_adtv_p90) or log_adtv_p90 <= 0:
         log_adtv_p90 = 1.0
 
+    regime_ok = (regime == "BULLISH" and bullish_streak_by_date.get(today, 0) >= bt.REGIME_CONFIRM_DAYS
+                 and trend_strength >= bt.TREND_STRENGTH_MIN)
+
+    # ---- Full-universe daily scoreboard (display only -- never read back
+    # into trading decisions, see docs/V3_FINDINGS_LOG.md "NEXT ENHANCEMENT") ----
+    train_scores = (
+        (train_liquid_bullish["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
+        + (train_liquid_bullish["sector_rs_momentum"] - sector_cut) / max(abs(sector_cut), 1e-6)
+    )
+    score_p90 = train_scores.quantile(0.90) if len(train_scores) > 0 else 1.0
+    if not np.isfinite(score_p90) or score_p90 <= 0:
+        score_p90 = 1.0
+    scoreboard = bt.score_full_universe(df[df["trade_date"] == today], weekly_cut, sector_cut, score_p90, regime_ok)
+    if scoreboard:
+        supabase.table("daily_scoreboard").upsert([{
+            "trade_date": today.isoformat(), "stock_code": row["stock_code"], "score": row["score"],
+            "label": row["label"], "weekly_ma_spread": row["weekly_ma_spread"],
+            "sector_rs_momentum": row["sector_rs_momentum"], "close_price": row["close_price"],
+            "adtv_20": row["adtv_20"],
+        } for row in scoreboard], on_conflict="trade_date,stock_code").execute()
+        print(f"[SCOREBOARD] {len(scoreboard)} tickers scored for {today}")
+
     candidates = []
-    if (regime == "BULLISH" and bullish_streak_by_date.get(today, 0) >= bt.REGIME_CONFIRM_DAYS
-            and trend_strength >= bt.TREND_STRENGTH_MIN):
+    if regime_ok:
         open_count = supabase.table("paper_positions").select("id", count="exact").eq("run_id", run_id).in_(
             "status", ["OPEN", "PENDING"]
         ).execute().count

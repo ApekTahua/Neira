@@ -221,6 +221,38 @@ def test_score_candidates():
     print(f"[OK] test_score_candidates (ranked: {codes})")
 
 
+def test_score_full_universe():
+    import pandas as pd
+    # Same fixture as test_score_candidates: AAA/BBB pass the weekly+sector
+    # gate, CCC fails liquidity, DDD has a high score (driven by
+    # sector_rs_momentum alone) but fails the gate on weekly_ma_spread --
+    # the key case proving label depends on BOTH cuts, not score alone.
+    day_slice = pd.DataFrame([
+        {"stock_code": "AAA", "adtv_20": 5e9, "weekly_ma_spread": 10.0, "sector_rs_momentum": 0.05,
+         "atr_14": 20.0, "close_price": 1000.0, "avg_vol_20": 1e7, "tp_target": 1200.0},
+        {"stock_code": "BBB", "adtv_20": 5e9, "weekly_ma_spread": 6.0, "sector_rs_momentum": 0.02,
+         "atr_14": 15.0, "close_price": 500.0, "avg_vol_20": 1e7, "tp_target": 600.0},
+        {"stock_code": "CCC", "adtv_20": 1e8, "weekly_ma_spread": 20.0, "sector_rs_momentum": 0.10,
+         "atr_14": 10.0, "close_price": 300.0, "avg_vol_20": 1e7, "tp_target": 400.0},
+        {"stock_code": "DDD", "adtv_20": 5e9, "weekly_ma_spread": 1.0, "sector_rs_momentum": 0.05,
+         "atr_14": 10.0, "close_price": 300.0, "avg_vol_20": 1e7, "tp_target": 400.0},
+    ])
+    # AAA score=5.0, BBB score=1.2 (see score_candidates' own formula) -- score_p90=2.0
+    # splits them across the STRONG_BUY/BUY boundary.
+    result = {r["stock_code"]: r for r in bt.score_full_universe(day_slice, weekly_cut=5.0, sector_cut=0.01, score_p90=2.0, regime_ok=True)}
+    assert "CCC" not in result, "illiquid ticker must never be scored, not even as WAIT/WATCH"
+    assert result["AAA"]["label"] == "STRONG_BUY", result["AAA"]
+    assert result["BBB"]["label"] == "BUY", result["BBB"]
+    assert result["DDD"]["label"] == "WATCH", "high score from sector_rs_momentum alone must not overrule a failed weekly_ma_spread gate"
+    approx(result["DDD"]["score"], 3.2, tol=PCT_TOL)
+
+    # regime not confirmed bullish -- everything liquid is WAIT regardless of gate/score.
+    result_wait = {r["stock_code"]: r for r in bt.score_full_universe(day_slice, weekly_cut=5.0, sector_cut=0.01, score_p90=2.0, regime_ok=False)}
+    assert all(r["label"] == "WAIT" for r in result_wait.values())
+    assert "CCC" not in result_wait
+    print("[OK] test_score_full_universe")
+
+
 if __name__ == "__main__":
     test_total_buy_fee()
     test_compute_entry_fill_basic()
@@ -231,4 +263,5 @@ if __name__ == "__main__":
     test_evaluate_position_exit_no_trigger()
     test_compute_drawdown_and_cvar()
     test_score_candidates()
+    test_score_full_universe()
     print("\nAll paper-trading math checks passed.")

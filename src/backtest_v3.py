@@ -429,6 +429,53 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
     } for _, sig in candidates.nlargest(top_n, "score").iterrows()]
 
 
+def score_full_universe(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: float,
+                         score_p90: float, regime_ok: bool) -> list:
+    """Scores EVERY liquid ticker in day_slice for the daily scoreboard --
+    unlike score_candidates (a trade-entry gate that drops anything failing
+    weekly/sector cuts), this never drops a row past the liquidity/ATR
+    sanity floor, so a ticker search always has an answer instead of
+    silence. Same score formula as score_candidates (normalized distance
+    above both cuts), just not used to filter here.
+
+    regime_ok is whatever the caller already computed for today (BULLISH +
+    REGIME_CONFIRM_DAYS streak + TREND_STRENGTH_MIN) -- the same three-part
+    check paper_signal_scan.py applies before generating any new
+    candidates at all. Labels:
+      STRONG_BUY -- passes weekly/sector gate, score >= score_p90, regime_ok
+      BUY        -- passes weekly/sector gate, regime_ok
+      WATCH      -- liquid + regime_ok but fails weekly/sector gate
+      WAIT       -- regime not confirmed bullish yet, whatever the gate says
+    No SELL label: this is a long-only entry screener with no short/sell
+    model, so a bad score means "not a qualifying entry today," not
+    "sell your position." Also no price target here -- that needs its
+    own backtest validation before shipping, see docs/V3_FINDINGS_LOG.md."""
+    liquid = day_slice[
+        (day_slice["adtv_20"] >= cfg.ADTV_MIN)
+        & day_slice["weekly_ma_spread"].notna() & day_slice["sector_rs_momentum"].notna()
+        & day_slice["atr_14"].notna() & (day_slice["atr_14"] > 0)
+        & ((day_slice["atr_14"] / day_slice["close_price"]) <= ATR_PRICE_RATIO_MAX)
+    ].copy()
+    if liquid.empty:
+        return []
+    liquid["score"] = (
+        (liquid["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
+        + (liquid["sector_rs_momentum"] - sector_cut) / max(abs(sector_cut), 1e-6)
+    )
+    passes_gate = (liquid["weekly_ma_spread"] >= weekly_cut) & (liquid["sector_rs_momentum"] >= sector_cut)
+    if not regime_ok:
+        liquid["label"] = "WAIT"
+    else:
+        liquid["label"] = np.where(
+            passes_gate, np.where(liquid["score"] >= score_p90, "STRONG_BUY", "BUY"), "WATCH",
+        )
+    return [{
+        "stock_code": sig["stock_code"], "score": float(sig["score"]), "label": sig["label"],
+        "weekly_ma_spread": float(sig["weekly_ma_spread"]), "sector_rs_momentum": float(sig["sector_rs_momentum"]),
+        "close_price": float(sig["close_price"]), "adtv_20": float(sig["adtv_20"]),
+    } for _, sig in liquid.iterrows()]
+
+
 def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: float,
                         log_adtv_p90: float, score_p90: float = 1.0, trend_strength: float = 0.0,
                         trend_strength_p90: float = 1.0):

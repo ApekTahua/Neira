@@ -1634,7 +1634,29 @@ history exist -- noisy and misleading on a handful of days otherwise.
 touch `backtest_v3.py`'s shared entry/exit functions, only the live-only
 EOD snapshot step.
 
-## NEXT ENHANCEMENT (queued, not started) -- full-universe daily scoreboard
+## Full-universe daily scoreboard -- backend shipped (2026-08-02)
+
+Queued below yesterday, built today (Sunday, day before paper trading's
+Monday launch). Shipped exactly the scoped v1: `score_full_universe()`
+in `backtest_v3.py` (new function, zero lines changed in
+`score_candidates`/`evaluate_position_exit`/`simulate_window` -- no
+walk-forward re-check needed, same reasoning as the CVaR live-engine fix
+above), wired into `paper_signal_scan.py`'s daily run, writing to a new
+`daily_scoreboard` table (applied via migration). Labels: STRONG_BUY/
+BUY/WATCH/WAIT exactly as scoped -- no SELL label, no price target
+(both deferred for the reasons below, unchanged). 10/10 dry-run checks
+pass, including the case that matters most: a ticker with a high score
+driven entirely by `sector_rs_momentum` but failing the `weekly_ma_spread`
+gate correctly lands on WATCH, not BUY -- score alone never overrides a
+failed gate.
+
+**Not yet done**: frontend read (newscraper.ai repo) -- ticker
+search/detail page doesn't query `daily_scoreboard` yet. Backend-only
+this pass, deliberately, given this ships hours before Monday's real
+launch and the live paper-trading pipeline is the priority to keep
+stable, not rush a frontend integration alongside it.
+
+## Original scoping note (queued, now shipped above)
 
 User request (2026-08-01, weekend before paper trading's Monday launch):
 today the daily scan only surfaces the stocks that actually qualify as
