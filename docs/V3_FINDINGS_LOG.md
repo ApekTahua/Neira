@@ -1814,3 +1814,50 @@ literal test cases, a synthetic reverse-split, a genuine bad-but-real
 untouched, since that's a protected file and a much bigger job (would
 need a real corporate-actions source, not a threshold guess). This is a
 live-engine safety net, not a data-quality fix.
+
+## Day 1 live (2026-08-03): first real signal-scan run, 22min, root cause found + fixed
+
+The gh-dispatch bridge bug (workflow files living only on this branch
+can't be dispatched by filename OR by ID from a `main`-branch trigger --
+GitHub never indexes them) was fixed on `main` this same morning by
+inlining `actions/checkout@v4` with `ref: worktree-v2-hmm-screener`
+directly into the three trigger workflows, dropping the `gh workflow run`
+dispatch step entirely. First scheduled fire after the fix: still 34+ min
+late (GitHub schedule jitter or something stuck -- inconclusive, since it
+had never fired successfully before either), so triggered manually.
+**Result: real success** -- `paper_account.last_signal_date` set to
+2026-08-03 for the first time ever, 2 real PENDING candidates queued
+(DOOH, BAJA, `V3_regime_weekly_sector` trigger), to fill at tomorrow's
+open via `paper_monitor.py`. First genuine end-to-end proof this pipeline
+works in production, not just in dry-run.
+
+Took **22m10s**. Root-caused by reading `data_fetch.fetch_data()`
+directly (this was its first-ever real invocation, so no prior timing
+baseline existed): `build_full_dataset()` refetches the ENTIRE history
+(`FETCH_START=2021-01-01` minus 280d lookback, through today) from
+scratch every single day, no caching between runs. The stock-OHLCV fetch
+chunks by 50 stock codes x one request per calendar month across ~5.5
+years -- for a ~900-stock universe that's ~18 chunks x ~68 months =
+1,200+ fully serial paginated Supabase requests, one at a time. Not a
+hang, not a bug in the trading logic -- just genuinely that slow by
+design, and nobody could have caught it earlier since the dispatch bug
+prevented this code path from ever running against real data before today.
+
+**Fixed same day** (`a20fbab`, low-risk since it's pure I/O concurrency,
+zero change to what's fetched or computed): every (stock-code-chunk,
+month) request is independent and order-insensitive -- the assembled
+dataframe gets `sort_values()`'d regardless of arrival order -- so both
+that loop and the smaller per-checkpoint stock-code-discovery loop now
+run through a `ThreadPoolExecutor(max_workers=12)` instead of one request
+at a time. Expected ~1-2min instead of 22min. Verified: syntax-checks,
+existing 11/11 regression suite (`test_paper_trading_math.py`) still
+passes unaffected. **Not yet verified against a real run** -- today's
+scan already set `last_signal_date=2026-08-03` so it'll skip until
+tomorrow; the actual wall-clock improvement is confirmed by the next
+real scheduled run, not asserted here. Deliberately did NOT touch the
+CPU-bound per-stock `add_features()` loop in the same function
+(`build_full_dataset`, `backtest_v3.py`) in the same pass -- that's a
+groupby-vs-repeated-filter algorithmic question, touches the shared
+validated backtest logic, and per this log's own discipline would need
+a full 9-window walk-forward regression check before landing, not
+something to bundle into a same-day I/O fix.
