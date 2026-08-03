@@ -14,6 +14,16 @@ on:
     - cron: '10 11 * * 1-5'  # 18:10 WIB, right after run_screener.yml's 18:00 WIB slot
   workflow_dispatch:
 
+# Shared across all 3 paper-trading/disclosure workflows -- they all
+# mutate paper_positions/paper_account, and a delayed schedule overlapping
+# a manual dispatch (exactly what happened 2026-08-03) could otherwise run
+# two instances at once, both reading last_signal_date before either
+# commits, both queuing candidates. Queues the second run instead of
+# canceling the first (which could be mid-write) or letting them race.
+concurrency:
+  group: paper-trading-engine
+  cancel-in-progress: false
+
 jobs:
   signal-scan:
     runs-on: ubuntu-latest

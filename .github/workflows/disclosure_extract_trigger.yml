@@ -16,6 +16,15 @@ on:
     - cron: '30 12 * * 1-5'  # 19:30 WIB, matches disclosure_extract.yml's own schedule
   workflow_dispatch:
 
+# Same group as paper_signal_scan_trigger.yml -- see that file's comment.
+# disclosure_extract.py doesn't touch paper_positions/paper_account, but
+# sharing the group costs nothing (this job is short and infrequent) and
+# means one lock covers every workflow that can be manually dispatched
+# while a schedule is also delayed.
+concurrency:
+  group: paper-trading-engine
+  cancel-in-progress: false
+
 jobs:
   extract:
     runs-on: ubuntu-latest

@@ -9,6 +9,14 @@ on:
     - cron: '*/15 2-4,6-8 * * 1-5'  # IDX hours, UTC (see paper_monitor.yml on the worktree branch)
   workflow_dispatch:
 
+# Same group as paper_signal_scan_trigger.yml / disclosure_extract_trigger.yml
+# -- see that file's comment. Queues rather than overlaps if a 15-min tick
+# fires while a manual dispatch (of this or another paper-trading workflow)
+# is still running.
+concurrency:
+  group: paper-trading-engine
+  cancel-in-progress: false
+
 jobs:
   monitor:
     runs-on: ubuntu-latest
