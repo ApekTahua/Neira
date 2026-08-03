@@ -7,9 +7,16 @@ their own inline fetch logic untouched (see plan Global Constraints).
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 import pandas as pd
+
+# I/O-bound (network round trips to Supabase), not CPU-bound -- a thread
+# pool gets near-linear speedup here despite the GIL. 12 is a middling
+# concurrency: enough to turn ~20 minutes of serial requests into ~1-2,
+# not so many that it looks like a burst attack against PostgREST.
+FETCH_CONCURRENCY = 12
 
 
 def _retry(fn, attempts=4, base_delay=2.0):
@@ -77,16 +84,19 @@ def fetch_data(supabase, start_date: date, end_date: date, lookback_days: int = 
                 seen_months.add(ym)
                 checkpoint_dates.add(d.isoformat())
 
-    unique_codes = set()
-    for cd in sorted(checkpoint_dates):
-        codes_batch = _retry(lambda cd=cd: (
+    def _fetch_codes_at(cd: str):
+        return _retry(lambda: (
             supabase.table("ihsg_eod")
             .select("stock_code")
             .eq("trade_date", cd)
             .limit(2000)
             .execute()
         ))
-        unique_codes.update(row["stock_code"] for row in (codes_batch.data or []))
+
+    unique_codes = set()
+    with ThreadPoolExecutor(max_workers=FETCH_CONCURRENCY) as pool:
+        for codes_batch in pool.map(_fetch_codes_at, sorted(checkpoint_dates)):
+            unique_codes.update(row["stock_code"] for row in (codes_batch.data or []))
     unique_codes = sorted(unique_codes)
 
     # Paginated by bounded calendar-month range, not OFFSET -- a
@@ -104,27 +114,42 @@ def fetch_data(supabase, start_date: date, end_date: date, lookback_days: int = 
     # A month-bounded range query is O(1) per page regardless of how deep
     # into history it is -- one month x 50 stocks is comfortably under
     # 1000 trading-day rows, so no OFFSET/re-sort is needed at all.
-    all_stocks = []
     batch_size = 50
     month_starts = []
     cursor = date(fetch_start.year, fetch_start.month, 1)
     while cursor <= end_date:
         month_starts.append(cursor)
         cursor = date(cursor.year + (cursor.month == 12), cursor.month % 12 + 1, 1)
+
+    # Every (stock-code-chunk, month) pair is an independent, order-
+    # independent request -- df gets sort_values()'d at the end regardless
+    # of what order results arrive in, so these are safe to fire concurrently
+    # instead of one at a time. This loop was the dominant cost of a daily
+    # signal-scan run (~20+ min serial for ~900 stocks x ~5.5yrs of months);
+    # concurrency turns it into wall-clock ~1-2 min.
+    chunk_specs = []
     for i in range(0, len(unique_codes), batch_size):
         batch_codes = unique_codes[i:i + batch_size]
         for m_start in month_starts:
             m_end = date(m_start.year + (m_start.month == 12), m_start.month % 12 + 1, 1) - timedelta(days=1)
-            batch = _retry(lambda m_start=m_start, m_end=m_end, batch_codes=batch_codes: (
-                supabase.table("ihsg_eod")
-                .select("stock_code,trade_date,open_price,close_price,high,low,previous,volume,foreign_buy,foreign_sell")
-                .in_("stock_code", batch_codes)
-                .gte("trade_date", max(m_start, fetch_start).isoformat())
-                .lte("trade_date", min(m_end, end_date).isoformat())
-                .order("trade_date")
-                .limit(5000)
-                .execute()
-            ))
+            chunk_specs.append((batch_codes, max(m_start, fetch_start), min(m_end, end_date)))
+
+    def _fetch_chunk(spec):
+        batch_codes, gte, lte = spec
+        return _retry(lambda: (
+            supabase.table("ihsg_eod")
+            .select("stock_code,trade_date,open_price,close_price,high,low,previous,volume,foreign_buy,foreign_sell")
+            .in_("stock_code", batch_codes)
+            .gte("trade_date", gte.isoformat())
+            .lte("trade_date", lte.isoformat())
+            .order("trade_date")
+            .limit(5000)
+            .execute()
+        ))
+
+    all_stocks = []
+    with ThreadPoolExecutor(max_workers=FETCH_CONCURRENCY) as pool:
+        for batch in pool.map(_fetch_chunk, chunk_specs):
             if batch.data:
                 all_stocks.extend(batch.data)
 
