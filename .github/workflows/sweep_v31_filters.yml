@@ -73,6 +73,23 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python src/diagnose_score_power.py
 
+      # Artifacts need an authenticated download to read, which makes results
+      # awkward to get at afterwards. Same summary goes into Supabase, which
+      # is readable directly. Display-only table -- nothing reads it back
+      # into a trading decision.
+      - name: Publish hasil ke Supabase
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SWEEP_ATR: ${{ inputs.atr }}
+          SWEEP_ARA: ${{ inputs.ara }}
+          SWEEP_ARB: ${{ inputs.arb }}
+        run: |
+          python src/publish_research_result.py sweep_v31_filters sweep_v31_filters_summary.csv "run ${{ github.run_number }}"
+          python src/publish_research_result.py walk_forward_v3 walk_forward_v3_summary.csv "run ${{ github.run_number }}"
+          python src/publish_research_result.py diagnose_score_power diagnose_score_power_summary.csv "run ${{ github.run_number }}"
+
       - name: Upload hasil
         if: always()
         uses: actions/upload-artifact@v4
@@ -81,5 +98,6 @@ jobs:
           path: |
             sweep_v31_filters_summary.csv
             walk_forward_v3_summary.csv
+            diagnose_score_power_summary.csv
             diagnose_score_power_raw.csv
           if-no-files-found: warn
