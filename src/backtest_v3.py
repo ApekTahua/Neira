@@ -294,27 +294,54 @@ ATR_PRICE_RATIO_MAX = float(os.environ.get("V3_ATR_PRICE_RATIO_MAX", "0.10"))
                             # walk_forward_v3.py without editing this file; the 0.10 default
                             # keeps the frozen live V3_PAPER run byte-identical.
 
-# ---- ARA (auto-reject atas) entry filter -- OFF by default ----------------
-# A stock locked at its upper auto-reject limit has no real offer left: the
-# close IS the ceiling, the queue is one-sided, and the next session it can
-# gap away or be suspended outright. BAJA (queued 2026-08-03: prev 244 ->
-# close 304 = +24.6% at the 25% tier limit, close == high) then went
-# volume=0/open=0 the next day and could never be filled at all.
+# ---- Auto-reject (ARA/ARB) detection -- both filters OFF by default -------
+# A stock locked at an auto-reject limit is not tradeable at a fair price.
+# At the CEILING (ARA) there is no offer to buy from: the close IS the limit
+# and the queue is one-sided. At the FLOOR (ARB) there is no bid to sell
+# into, which is the dangerous one for an open position -- a stop-loss
+# "filling" at sl_price on an ARB day is fiction, and modelling it as a fill
+# flatters the track record on exactly the days that hurt most in real life.
 #
-# IDX tiers the limit by price band. These are the post-2023 percentages;
-# the check deliberately triggers a little below the exact limit
-# (ARA_LIMIT_TOLERANCE) since tick rounding means a locked close usually
-# lands just under the nominal figure, as BAJA's 24.59% vs 25% did.
+# BAJA is the motivating ARA case: queued 2026-08-03 at prev 244 -> close
+# 304 (+24.59%, close == high), then volume=0/open=0 the next session and
+# never fillable at all.
 #
-# Default OFF: turning it on changes which tickers get bought, which is a
-# strategy change, not a bug fix -- it ships as a new versioned paper run
-# (V3.1_PAPER), never as a silent edit to a run already in flight.
+# --- Why the limit is INFERRED per stock instead of read off a price table:
+# IDX sets the limit by BOARD, not purely by price. Main/development boards
+# use the 35/25/20% price tiers, but Papan Akselerasi and full-call-auction
+# monitoring boards run 10% -- and ihsg_eod carries no board column, so a
+# Rp1,000 stock could legitimately be a 25% name or a 10% name.
+#
+# Measuring the real distribution settles it. Over 2025-01-01+, bars that
+# closed AT their high cluster hard just under four values and collapse
+# immediately above each:
+#     9.0-9.99%: 4,205 bars -> 10.0-10.49%: 1,063 -> 10.5-11%: 45
+#    19.6-19.99%:   109     -> 20.0-20.34%:    72 -> 20.5-21%:  7
+#    24.0-24.94%:   894     -> 25.00% exact :   346 -> above  :  1
+#    34.0-34.97%:   497     -> 35.00% exact :    31 -> above  :  0
+# Four limits actually enforced: 10 / 20 / 25 / 35%. The mass sitting just
+# BELOW each round number is tick rounding (BAJA's 24.59 vs 25.00), which is
+# why the trigger fires at LIMIT_TOLERANCE of the limit rather than at it.
+#
+# So: take each stock's own largest absolute daily move over a trailing
+# window and snap it to whichever known limit it matches. A stock that has
+# ever gone limit-up reveals its board. One that never has (a calm blue
+# chip topping out at 6%) snaps to nothing and falls back to the price tier
+# -- which is correct, because it also can't be mistaken for locked today.
+# The window is shifted by one day so today's own bar can never define the
+# limit today's bar is tested against.
 ARA_FILTER_ENABLED = os.environ.get("V3_ARA_FILTER", "0") == "1"
-ARA_LIMIT_TOLERANCE = 0.95
+ARB_EXIT_REALISM = os.environ.get("V3_ARB_EXIT_REALISM", "0") == "1"
+LIMIT_TOLERANCE = 0.95        # today's move counts as locked at >= 95% of the limit
+IDX_LIMIT_STEPS = (0.10, 0.20, 0.25, 0.35)
+LIMIT_SNAP_TOLERANCE = 0.035  # trailing max within 3.5pp of a step => that's the board's limit
+LIMIT_LOOKBACK_DAYS = 250
+LIMIT_LOOKBACK_MIN = 60
 
 
-def ara_limit_pct(prev_close: float) -> float:
-    """IDX upper auto-reject limit for a stock at this previous close."""
+def price_tier_limit(prev_close: float) -> float:
+    """IDX auto-reject limit implied by price band alone (main/development
+    boards). Fallback for stocks whose own history reveals no limit."""
     if prev_close < 200:
         return 0.35
     if prev_close <= 5000:
@@ -322,16 +349,51 @@ def ara_limit_pct(prev_close: float) -> float:
     return 0.20
 
 
-def is_ara_locked(prev_close, close, high) -> bool:
-    """True when the signal-day bar looks auto-reject-locked to the upside:
-    closed AT the day's high AND gained essentially the full tier limit.
-    Both conditions matter -- a big gain that closed off its high still had
-    two-sided trading and a real offer to buy from."""
-    if prev_close is None or prev_close <= 0 or close is None or high is None:
+def snap_to_known_limit(observed_max_move, prev_close: float) -> float:
+    """Nearest enforced IDX limit to a stock's own largest observed move,
+    or the price-tier limit when nothing is close enough to snap to."""
+    if observed_max_move is not None and np.isfinite(observed_max_move):
+        best = min(IDX_LIMIT_STEPS, key=lambda s: abs(s - observed_max_move))
+        if abs(best - observed_max_move) <= LIMIT_SNAP_TOLERANCE:
+            return best
+    return price_tier_limit(prev_close)
+
+
+def is_ara_locked(prev_close, close, high, observed_max_move=None) -> bool:
+    """Locked at the CEILING: closed at the day's high AND gained
+    essentially the full limit. Both conditions matter -- a big gain that
+    closed off its high still had a real offer to buy from."""
+    if not prev_close or prev_close <= 0 or close is None or high is None:
         return False
     if close < high:
         return False
-    return (close / prev_close - 1) >= ara_limit_pct(prev_close) * ARA_LIMIT_TOLERANCE
+    return (close / prev_close - 1) >= snap_to_known_limit(observed_max_move, prev_close) * LIMIT_TOLERANCE
+
+
+def is_arb_locked(prev_close, close, low, observed_max_move=None) -> bool:
+    """Locked at the FLOOR: closed at the day's low AND fell essentially the
+    full limit. Means there was no bid -- an exit cannot be assumed to fill
+    at any chosen price on such a bar."""
+    if not prev_close or prev_close <= 0 or close is None or low is None:
+        return False
+    if close > low:
+        return False
+    return (1 - close / prev_close) >= snap_to_known_limit(observed_max_move, prev_close) * LIMIT_TOLERANCE
+
+
+def attach_board_limit(df: pd.DataFrame) -> pd.DataFrame:
+    """Adds `observed_max_move`: each stock's largest absolute daily move
+    over the trailing LIMIT_LOOKBACK_DAYS sessions, EXCLUDING the current
+    bar (shift(1)) so no row can be judged against a limit that its own
+    move defined. Feeds snap_to_known_limit()."""
+    out = df.sort_values(["stock_code", "trade_date"]).copy()
+    move = (out["close_price"] / out["previous"] - 1).abs()
+    move = move.where(out["previous"] > 0)
+    out["observed_max_move"] = (
+        move.groupby(out["stock_code"])
+        .transform(lambda s: s.shift(1).rolling(LIMIT_LOOKBACK_DAYS, min_periods=LIMIT_LOOKBACK_MIN).max())
+    )
+    return out
 
 # Adaptive hold-time checkpoint exit (phase0f_holdtime_exit_backtest.py):
 # expected_hold_days = |target - entry| / ATR estimates how long this
@@ -379,6 +441,11 @@ def build_full_dataset(supabase):
     df["index_code"] = df["stock_code"].map(sector_map)
     df = df.merge(rs_long, on=["trade_date", "index_code"], how="left")
     df = attach_weekly_trend(df)
+    # Always attached, even with both auto-reject filters off: it is one
+    # extra column derived from data already in memory, and computing it
+    # unconditionally keeps the dataset (and its pickle cache) identical
+    # between sweep cells that differ only by V3_ARA_FILTER.
+    df = attach_board_limit(df)
 
     return df.sort_values(["stock_code", "trade_date"]).reset_index(drop=True), idx_df
 
@@ -459,15 +526,15 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
         & ((day_slice["atr_14"] / day_slice["close_price"]) <= ATR_PRICE_RATIO_MAX)
     ].copy()
     if ARA_FILTER_ENABLED and not candidates.empty:
-        # Vectorized form of is_ara_locked() over the day's cross-section.
-        prev = candidates["previous"]
-        limit = np.where(prev < 200, 0.35, np.where(prev <= 5000, 0.25, 0.20))
-        locked = (
-            (prev > 0)
-            & (candidates["close_price"] >= candidates["high"])
-            & ((candidates["close_price"] / prev - 1) >= limit * ARA_LIMIT_TOLERANCE)
+        observed = (
+            candidates["observed_max_move"] if "observed_max_move" in candidates.columns
+            else pd.Series(np.nan, index=candidates.index)
         )
-        candidates = candidates[~locked]
+        locked = [
+            is_ara_locked(row["previous"], row["close_price"], row["high"], obs)
+            for (_, row), obs in zip(candidates.iterrows(), observed)
+        ]
+        candidates = candidates[~np.array(locked, dtype=bool)]
     if candidates.empty:
         return []
     candidates["score"] = (
@@ -611,7 +678,8 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
 
 
 def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: float,
-                            trade_date, prev_equity: float, cash: float):
+                            trade_date, prev_equity: float, cash: float,
+                            prev_close=None, observed_max_move=None):
     """SL/TP1/TRAILING/CHECKPOINT/TIME exit decision + the TP1/TP2 pyramid-add-on, for ONE
     open position on ONE day. Extracted so the live paper-trading monitor
     (src/paper_monitor.py) makes exit decisions through the exact same code path as this
@@ -633,6 +701,17 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
     hold_ok = risk.min_hold_elapsed(pos["hold_days"], cfg.MIN_HOLD_DAYS)
     if close_price > pos["highest_price"]:
         pos["highest_price"] = close_price
+
+    # An ARB-locked bar has no bid: the close IS the floor and the sell queue
+    # is one-sided. Assuming a stop fills at sl_price on such a day is the
+    # single most flattering lie a long-only backtest can tell itself -- it
+    # books the loss at the level you *chose* rather than the level the
+    # market would actually have given you, on precisely the days that do the
+    # real damage. With this on, no exit is taken; the position rides to the
+    # next session, which is what would genuinely happen. Expect results to
+    # get WORSE and truer, not better.
+    if ARB_EXIT_REALISM and is_arb_locked(prev_close, close_price, low_price, observed_max_move):
+        return None, 0.0
 
     exit_reason, exit_price, sell_lots = None, None, 0
     cash_delta = 0.0
@@ -808,6 +887,13 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
         (r.stock_code, r.trade_date): (r.open_price, r.close_price, r.high, r.low, r.volume)
         for r in df.itertuples()
     }
+    # Only needed by the ARB exit-realism check; built once here rather than
+    # looked up per position per day.
+    _has_limit_cols = "observed_max_move" in df.columns
+    limit_lookup = {
+        (r.stock_code, r.trade_date): (r.previous, r.observed_max_move)
+        for r in df.itertuples()
+    } if (ARB_EXIT_REALISM and _has_limit_cols) else {}
 
     def get_bar(stock_code, d):
         try:
@@ -937,9 +1023,11 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             # same code path as this backtest -- see that function's
             # docstring for the full mechanics (unchanged from before the
             # extraction, verified via exact walk-forward regression match).
+            _prev_close, _obs_max = limit_lookup.get((pos["stock_code"], trade_date), (None, None))
             trade_record, cash_delta = evaluate_position_exit(
                 pos, bar, regime, trend_strength_by_date.get(trade_date, 0.0),
                 trade_date, prev_equity, cash,
+                prev_close=_prev_close, observed_max_move=_obs_max,
             )
             cash += cash_delta
 

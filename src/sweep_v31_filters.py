@@ -8,12 +8,20 @@ at exactly 2%, and the surrounding sweep then showed window 1 swinging
 lucky point on a noisy surface. A parameter is only trustworthy if its
 NEIGHBOURS behave too. Same standard applies here.
 
-Two knobs, run as a grid:
+Three knobs, run as a grid:
   V3_ATR_PRICE_RATIO_MAX -- signal-day volatility ceiling (live run: 0.10;
       DOOH, which took a -13.6% stop, sat at 9.1%)
   V3_ARA_FILTER          -- drop candidates locked at the auto-reject
       ceiling on the signal day (BAJA, which then suspended and could
       never fill at all)
+  V3_ARB_EXIT_REALISM    -- refuse to book an exit on an auto-reject-FLOOR
+      bar, where there is no bid to sell into. Expect this one to make the
+      numbers WORSE and truer; it removes a fill the backtest was granting
+      itself for free on exactly the days that hurt in real life.
+
+Default axes sweep ATR alone (both auto-reject knobs off) so the ceiling is
+read against the live baseline. Phase 2 turns the filters on at whichever
+ATR plateau phase 1 finds -- see the axis env vars below.
 
 Reuses walk_forward_v3's pickle cache, so the expensive full-history fetch
 happens once for the whole grid rather than once per cell.
@@ -30,8 +38,17 @@ import os
 import subprocess
 import sys
 
-ATR_CEILINGS = ["0.10", "0.09", "0.08", "0.07", "0.06", "0.05"]
-ARA_SETTINGS = ["0", "1"]
+# Axes are env-overridable so phase 2 (auto-reject filters, once the ATR
+# plateau is known) doesn't have to re-run the whole grid:
+#   SWEEP_ATR=0.08,0.07  SWEEP_ARA=0,1  SWEEP_ARB=0,1  python src/sweep_v31_filters.py
+def _axis(env_name: str, default: list) -> list:
+    raw = os.environ.get(env_name, "")
+    return [v.strip() for v in raw.split(",") if v.strip()] or default
+
+
+ATR_CEILINGS = _axis("SWEEP_ATR", ["0.10", "0.09", "0.08", "0.07", "0.06", "0.05"])
+ARA_SETTINGS = _axis("SWEEP_ARA", ["0"])
+ARB_SETTINGS = _axis("SWEEP_ARB", ["0"])
 
 
 def main():
@@ -41,10 +58,13 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     rows = []
 
-    for atr, ara in itertools.product(ATR_CEILINGS, ARA_SETTINGS):
-        label = f"ATR<={atr} ARA={'on' if ara == '1' else 'off'}"
+    for atr, ara, arb in itertools.product(ATR_CEILINGS, ARA_SETTINGS, ARB_SETTINGS):
+        label = f"ATR<={atr} ARA={'on' if ara == '1' else 'off'} ARB={'on' if arb == '1' else 'off'}"
         print(f"\n{'=' * 100}\n[SWEEP] {label}\n{'=' * 100}", flush=True)
-        env = {**os.environ, "V3_ATR_PRICE_RATIO_MAX": atr, "V3_ARA_FILTER": ara}
+        env = {
+            **os.environ, "V3_ATR_PRICE_RATIO_MAX": atr,
+            "V3_ARA_FILTER": ara, "V3_ARB_EXIT_REALISM": arb,
+        }
         proc = subprocess.run(
             [sys.executable, os.path.join(here, "walk_forward_v3.py")],
             env=env, capture_output=True, text=True,
@@ -65,10 +85,10 @@ def main():
         df = pd.read_csv(summary_path)
         traded = df[df["trades"] > 0]
         if traded.empty:
-            rows.append({"atr_max": atr, "ara": ara, "windows_traded": 0})
+            rows.append({"atr_max": atr, "ara": ara, "arb": arb, "windows_traded": 0})
             continue
         rows.append({
-            "atr_max": atr, "ara": ara,
+            "atr_max": atr, "ara": ara, "arb": arb,
             "windows_traded": len(traded),
             "beat_bench": int((traded["alpha_pct"] > 0).sum()),
             "winrate_over_50": int((traded["win_rate"] > 50).sum()),
@@ -85,10 +105,10 @@ def main():
     import pandas as pd
     res = pd.DataFrame(rows)
     print("\n" + "=" * 110)
-    print("V3.1 FILTER SWEEP -- one row per (ATR ceiling x ARA filter) cell")
+    print("V3.1 FILTER SWEEP -- one row per (ATR ceiling x ARA x ARB) cell")
     print("=" * 110)
     print(res.to_string(index=False))
-    print("\nBaseline is the live frozen config: atr_max=0.10, ara=0.")
+    print("\nBaseline is the live frozen config: atr_max=0.10, ara=0, arb=0.")
     print("Pick a PLATEAU (neighbouring cells also healthy), not the single best cell.")
     res.to_csv("sweep_v31_filters_summary.csv", index=False)
     print("\n[OK] Saved sweep_v31_filters_summary.csv")
