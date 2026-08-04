@@ -128,7 +128,9 @@ def main():
 
     print(f"\n[DIAG] {len(res):,} candidate-days across {res['trade_date'].nunique():,} sessions")
 
-    def block(title, order_col, ascending):
+    summaries = []
+
+    def block(key, title, order_col, ascending):
         print("\n" + "=" * 96)
         print(title)
         print("=" * 96)
@@ -141,11 +143,13 @@ def main():
             **{f"win_{h}": (f"ret_{h}", lambda s: 100 * (s > 0).mean()) for h in HORIZONS},
             sl_hit_10=("sl_hit_10", lambda s: 100 * s.mean()),
         ).round(2)
-        print(agg.reindex(["top 2", "rank 3-5", "rank 6-12"]).to_string())
+        agg = agg.reindex(["top 2", "rank 3-5", "rank 6-12"])
+        print(agg.to_string())
+        summaries.append(agg.reset_index().assign(ordered_by=key))
 
-    block("A. ORDERED BY SCORE -- the ordering the engine actually uses", "score", False)
-    block("B. ORDERED BY LIQUIDITY (adtv_20) -- 'pilih yang top dan liquid'", "adtv_20", False)
-    block("C. ORDERED BY CALMNESS (lowest ATR/price)", "atr_pct", True)
+    block("score", "A. ORDERED BY SCORE -- the ordering the engine actually uses", "score", False)
+    block("liquidity", "B. ORDERED BY LIQUIDITY (adtv_20) -- 'pilih yang top dan liquid'", "adtv_20", False)
+    block("calmness", "C. ORDERED BY CALMNESS (lowest ATR/price)", "atr_pct", True)
 
     print("\n" + "=" * 96)
     print("READ THIS AS")
@@ -159,8 +163,12 @@ def main():
     print("\nOne diagnostic is not a mandate: anything adopted from here still has")
     print("to clear walk_forward_v3.py before it goes anywhere near a live run.")
 
+    # Small aggregate is what gets published/read afterwards; the raw
+    # candidate-day table stays a build artifact (it can run to tens of
+    # thousands of rows and nothing downstream needs that detail).
+    pd.concat(summaries, ignore_index=True).to_csv("diagnose_score_power_summary.csv", index=False)
     res.to_csv("diagnose_score_power_raw.csv", index=False)
-    print("\n[OK] Saved diagnose_score_power_raw.csv")
+    print("\n[OK] Saved diagnose_score_power_summary.csv + diagnose_score_power_raw.csv")
 
 
 if __name__ == "__main__":
