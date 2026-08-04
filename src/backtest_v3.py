@@ -477,11 +477,18 @@ def score_full_universe(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: 
     # score distribution in memory -- the frontend would otherwise need to
     # fetch every liquid ticker's row just to rank one.
     liquid["percentile"] = liquid["score"].rank(pct=True) * 100
+    # atr_14 is carried through purely so the frontend can show the SAME
+    # ATR-based TP1/SL levels compute_entry_fill() would apply, for every
+    # ranked ticker -- not just the 2/day that actually get queued. It is
+    # never read back into any trading decision (this whole function is
+    # display-only); without it the site can only show a rank with no
+    # price levels, which reads as "a signal that tells you nothing."
     return [{
         "stock_code": sig["stock_code"], "score": float(sig["score"]), "label": sig["label"],
         "percentile": float(sig["percentile"]),
         "weekly_ma_spread": float(sig["weekly_ma_spread"]), "sector_rs_momentum": float(sig["sector_rs_momentum"]),
         "close_price": float(sig["close_price"]), "adtv_20": float(sig["adtv_20"]),
+        "atr_14": float(sig["atr_14"]),
     } for _, sig in liquid.iterrows()]
 
 

@@ -14,9 +14,12 @@ create table if not exists daily_scoreboard (
   sector_rs_momentum numeric,
   close_price numeric,
   adtv_20 numeric,
+  atr_14 numeric,  -- so the site can show the same ATR-based TP1/SL levels for EVERY ranked ticker (added 2026-08-04)
   updated_at timestamptz not null default now(),
   primary key (trade_date, stock_code)
 );
+
+alter table daily_scoreboard add column if not exists atr_14 numeric;
 
 create index if not exists daily_scoreboard_stock_code_idx on daily_scoreboard (stock_code);
 

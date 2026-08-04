@@ -46,6 +46,13 @@ from supabase import create_client  # noqa: E402
 
 LOT_SIZE = bt.LOT_SIZE
 
+# Trading sessions a PENDING order may go unfilled before it's cancelled and
+# its position slot released -- see the expiry block in main(). 2 sessions is
+# deliberately short: the entry edge is a next-open effect, so a candidate
+# that couldn't be bought for two straight sessions is a stale signal, not a
+# patient order.
+PENDING_EXPIRY_SESSIONS = 2
+
 
 def _position_dict_from_row(row: dict) -> dict:
     """paper_positions columns -> the dict shape evaluate_position_exit()
@@ -149,6 +156,41 @@ def main():
     # v1 doesn't maintain; slightly conservative (ignores unrealized
     # gains) but immaterial to correctness of exits.
     prev_equity = cash + sum(float(p["cost_basis"]) for p in open_positions)
+
+    # ---- Expire stale PENDING orders (suspended / ARA-locked / no print) ----
+    # paper_monitor.py refuses to fill a candidate whose ihsg_realtime `open`
+    # is 0 -- correct (a suspended or auto-reject-locked ticker has no real
+    # tradeable open, and inventing one would fake a fill that could never
+    # happen). But nothing ever cancelled those orders, so a ticker that
+    # stays suspended squats one of MAX_POSITIONS slots indefinitely: BAJA
+    # queued 2026-08-03 hit ARA, went volume=0/open=0, and held a slot with
+    # no way to ever fill or expire. Real brokers expire an unfilled day
+    # order; this does the same.
+    #
+    # Deliberately NOT a strategy change under the frozen-config rule: it
+    # never alters which ticker is chosen, at what price, or with what size
+    # -- an expired order is one that was never fillable in the first place.
+    # It only stops dead orders from starving live ones of slots.
+    stale_pending = (
+        supabase.table("paper_positions").select("*").eq("run_id", run_id).eq("status", "PENDING")
+        .lt("signal_date", today.isoformat()).execute().data
+    )
+    for row in stale_pending:
+        signal_day = date.fromisoformat(row["signal_date"])
+        sessions_waited = pc.trading_days_elapsed(supabase, signal_day, today)
+        if sessions_waited < PENDING_EXPIRY_SESSIONS:
+            continue
+        supabase.table("paper_positions").update({
+            "status": "CLOSED", "exit_date": today.isoformat(), "exit_reason": "UNFILLED_EXPIRED",
+            "pnl": 0, "pnl_pct": 0,
+        }).eq("id", row["id"]).execute()
+        # No backtest_trades row on purpose: nothing was ever bought or sold,
+        # so counting it as a trade would pollute win-rate/profit-factor with
+        # a phantom breakeven.
+        msg = (f"\U0001F6AB *EXPIRED* {row['stock_code']} -- queued {row['signal_date']}, never filled after "
+               f"{sessions_waited} session(s) (suspended / no valid open). Slot released.")
+        print(f"[EXPIRE] {msg}")
+        pc.notify(msg)
 
     new_candidates_notes = []
     for row in open_positions:
@@ -255,7 +297,7 @@ def main():
             "trade_date": today.isoformat(), "stock_code": row["stock_code"], "score": row["score"],
             "label": row["label"], "percentile": row["percentile"], "weekly_ma_spread": row["weekly_ma_spread"],
             "sector_rs_momentum": row["sector_rs_momentum"], "close_price": row["close_price"],
-            "adtv_20": row["adtv_20"],
+            "adtv_20": row["adtv_20"], "atr_14": row["atr_14"],
         } for row in scoreboard], on_conflict="trade_date,stock_code").execute()
         print(f"[SCOREBOARD] {len(scoreboard)} tickers scored for {today}")
 
