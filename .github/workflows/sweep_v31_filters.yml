@@ -1,0 +1,55 @@
+name: V3.1 Filter Sweep (research)
+
+# Manual only -- this is a research job, not part of the live pipeline. It
+# never writes to paper_positions/paper_account/backtest_runs; it only reads
+# history and prints a summary table, so it cannot disturb the running
+# V3_PAPER track record.
+#
+# Sweeps the ATR ceiling x ARA filter grid through the full walk-forward so
+# the V3.1 settings get chosen from a plateau rather than eyeballed -- see
+# src/sweep_v31_filters.py's docstring for why that distinction matters here.
+on:
+  workflow_dispatch:
+
+# Deliberately NOT in the paper-trading-engine concurrency group: this job is
+# read-only and long-running, and queueing behind it would delay real fills.
+concurrency:
+  group: v31-research
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Ambil kode dari repository
+        uses: actions/checkout@v4
+        with:
+          ref: worktree-v2-hmm-screener
+
+      - name: Pasang Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Library Pendukung
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Jalankan Sweep
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python src/sweep_v31_filters.py
+
+      - name: Upload hasil sweep
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v31-sweep-results
+          path: |
+            sweep_v31_filters_summary.csv
+            walk_forward_v3_summary.csv
+          if-no-files-found: warn
