@@ -10,6 +10,24 @@ name: V3.1 Filter Sweep (research)
 # src/sweep_v31_filters.py's docstring for why that distinction matters here.
 on:
   workflow_dispatch:
+    inputs:
+      job:
+        description: 'Which research job to run'
+        type: choice
+        default: sweep
+        options: [sweep, diagnose_score_power]
+      atr:
+        description: 'sweep only -- ATR ceilings, comma-separated (blank = default 6-value sweep)'
+        type: string
+        default: ''
+      ara:
+        description: 'sweep only -- ARA filter values, comma-separated (e.g. 0,1)'
+        type: string
+        default: ''
+      arb:
+        description: 'sweep only -- ARB exit-realism values, comma-separated (e.g. 0,1)'
+        type: string
+        default: ''
 
 # Deliberately NOT in the paper-trading-engine concurrency group: this job is
 # read-only and long-running, and queueing behind it would delay real fills.
@@ -39,17 +57,29 @@ jobs:
           pip install -r requirements.txt
 
       - name: Jalankan Sweep
+        if: inputs.job == 'sweep'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SWEEP_ATR: ${{ inputs.atr }}
+          SWEEP_ARA: ${{ inputs.ara }}
+          SWEEP_ARB: ${{ inputs.arb }}
         run: python src/sweep_v31_filters.py
 
-      - name: Upload hasil sweep
+      - name: Jalankan Diagnose Score Power
+        if: inputs.job == 'diagnose_score_power'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python src/diagnose_score_power.py
+
+      - name: Upload hasil
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v31-sweep-results
+          name: v31-research-results
           path: |
             sweep_v31_filters_summary.csv
             walk_forward_v3_summary.csv
+            diagnose_score_power_raw.csv
           if-no-files-found: warn
