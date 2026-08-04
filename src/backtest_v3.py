@@ -284,11 +284,54 @@ SLIPPAGE_IMPACT_BPS = float(os.environ.get("V3_SLIPPAGE_IMPACT_BPS", "16"))  # b
 BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
 BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
-ATR_PRICE_RATIO_MAX = 0.10  # exclude entries where ATR_14/close > 10% -- PIPA/FUTR/ISAP-style
+ATR_PRICE_RATIO_MAX = float(os.environ.get("V3_ATR_PRICE_RATIO_MAX", "0.10"))
+                            # exclude entries where ATR_14/close > this -- PIPA/FUTR/ISAP-style
                             # hyperactive penny stocks slip through the Rupiah-value ADTV filter
                             # (huge share count, low price) despite genuinely extreme volatility;
                             # this caps signal-day volatility directly, price-agnostic (GOTO/BUKA
                             # stay eligible despite low price since their ATR% is normal, ~4%).
+                            # Env-overridable so the V3.1 candidate ceiling can be swept through
+                            # walk_forward_v3.py without editing this file; the 0.10 default
+                            # keeps the frozen live V3_PAPER run byte-identical.
+
+# ---- ARA (auto-reject atas) entry filter -- OFF by default ----------------
+# A stock locked at its upper auto-reject limit has no real offer left: the
+# close IS the ceiling, the queue is one-sided, and the next session it can
+# gap away or be suspended outright. BAJA (queued 2026-08-03: prev 244 ->
+# close 304 = +24.6% at the 25% tier limit, close == high) then went
+# volume=0/open=0 the next day and could never be filled at all.
+#
+# IDX tiers the limit by price band. These are the post-2023 percentages;
+# the check deliberately triggers a little below the exact limit
+# (ARA_LIMIT_TOLERANCE) since tick rounding means a locked close usually
+# lands just under the nominal figure, as BAJA's 24.59% vs 25% did.
+#
+# Default OFF: turning it on changes which tickers get bought, which is a
+# strategy change, not a bug fix -- it ships as a new versioned paper run
+# (V3.1_PAPER), never as a silent edit to a run already in flight.
+ARA_FILTER_ENABLED = os.environ.get("V3_ARA_FILTER", "0") == "1"
+ARA_LIMIT_TOLERANCE = 0.95
+
+
+def ara_limit_pct(prev_close: float) -> float:
+    """IDX upper auto-reject limit for a stock at this previous close."""
+    if prev_close < 200:
+        return 0.35
+    if prev_close <= 5000:
+        return 0.25
+    return 0.20
+
+
+def is_ara_locked(prev_close, close, high) -> bool:
+    """True when the signal-day bar looks auto-reject-locked to the upside:
+    closed AT the day's high AND gained essentially the full tier limit.
+    Both conditions matter -- a big gain that closed off its high still had
+    two-sided trading and a real offer to buy from."""
+    if prev_close is None or prev_close <= 0 or close is None or high is None:
+        return False
+    if close < high:
+        return False
+    return (close / prev_close - 1) >= ara_limit_pct(prev_close) * ARA_LIMIT_TOLERANCE
 
 # Adaptive hold-time checkpoint exit (phase0f_holdtime_exit_backtest.py):
 # expected_hold_days = |target - entry| / ATR estimates how long this
@@ -415,6 +458,16 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
         & day_slice["avg_vol_20"].notna()
         & ((day_slice["atr_14"] / day_slice["close_price"]) <= ATR_PRICE_RATIO_MAX)
     ].copy()
+    if ARA_FILTER_ENABLED and not candidates.empty:
+        # Vectorized form of is_ara_locked() over the day's cross-section.
+        prev = candidates["previous"]
+        limit = np.where(prev < 200, 0.35, np.where(prev <= 5000, 0.25, 0.20))
+        locked = (
+            (prev > 0)
+            & (candidates["close_price"] >= candidates["high"])
+            & ((candidates["close_price"] / prev - 1) >= limit * ARA_LIMIT_TOLERANCE)
+        )
+        candidates = candidates[~locked]
     if candidates.empty:
         return []
     candidates["score"] = (
