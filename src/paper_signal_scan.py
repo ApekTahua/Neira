@@ -292,6 +292,21 @@ def main():
     if not np.isfinite(score_p90) or score_p90 <= 0:
         score_p90 = 1.0
     scoreboard = bt.score_full_universe(df[df["trade_date"] == today], weekly_cut, sector_cut, score_p90, regime_ok)
+
+    # Persist the actual thresholds applied today so the frontend can show a
+    # real per-gate pass/fail breakdown for any ticker instead of only the
+    # final label -- see daily_gate_summary_schema.sql. Written even when
+    # regime_ok is False / scoreboard is empty, since "why is everything
+    # WAIT today" is exactly the case this needs to answer too.
+    supabase.table("daily_gate_summary").upsert({
+        "trade_date": today.isoformat(), "regime": regime,
+        "bullish_streak": int(bullish_streak_by_date.get(today, 0)),
+        "trend_strength": float(trend_strength), "regime_ok": bool(regime_ok),
+        "weekly_cut": float(weekly_cut), "sector_cut": float(sector_cut),
+        "score_p90": float(score_p90), "atr_ratio_max": float(bt.ATR_PRICE_RATIO_MAX),
+        "adtv_min": float(cfg.ADTV_MIN),
+    }, on_conflict="trade_date").execute()
+
     if scoreboard:
         supabase.table("daily_scoreboard").upsert([{
             "trade_date": today.isoformat(), "stock_code": row["stock_code"], "score": row["score"],
@@ -303,9 +318,18 @@ def main():
 
     candidates = []
     if regime_ok:
-        open_count = supabase.table("paper_positions").select("id", count="exact").eq("run_id", run_id).in_(
+        # Both OPEN and PENDING count against MAX_POSITIONS -- a queued but
+        # unfilled order still occupies a slot -- and both must be checked
+        # per-ticker below too. Bug found 2026-08-05: the per-ticker dedup
+        # used to check only `open_positions` (status='OPEN'), so a stock
+        # already PENDING from a prior day's signal (not yet filled, not yet
+        # expired) could still get queued a SECOND time -- SMLE was queued
+        # both 2026-08-03 and 2026-08-05 simultaneously before this fix.
+        open_and_pending = supabase.table("paper_positions").select("id, stock_code").eq("run_id", run_id).in_(
             "status", ["OPEN", "PENDING"]
-        ).execute().count
+        ).execute().data
+        open_count = len(open_and_pending)
+        already_queued_codes = {p["stock_code"] for p in open_and_pending}
         slots_free = max(0, bt.MAX_POSITIONS - open_count)
         max_new = min(slots_free, bt.MAX_NEW_ENTRIES_PER_DAY)
         if max_new > 0:
@@ -314,8 +338,7 @@ def main():
             for sig in scored:
                 if len(candidates) >= max_new:
                     break
-                already_open = any(p["stock_code"] == sig["stock_code"] for p in open_positions)
-                if already_open:
+                if sig["stock_code"] in already_queued_codes:
                     continue
                 sl_res = (
                     supabase.table("paper_positions").select("exit_date")
