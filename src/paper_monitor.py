@@ -25,6 +25,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 from datetime import date, datetime, timezone
 
@@ -37,6 +38,18 @@ from supabase import create_client  # noqa: E402
 
 LOT_SIZE = bt.LOT_SIZE
 STALE_MINUTES = 30
+
+
+def _parse_timestamptz(s: str) -> datetime:
+    """PostgREST strips trailing zeros from a timestamptz's fractional
+    seconds (e.g. .860000 -> .86), which Python's strict fromisoformat
+    (3-or-6-digit fraction only, on the 3.10 runner this Action uses)
+    rejects outright -- crashed real production runs on 2026-08-06 once
+    ihsg_realtime.updated_at values with a 2-digit fraction showed up.
+    Pad/truncate to exactly 6 digits before parsing."""
+    s = s.replace("Z", "+00:00")
+    s = re.sub(r"\.(\d+)", lambda m: "." + m.group(1).ljust(6, "0")[:6], s)
+    return datetime.fromisoformat(s)
 
 
 def _gap_ok(entry_price: float, signal_close: float) -> bool:
@@ -98,7 +111,7 @@ def main():
 
     freshest = max((r["updated_at"] for r in live.values()), default=None)
     if freshest:
-        age_min = (datetime.now(timezone.utc) - datetime.fromisoformat(freshest.replace("Z", "+00:00"))).total_seconds() / 60
+        age_min = (datetime.now(timezone.utc) - _parse_timestamptz(freshest)).total_seconds() / 60
         if age_min > STALE_MINUTES:
             msg = f"⚠️ ihsg_realtime feed is {age_min:.0f} min stale (>{STALE_MINUTES}m) -- skipping this poll."
             print(f"[MONITOR] {msg}")
