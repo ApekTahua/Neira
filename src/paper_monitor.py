@@ -140,6 +140,7 @@ def main():
             "total_lots": fill["lots"], "remaining_lots": fill["lots"], "cost_basis": cash_out,
             "checkpoint_day": fill["checkpoint_day"], "highest_price": entry_price,
             "day_high": entry_price, "day_low": entry_price,
+            "filled_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", row["id"]).execute()
         pc.notify(f"\U0001F7E2 *FILLED* {row['stock_code']} @ Rp{entry_price:,.0f} x {fill['lots']} lot(s)")
         print(f"[MONITOR] FILLED {row['stock_code']} @ {entry_price:.0f} x{fill['lots']}lot cash_out=Rp{cash_out:,.0f}")
@@ -186,12 +187,14 @@ def main():
                 "avg_price": pos["avg_price"], "tp1_price": pos["tp1_price"], "sl_price": pos["sl_price"],
                 "total_lots": pos["total_lots"], "remaining_lots": pos["remaining_lots"], "cost_basis": pos["cost_basis"],
                 "tp1_hit": True, "day_high": day_high, "day_low": day_low,
+                "tp1_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", row["id"]).execute()
         else:
             supabase.table("paper_positions").update({
                 "status": "CLOSED", "remaining_lots": pos["remaining_lots"],
                 "exit_date": today.isoformat(), "exit_price": trade_record["exit_price"],
                 "exit_reason": trade_record["exit_reason"], "pnl": trade_record["pnl"], "pnl_pct": trade_record["pnl_pct"],
+                "exited_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", row["id"]).execute()
             supabase.table("backtest_trades").insert({
                 "run_id": run_id, "stock_code": trade_record["stock_code"],

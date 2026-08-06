@@ -33,7 +33,7 @@ Usage:
 
 import os
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 
 import numpy as np
 
@@ -98,6 +98,7 @@ def _close_position(supabase, run_id: int, position_id: int, pos: dict, trade_re
         "exit_date": trade_record["exit_date"].isoformat(), "exit_price": trade_record["exit_price"],
         "exit_reason": trade_record["exit_reason"], "pnl": trade_record["pnl"], "pnl_pct": trade_record["pnl_pct"],
         "hold_days": trade_record["hold_days"],
+        "exited_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", position_id).execute()
     supabase.table("backtest_trades").insert({
         "run_id": run_id, "stock_code": trade_record["stock_code"],
@@ -182,7 +183,7 @@ def main():
             continue
         supabase.table("paper_positions").update({
             "status": "CLOSED", "exit_date": today.isoformat(), "exit_reason": "UNFILLED_EXPIRED",
-            "pnl": 0, "pnl_pct": 0,
+            "pnl": 0, "pnl_pct": 0, "exited_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", row["id"]).execute()
         # No backtest_trades row on purpose: nothing was ever bought or sold,
         # so counting it as a trade would pollute win-rate/profit-factor with
