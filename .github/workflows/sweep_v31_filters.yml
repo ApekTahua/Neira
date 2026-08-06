@@ -89,6 +89,7 @@ jobs:
           python src/publish_research_result.py sweep_v31_filters sweep_v31_filters_summary.csv "run ${{ github.run_number }}"
           python src/publish_research_result.py walk_forward_v3 walk_forward_v3_summary.csv "run ${{ github.run_number }}"
           python src/publish_research_result.py diagnose_score_power diagnose_score_power_summary.csv "run ${{ github.run_number }}"
+          python src/publish_research_result.py diagnose_score_power_by_window diagnose_score_power_by_window.csv "run ${{ github.run_number }}"
 
       - name: Upload hasil
         if: always()
@@ -99,5 +100,6 @@ jobs:
             sweep_v31_filters_summary.csv
             walk_forward_v3_summary.csv
             diagnose_score_power_summary.csv
+            diagnose_score_power_by_window.csv
             diagnose_score_power_raw.csv
           if-no-files-found: warn
