@@ -198,11 +198,22 @@ def main():
         if row["entry_date"] == today.isoformat():
             continue  # filled today by paper_monitor.py -- don't exit-check same-day, matches backtest_v3.py's own guard
 
-        if row["stock_code"] not in today_bars.index:
-            # No EOD print today -- suspension or delisting. Same DELISTING_GAP_DAYS force-exit
-            # the backtest applies (src/backtest_v3.py's simulate_window "no bar found" branch):
-            # without this, a delisted position would sit open forever, frozen at its last
-            # mark-to-market price, never contributing its real loss.
+        # A suspended stock still gets an EOD row on some feeds -- open=high=low=0 with
+        # close frozen at the last real print (DOOH, 2026-08-06: exactly this shape).
+        # Without this check that row reached evaluate_position_exit as a real bar,
+        # low=0 <= any sl_price trivially, and DOOH "sold" at price 0 for a fabricated
+        # -100% loss -- a real production incident, not a hypothetical. open_price==0
+        # is the same no-real-print signal paper_monitor.py's fill guard already uses.
+        has_real_print = (
+            row["stock_code"] in today_bars.index
+            and float(today_bars.loc[row["stock_code"]]["open_price"]) > 0
+        )
+        if not has_real_print:
+            # No real trading today -- suspension, ARA-lock with no print, or delisting.
+            # Same DELISTING_GAP_DAYS force-exit the backtest applies (src/backtest_v3.py's
+            # simulate_window "no bar found" branch): without this, a delisted position
+            # would sit open forever, frozen at its last mark-to-market price, never
+            # contributing its real loss.
             no_data_days = int(row["no_data_days"]) + 1
             hold_days = int(row["hold_days"]) + 1
             if no_data_days >= bt.DELISTING_GAP_DAYS and row["last_valid_close"] is not None:
