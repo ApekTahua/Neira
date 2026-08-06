@@ -31,6 +31,21 @@ liquidity (adtv_20) and calmness (lowest ATR/price) -- the user's own
 instinct was "kalau disuruh memilih, pasti saya pilih yang top dan liquid",
 which is a testable hypothesis, not just a feeling.
 
+Run #1 (2026-08-04) found the OPPOSITE of what you'd want: top-2 by score
+underperformed rank 6-12 on every metric (win rate, mean return, SL-hit
+rate), and the same inversion held under the liquidity and calmness
+orderings too. Fair pushback received the same night: one aggregate number
+over one sample window is exactly the kind of single-point read that burned
+the hysteresis-band tuning earlier this session (2% band looked great in
+isolation, then the surrounding sweep showed a 61%-501% swing on nearby
+values -- one lucky point, not a real optimum). "Top rank could still be
+better in some other period" is a real possibility this script's original
+aggregate-only output couldn't rule out. So it now ALSO breaks the same
+comparison down by the same 6-month rolling windows walk_forward_v3.py
+uses, and reports whether "top 2 underperforms rank 6-12" holds in most/
+all windows or is itself period-specific -- the walk-forward's own
+consistency standard, applied to this question too.
+
 Reads only. Writes no Supabase table, touches no paper-trading state.
 
 Usage:
@@ -39,7 +54,7 @@ Usage:
 
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 os.environ.setdefault("V3_TEST_END", date.today().isoformat())
 
@@ -53,6 +68,25 @@ from supabase import create_client  # noqa: E402
 HORIZONS = (5, 10, 20)
 TOP_N_TRACKED = 12  # how deep into the daily ranking to follow
 START = os.environ.get("DIAG_START", "2022-01-01")
+WINDOW_MONTHS = 6  # matches walk_forward_v3.py's rolling-window size
+
+
+def _month_add(d: date, months: int) -> date:
+    y = d.year + (d.month - 1 + months) // 12
+    m = (d.month - 1 + months) % 12 + 1
+    return date(y, m, 1)
+
+
+def window_label(d: date, first_start: date, months: int = WINDOW_MONTHS) -> str:
+    """Which non-overlapping N-month block `d` falls into, counted from
+    first_start -- same block boundaries walk_forward_v3.py's own
+    build_schedule() produces, so results from the two scripts line up."""
+    cursor = first_start
+    while True:
+        nxt = _month_add(cursor, months)
+        if d < nxt:
+            return f"{cursor.isoformat()}..{(nxt - timedelta(days=1)).isoformat()}"
+        cursor = nxt
 
 
 def main():
@@ -111,7 +145,7 @@ def main():
             atr = sig["atr"]
             sl = entry - atr * 1.5 if atr and atr > 0 else entry * 0.98
             rec = {
-                "trade_date": d, "stock_code": sig["stock_code"], "rank": rank,
+                "trade_date": d, "window": window_label(d, days[0]), "stock_code": sig["stock_code"], "rank": rank,
                 "score": sig["score"], "adtv_20": sig["adtv_20"],
                 "atr_pct": (atr / entry) if atr and entry else np.nan,
             }
@@ -151,6 +185,41 @@ def main():
     block("liquidity", "B. ORDERED BY LIQUIDITY (adtv_20) -- 'pilih yang top dan liquid'", "adtv_20", False)
     block("calmness", "C. ORDERED BY CALMNESS (lowest ATR/price)", "atr_pct", True)
 
+    # ---- Per-window robustness check (the direct answer to "top rank could
+    # still be better sometimes -- one aggregate number doesn't rule that
+    # out") -- same score ordering as block A, but broken down by the same
+    # 6-month windows walk_forward_v3.py uses, so a period-specific fluke
+    # can't hide inside one big average. ----
+    print("\n" + "=" * 96)
+    print("D. PER-WINDOW CHECK -- does 'top 2 underperforms rank 6-12' hold consistently,")
+    print("   or is it specific to some periods? (score ordering, same buckets as A)")
+    print("=" * 96)
+    rw = res.copy()
+    rw["alt_rank"] = rw.groupby("trade_date")["score"].rank(ascending=False, method="first")
+    rw["bucket"] = np.where(rw["alt_rank"] <= 2, "top 2", np.where(rw["alt_rank"] <= 5, "rank 3-5", "rank 6-12"))
+    per_window = (
+        rw.groupby(["window", "bucket"])
+        .agg(n=("ret_10", "size"), win_10=("ret_10", lambda s: 100 * (s > 0).mean()), ret_10_mean=("ret_10", "mean"))
+        .round(2)
+        .reset_index()
+    )
+    pivot = per_window.pivot(index="window", columns="bucket", values="ret_10_mean")
+    for col in ["top 2", "rank 3-5", "rank 6-12"]:
+        if col not in pivot.columns:
+            pivot[col] = np.nan
+    pivot["top2_minus_rank6_12"] = pivot["top 2"] - pivot["rank 6-12"]
+    pivot = pivot[["top 2", "rank 3-5", "rank 6-12", "top2_minus_rank6_12"]].sort_index()
+    print(pivot.to_string())
+    windows_with_data = pivot.dropna(subset=["top2_minus_rank6_12"])
+    windows_top2_worse = (windows_with_data["top2_minus_rank6_12"] < 0).sum()
+    print(f"\nWindows where top-2 underperformed rank 6-12 (10-session return): "
+          f"{windows_top2_worse} / {len(windows_with_data)}")
+    print("If that's most/all windows: the inversion is real and consistent -- worth")
+    print("designing a fix (diversify across ranks, or find why the gate's extremes")
+    print("underperform its middle). If it's a minority of windows: the 2026-08-04")
+    print("aggregate was itself a period-specific read, same failure mode as the")
+    print("hysteresis-band episode -- do not change the live rule off it.")
+
     print("\n" + "=" * 96)
     print("READ THIS AS")
     print("=" * 96)
@@ -160,15 +229,18 @@ def main():
     print("honest responses are (1) stop displaying it as precision, and (2) spread")
     print("entries across the set instead of concentrating in the top 2.")
     print("If B or C separates more cleanly than A, that is the better tie-break.")
+    print("Block D is what decides whether A's finding is a real, actionable pattern")
+    print("or a single-sample artifact -- read it before acting on A at all.")
     print("\nOne diagnostic is not a mandate: anything adopted from here still has")
     print("to clear walk_forward_v3.py before it goes anywhere near a live run.")
 
-    # Small aggregate is what gets published/read afterwards; the raw
+    # Small aggregates are what get published/read afterwards; the raw
     # candidate-day table stays a build artifact (it can run to tens of
     # thousands of rows and nothing downstream needs that detail).
     pd.concat(summaries, ignore_index=True).to_csv("diagnose_score_power_summary.csv", index=False)
+    pivot.reset_index().to_csv("diagnose_score_power_by_window.csv", index=False)
     res.to_csv("diagnose_score_power_raw.csv", index=False)
-    print("\n[OK] Saved diagnose_score_power_summary.csv + diagnose_score_power_raw.csv")
+    print("\n[OK] Saved diagnose_score_power_summary.csv + diagnose_score_power_by_window.csv + _raw.csv")
 
 
 if __name__ == "__main__":
