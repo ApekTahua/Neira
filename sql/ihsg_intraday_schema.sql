@@ -48,10 +48,25 @@ create policy ihsg_intraday_select_anon on ihsg_intraday
 
 
 -- Folds the current ihsg_realtime snapshot into today's aggregate row.
--- Idempotent: a tick whose source_updated_at hasn't advanced is ignored, so
--- running this more often than the feed updates costs nothing and never
--- inflates tick_count. That also makes tick_count a real freshness measure
--- rather than a count of how often the cron happened to fire.
+--
+-- REDESIGNED 2026-08-05 (v1 had a real bug, see below). trade_date is the
+-- SERVER's own wall-clock date, not derived from ihsg_realtime.updated_at,
+-- and every call updates every liquid row unconditionally rather than
+-- gating on that column advancing.
+--
+-- Why: v1 trusted ihsg_realtime.updated_at as the freshness signal (both
+-- the trade_date bucket AND the update guard). Two full trading sessions
+-- (2026-08-04, 2026-08-05) showed zero rows ever landed in today's bucket
+-- during market hours -- despite the user directly confirming n8n's own
+-- execution log shows successful upserts every 3 minutes. That means
+-- updated_at is not a trustworthy freshness signal (it may be an upstream
+-- "last trade" stamp passed through verbatim, or something else -- unknown
+-- without n8n access, which stays off-limits per standing instruction).
+-- Gating on it meant this tool could be systematically blind to real
+-- price ticks. Capturing unconditionally on the fixed 3-min cron schedule
+-- removes the dependency on that column entirely; source_updated_at is
+-- kept only as a diagnostic (so a future session can see whether it ever
+-- moves), never as a gate. ~1,000 rows every 3 minutes is trivial cost.
 create or replace function capture_ihsg_intraday()
 returns integer
 language plpgsql
@@ -60,13 +75,14 @@ set search_path = public
 as $$
 declare
   affected integer;
+  today date := (now() at time zone 'Asia/Jakarta')::date;
 begin
   insert into ihsg_intraday as t (
     trade_date, stock_code, day_open, day_high, day_low,
     last_close, last_volume, last_change_pct, source_updated_at
   )
   select
-    (r.updated_at at time zone 'Asia/Jakarta')::date,
+    today,
     r.stock_code,
     nullif(r.open, 0),
     greatest(r.close, coalesce(nullif(r.open, 0), r.close)),
@@ -89,8 +105,11 @@ begin
     last_change_pct = excluded.last_change_pct,
     source_updated_at = excluded.source_updated_at,
     last_tick_at    = now(),
-    tick_count      = t.tick_count + 1
-  where t.source_updated_at < excluded.source_updated_at;
+    -- Only counts as a real "tick" if the price actually moved since the
+    -- last poll -- otherwise tick_count would just measure how often cron
+    -- fired, not how often the feed genuinely updated. No WHERE guard on
+    -- the insert itself: every liquid row gets touched every 3 minutes.
+    tick_count      = t.tick_count + (case when t.last_close is distinct from excluded.last_close then 1 else 0 end);
 
   get diagnostics affected = row_count;
   return affected;
@@ -100,8 +119,8 @@ $$;
 
 -- Every 3 minutes, 02:00-10:00 UTC = 09:00-17:00 WIB (pg_cron schedules in
 -- UTC). IDX itself trades 09:00-15:00 WIB; the window runs to 17:00 to cover
--- the upstream feed's full write window, and over-running costs nothing
--- because the source_updated_at guard makes a repeat run a no-op.
+-- the upstream feed's full write window, and over-running past the real
+-- close costs nothing since a repeated identical read is a cheap no-op tick.
 --
 -- Stops before 18:00 WIB deliberately. Existing pg_cron job
 -- `eod-to-realtime-snapshot` (0 11 * * * = 18:00 WIB) overwrites ALL of
