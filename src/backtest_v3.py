@@ -679,7 +679,7 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
 
 def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: float,
                             trade_date, prev_equity: float, cash: float,
-                            prev_close=None, observed_max_move=None):
+                            prev_close=None, observed_max_move=None, allow_pyramid: bool = True):
     """SL/TP1/TRAILING/CHECKPOINT/TIME exit decision + the TP1/TP2 pyramid-add-on, for ONE
     open position on ONE day. Extracted so the live paper-trading monitor
     (src/paper_monitor.py) makes exit decisions through the exact same code path as this
@@ -696,6 +696,13 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
     cash_delta to its own cash variable, appends trade_record to its trades list, and (on
     exit_reason == "SL") records the cooldown timestamp -- none of that is this position's own
     state, so it stays the caller's responsibility.
+
+    `allow_pyramid` defaults True (byte-identical to every existing caller, including the
+    backtest, which never passes it) -- set False to suppress BOTH pyramid-add sites (the
+    immediate TP1-triggered add and the later TP2 add-on) for this call only, while leaving
+    SL/TP1/TRAILING exits fully active. Live-only use: paper_monitor.py sets it False during a
+    detected market-wide breadth crash, so existing risk management (selling) keeps running but
+    new capital deployment (buying more) pauses -- see docs/V3_FINDINGS_LOG.md.
     """
     o, close_price, high_price, low_price = bar
     hold_ok = risk.min_hold_elapsed(pos["hold_days"], cfg.MIN_HOLD_DAYS)
@@ -735,7 +742,7 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
                 exit_reason, exit_price = "TIME", close_price
                 sell_lots = pos["remaining_lots"]
     else:
-        if (PYRAMID_ENABLED and PYRAMID_TP2_ENABLED and not pos["tp2_hit"]
+        if (allow_pyramid and PYRAMID_ENABLED and PYRAMID_TP2_ENABLED and not pos["tp2_hit"]
                 and pos["atr_at_entry"] is not None):
             tp2_price = pos["entry_price_original"] + pos["atr_at_entry"] * cfg.TP1_MULT * 2
             if high_price >= tp2_price:
@@ -790,7 +797,7 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
             pos["cost_basis"] -= sell_cost_basis
             pos["total_lots"] = pos["remaining_lots"]
 
-            pyramid_ok = PYRAMID_ENABLED and exit_price > 0
+            pyramid_ok = allow_pyramid and PYRAMID_ENABLED and exit_price > 0
             if pyramid_ok and PYRAMID_TREND_GATE_ENABLED:
                 pyramid_ok = trend_strength >= PYRAMID_TREND_GATE_MIN
             if pyramid_ok:

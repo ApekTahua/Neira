@@ -148,6 +148,33 @@ def test_evaluate_position_exit_tp1_and_pyramid():
           f"cash_delta={cash_delta:+,.0f})")
 
 
+def test_evaluate_position_exit_tp1_allow_pyramid_false():
+    # Same fixture/bar as test_evaluate_position_exit_tp1_and_pyramid, only
+    # allow_pyramid differs -- isolates the breadth-crash guard's effect
+    # (paper_monitor.py's allow_pyramid=not breadth_crash) from everything else.
+    pos = _base_position()
+    cash = 80_000_000.0
+    prev_equity = 100_000_000.0
+    bar = (1000.0, 1035.0, 1040.0, 995.0)
+    trade, cash_delta = bt.evaluate_position_exit(
+        pos, bar, "BULLISH", 0.02, date(2026, 7, 27), prev_equity, cash, allow_pyramid=False,
+    )
+
+    assert trade is not None and trade["exit_reason"] == "TP1"
+    expected_sell_lots = max(1, int(199 * cfg.TP1_PCT))
+    base_remaining = 199 - expected_sell_lots
+    # No pyramid add-on: remaining_lots is exactly what the TP1 partial sell left, not grown.
+    assert pos["remaining_lots"] == base_remaining, (
+        f"allow_pyramid=False should suppress the add-on, got remaining_lots={pos['remaining_lots']} "
+        f"(expected exactly {base_remaining})"
+    )
+    # TP1 sell proceeds only -- cash_delta must be positive (opposite sign from the
+    # pyramid-enabled test, which goes negative from the fresh buy-in).
+    assert cash_delta > 0, f"expected net cash inflow (sell only, no pyramid buy-in), got {cash_delta:+,.0f}"
+    print(f"[OK] test_evaluate_position_exit_tp1_allow_pyramid_false (remaining_lots={pos['remaining_lots']}, "
+          f"cash_delta={cash_delta:+,.0f})")
+
+
 def test_evaluate_position_exit_trailing():
     pos = _base_position(tp1_hit=True, sl_price=1000.0, highest_price=1100.0, avg_price=1015.0,
                           total_lots=373, remaining_lots=373,

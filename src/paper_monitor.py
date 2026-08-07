@@ -39,6 +39,46 @@ from supabase import create_client  # noqa: E402
 LOT_SIZE = bt.LOT_SIZE
 STALE_MINUTES = 30
 
+# ---- Market-wide breadth crash guard ----
+# Existing risk management (SL/TP1/TRAILING) already reacts to a single
+# position craterings live -- see the docstring above. What it doesn't cover
+# is NEW capital deployment (a fresh fill, or a pyramid add-on) landing
+# blind into a market-wide crash. Reuses ihsg_realtime -- the same
+# already-flowing ~985-ticker mirror -- rather than a dedicated new fetch
+# pipeline; a synthetic breadth proxy (% of the liquid universe red beyond
+# BREADTH_CRASH_DROP_PCT right now) is also more robust than tracking IHSG's
+# own composite value alone, which doesn't exist live anyway (only in
+# index_eod, EOD-only) and would be skewed by 1-2 mega-cap movers.
+#
+# Deliberately narrow: pauses new fills and pyramid-adds ONLY. SL/TP1/
+# TRAILING on existing positions stay fully active regardless -- selling
+# into a crash is exactly what should keep happening; buying more is what
+# should not. Stateless by design: recomputed fresh every poll from live
+# data, nothing persisted, no schema change -- the moment breadth recovers,
+# normal fills resume next poll with zero manual intervention.
+#
+# No historical intraday data exists to backtest this against (see
+# docs/V3_FINDINGS_LOG.md's paper-trading section) -- ships as a live-only
+# forward-tested safety guard, same spirit as the paper-trading run itself,
+# not a validated-on-history rule. Off in effect on any normal day (a real
+# 30%-of-universe simultaneous 3%+ drop is a genuinely rare event).
+BREADTH_CRASH_DROP_PCT = float(os.environ.get("V3_BREADTH_CRASH_DROP_PCT", "-3.0"))
+BREADTH_CRASH_FRACTION = float(os.environ.get("V3_BREADTH_CRASH_FRACTION", "0.30"))
+
+
+def _detect_breadth_crash(supabase) -> tuple:
+    """(is_crash, fraction_red, universe_size). Universe = tickers with a
+    real print today (volume > 0) -- excludes suspended/no-trade names so
+    a pile of frozen zero-volume rows can't dilute the fraction."""
+    res = supabase.table("ihsg_realtime").select("change_percentage, volume").execute()
+    rows = [r for r in (res.data or [])
+            if r.get("volume") and r["volume"] > 0 and r.get("change_percentage") is not None]
+    if not rows:
+        return False, 0.0, 0
+    crashing = sum(1 for r in rows if float(r["change_percentage"]) <= BREADTH_CRASH_DROP_PCT)
+    fraction = crashing / len(rows)
+    return fraction >= BREADTH_CRASH_FRACTION, fraction, len(rows)
+
 
 def _parse_timestamptz(s: str) -> datetime:
     """PostgREST strips trailing zeros from a timestamptz's fractional
@@ -118,9 +158,19 @@ def main():
             pc.notify(msg)
             return
 
+    breadth_crash, breadth_frac, breadth_n = _detect_breadth_crash(supabase)
+    if breadth_crash:
+        msg = (f"🔴 *MARKET BREADTH CRASH*: {breadth_frac*100:.0f}% of {breadth_n} liquid tickers down "
+               f"{BREADTH_CRASH_DROP_PCT:.0f}%+ right now -- pausing new fills and pyramid-adds this poll. "
+               f"Existing SL/TP1/trailing stops stay active.")
+        print(f"[MONITOR] {msg}")
+        pc.notify(msg)
+
     # ---- Fill PENDING candidates at today's open ----
     prev_equity = cash + sum(float(p["cost_basis"]) for p in open_positions)
     for row in pending:
+        if breadth_crash:
+            continue  # new capital deployment paused this poll -- retried once breadth recovers
         r = live.get(row["stock_code"])
         if r is None or r.get("open") in (None, 0):
             continue  # no live print yet / suspended today
@@ -204,7 +254,7 @@ def main():
         pos = _position_dict_from_row(row)
         trade_record, cash_delta = bt.evaluate_position_exit(
             pos, (day_open, current_price, day_high, day_low), regime_hint, 0.0,
-            today, prev_equity, cash,
+            today, prev_equity, cash, allow_pyramid=not breadth_crash,
         )
         cash += cash_delta
 
