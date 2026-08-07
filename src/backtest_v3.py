@@ -258,6 +258,18 @@ PYRAMID_TREND_GATE_MIN = float(os.environ.get("V3_PYRAMID_TREND_GATE_MIN", "0.03
 # that proves itself further (see docstring at the trigger site). Off by
 # default -- unvalidated.
 PYRAMID_TP2_ENABLED = os.environ.get("V3_PYRAMID_TP2", "0") == "1"
+# diagnose_score_power.py (2026-08-07): the day's single #1-ranked candidate
+# specifically has a real problem (~2x average score magnitude, ~20% higher
+# ATR%, 82-98% stop-loss-hit rate in BOTH halves of a 4.5yr sample, vs
+# ~75-85% for rank 2+) -- the likely signature of a same-day statistical
+# outlier the score formula reads as strength. Off by default -- unvalidated
+# against the full walk-forward battery yet, see V3_FINDINGS_LOG.md.
+SCORE_SKIP_TOP_N = int(os.environ.get("V3_SCORE_SKIP_TOP_N", "0"))
+# Conditional refinement on SCORE_SKIP_TOP_N=1 (see score_candidates docstring): only drop
+# the #1 candidate when it's a real outlier vs #2 (score > this multiple of #2's score), not
+# unconditionally. None (default) = off, byte-identical. Unvalidated -- see V3_FINDINGS_LOG.md.
+_outlier_gap_env = os.environ.get("V3_SCORE_OUTLIER_GAP_MULT")
+SCORE_OUTLIER_GAP_MULT = float(_outlier_gap_env) if _outlier_gap_env else None
 # Realism check on a known, disclosed simplification: every fill so far
 # (backtest AND live paper engine) executes at the exact observed
 # price, no cost for actually crossing the spread or moving an illiquid
@@ -511,12 +523,21 @@ def apply_slippage(price: float, side: str, participation: float = 0.0) -> float
     return price * (1 + slip) if side == "buy" else price * (1 - slip)
 
 
-def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: float, top_n: int = 15) -> list:
+def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: float, top_n: int = 15,
+                      skip_top_n: int = 0, outlier_gap_mult: float = None) -> list:
     """Filters a single trading day's cross-section to qualifying candidates (liquidity,
     weekly-trend, sector-momentum, ATR sanity) and returns the top-N by score as plain dicts.
     Extracted so the live paper-trading signal scan (src/paper_signal_scan.py) calls the exact
     same candidate logic as this backtest, instead of a re-typed copy that could drift. `day_slice`
-    must already be filtered to one trade_date (backtest: a historical day; live: today)."""
+    must already be filtered to one trade_date (backtest: a historical day; live: today).
+
+    `skip_top_n` drops the N single highest-scoring candidates before returning (default 0,
+    byte-identical to every caller that doesn't pass it). diagnose_score_power.py found the
+    day's #1-ranked candidate specifically -- not the top tier broadly -- has a real, cross-
+    period-consistent problem: ~2x the average score magnitude, ~20% higher ATR%, and a stop-
+    loss-hit rate of 82-98% in both halves of a 4.5-year sample (vs ~75-85% for rank 2+), the
+    likely signature of a same-day outlier/overextension the score formula can't distinguish
+    from genuine sustainable momentum. See docs/V3_FINDINGS_LOG.md."""
     candidates = day_slice[
         (day_slice["adtv_20"] >= cfg.ADTV_MIN)
         & (day_slice["weekly_ma_spread"] >= weekly_cut)
@@ -541,12 +562,23 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
         (candidates["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
         + (candidates["sector_rs_momentum"] - sector_cut) / max(abs(sector_cut), 1e-6)
     )
+    pool = candidates.nlargest(top_n + skip_top_n + 1, "score")
+    start = skip_top_n
+    # Conditional variant of skip_top_n: only drop the #1 candidate on days it's a real
+    # outlier relative to #2 (score > outlier_gap_mult * second-place score), not on every
+    # day -- the flat skip_top_n=1 sweep won its typical-window/median metrics but gave up
+    # real upside on days where rank-1 wasn't actually an outlier (see V3_FINDINGS_LOG.md).
+    if outlier_gap_mult is not None and len(pool) >= 2:
+        top_score, second_score = pool.iloc[0]["score"], pool.iloc[1]["score"]
+        if second_score > 0 and top_score > outlier_gap_mult * second_score:
+            start = max(start, 1)
+    ranked = pool.iloc[start:start + top_n]
     return [{
         "stock_code": sig["stock_code"], "signal_close": float(sig["close_price"]),
         "atr": sig["atr_14"], "avg_vol_20": float(sig["avg_vol_20"]), "trigger": "V3_regime_weekly_sector",
         "tp_target": float(sig["tp_target"]), "score": float(sig["score"]),
         "adtv_20": float(sig["adtv_20"]),
-    } for _, sig in candidates.nlargest(top_n, "score").iterrows()]
+    } for _, sig in ranked.iterrows()]
 
 
 def score_full_universe(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: float,
@@ -1062,7 +1094,9 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             # paper-trading signal scan (src/paper_signal_scan.py) uses the exact same
             # candidate logic as this backtest -- see that function's docstring.
             day_data = df[df["trade_date"] == trade_date]
-            pending_entries.extend(score_candidates(day_data, weekly_cut, sector_cut, top_n=15))
+            pending_entries.extend(score_candidates(day_data, weekly_cut, sector_cut, top_n=15,
+                                                      skip_top_n=SCORE_SKIP_TOP_N,
+                                                      outlier_gap_mult=SCORE_OUTLIER_GAP_MULT))
 
         pos_market_value = 0.0
         for pos in positions:

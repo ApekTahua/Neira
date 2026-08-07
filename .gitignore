@@ -14,3 +14,6 @@ backtest_v3_trades.csv
 backtest_v3_equity.csv
 walk_forward_v3_summary.csv
 src/w3_capped_trades.csv
+diagnose_score_power_summary.csv
+diagnose_score_power_by_window.csv
+diagnose_score_power_raw.csv

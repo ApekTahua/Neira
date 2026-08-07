@@ -1943,3 +1943,77 @@ rules can front-run without also killing entries in the many other
 long-running-bullish windows that went on to do fine. Nothing to build
 here. Closing this thread rather than let a wrong framing stand
 uncorrected in this log.
+
+## diagnose_score_power run + rank-1-specific fix, built and swept -- doesn't clear the bar yet (2026-08-07)
+
+Ran `diagnose_score_power.py` for real for the first time (previously built but never
+executed -- see the "V3.1 candidate entry filters" entry). Live fetch against Supabase took
+8+ minutes, not the "~1-2min" the data_fetch concurrency-fix commit estimated but never
+verified against a real run -- correcting that record here since it's now actually measured.
+1,768 candidate-days, 345 sessions, 2022-01-03..2026-08-07.
+
+**Headline (block A):** top-2-by-score underperforms rank-6-12 on every metric (ret_20 3.96%
+vs 16.33%, win_20 46.8% vs 57.2%, sl_hit_10 84.6% vs 75.6%). Same inversion under liquidity
+and calmness orderings too (blocks B/C) -- not score-specific. Block D (per-window) only had
+3/9 windows with enough rank-6-12 candidates to check, 2/3 showing the inversion -- thin,
+flagged in the script's own output as needing more than 3 data points before acting.
+
+**Deeper look at the raw output (`diagnose_score_power_raw.csv`) resolved the ambiguity.**
+Per-exact-rank breakdown: rank 1 specifically is bad (win_20=36.8%, sl_hit_10=89.5%,
+sl_hit_20=100%) -- ranks 2 through 12 are all roughly flat and unremarkable (win_20 46-57%,
+no trend). Pooled Spearman rho(rank, ret_20)=0.018 (p=0.45) confirms: there is NO broad
+top-tier-underperforms-middle effect once rank 1 is separated out. The earlier "top-2"
+bucketing was averaging a genuinely bad rank-1 with a perfectly fine rank-2, which is what
+made the whole top tier look bad.
+
+**Characterized rank-1 specifically:** ~2x the average score magnitude of rank 2+ (63.6 vs
+35.6), ~20% higher ATR% (0.076 vs 0.063) -- a same-day statistical outlier, not just "the
+best pick." Split the 4.5-year sample at its midpoint (2025-08-08) for a real robustness
+check (much more power than the thin 3-window check): rank-1's stop-loss-hit rate stays
+extremely high in BOTH halves (82.4% H1, 97.7% H2) even though rank-1's raw win rate moves
+with the broader market like everything else does (29.4%->45.5%). This is the load-bearing
+result: a same-day-outlier signature that survives a genuine out-of-sample split, not a
+period-specific artifact.
+
+**Built two mechanisms in `score_candidates()` to test the fix, both off by default (0 /
+None), byte-identical to every existing caller -- reverified via a W9 rerun post-change
+(still 23 trades / -15.74% / 34.8% win) plus the full regression suite (12/12):**
+- `skip_top_n` (`V3_SCORE_SKIP_TOP_N`): unconditionally drops the day's #1 candidate.
+- `outlier_gap_mult` (`V3_SCORE_OUTLIER_GAP_MULT`): only drops #1 when its score exceeds
+  this multiple of #2's score (a real-outlier gate, not a blanket rule) -- rank1/rank2 score
+  ratio across the sample: median 1.09x, 75th pct 1.36x, max 1.93x.
+
+**Full 9-window walk-forward sweep, off the existing cache (skip0 baseline / skip1 flat /
+gap1.3 / gap1.5 / gap1.8):**
+
+| config | mean profit | median profit | mean alpha | mean PF | median PF | mean maxDD | worst maxDD | beat-bench |
+|---|---|---|---|---|---|---|---|---|
+| baseline | +20.84% | +2.96% | +21.71% | 1.58 | 1.12 | -16.08% | -21.61% | 6/9 |
+| skip1 flat | +10.20% | +11.46% | +11.07% | 2.01 | 1.54 | -14.51% | -24.03% | 7/9 |
+| gap1.3 | +10.54% | +3.16% | +11.40% | 1.36 | 1.09 | -16.48% | -23.49% | -- |
+| gap1.5 | +12.29% | +3.74% | +13.15% | 1.50 | 1.15 | -16.28% | -21.61% | -- |
+| gap1.8 | +20.55% | +7.58% | +21.42% | 1.58 | 1.31 | -16.82% | -21.61% | -- |
+
+**None of these clear the bar this project has actually used to adopt a change before**
+(LIQ_SIZING_ENABLED's own adoption criterion: best mean alpha AND best worst-case drawdown
+of everything tested, simultaneously). skip1 flat wins on median profit/PF and beat-bench
+count, but LOSES on mean alpha (21.71%->11.07%) and worst-case drawdown (-21.61%->-24.03%)
+by giving up most of window 8's outlier upside (129%->40%) while making window 2 worse
+(-6.54%->-17.36%). The outlier-gap-conditional variants (meant to only strike genuine
+outliers and preserve good rank-1 days like W8) don't cleanly fix this either: gap1.3 is a
+net negative (worse win rate than baseline, wrecks W4 50.49%->3.16%), gap1.5 is a wash, and
+gap1.8 is nearly a no-op (only fires in 2/9 windows -- W5 improves, W2 -- already a loser --
+gets worse) with a modest, thin median-profit gain that isn't worth trusting off two touched
+windows.
+
+**Conclusion: the rank-1 finding is real (survives an actual out-of-sample split, not a
+3-point read), but converting it into a config change that's actually better -- not just
+different -- isn't done.** Every threshold tried trades one risk axis for another rather
+than clearly reducing risk. Both mechanisms stay in the code, off by default, alongside
+every other unvalidated-but-available flag (SCORE_SIZING_ENABLED, TREND_SIZING_ENABLED,
+PYRAMID_TREND_GATE_ENABLED) -- real infrastructure and a real, now-quantified finding, not
+a decision to flip a default off two sweeps. If this gets picked back up: the natural next
+angle is asking WHY rank-1 fails (which of weekly_ma_spread vs sector_rs_momentum drives the
+outlier score, and whether gating on each factor's own extremity separately -- rather than
+the combined score's magnitude -- is more surgical), not more threshold values on the same
+combined signal.
