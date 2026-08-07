@@ -158,6 +158,17 @@ def main():
         pc.notify(f"\U0001F7E2 *FILLED* {row['stock_code']} @ Rp{entry_price:,.0f} x {fill['lots']} lot(s)")
         print(f"[MONITOR] FILLED {row['stock_code']} @ {entry_price:.0f} x{fill['lots']}lot cash_out=Rp{cash_out:,.0f}")
 
+    # ihsg_intraday is an independent pg_cron job polling every 3 min, so its
+    # day_high/day_low is strictly finer-grained than what this monitor alone
+    # can observe on its own (n8n-dependent) poll cadence -- merged in below
+    # as a floor/ceiling so a spike this monitor's own polls missed still
+    # gets caught by SL/TP1. Read-only merge: never narrows what this monitor
+    # already tracked itself, only widens it.
+    intraday_res = supabase.table("ihsg_intraday").select("stock_code, day_high, day_low").eq(
+        "trade_date", today.isoformat()
+    ).in_("stock_code", tickers).execute()
+    intraday_extremes = {r["stock_code"]: r for r in intraday_res.data}
+
     # ---- Check exits on OPEN positions ----
     regime_hint = "BULLISH"  # TIME-exit's regime check only matters at EOD (paper_signal_scan.py);
     # a live intraday poll cannot know tomorrow's regime, and TIME only fires pre-tp1 near
@@ -170,6 +181,12 @@ def main():
         day_open = float(r["open"]) if r.get("open") else current_price
         day_high = max(float(row["day_high"]), current_price) if row.get("day_high") else current_price
         day_low = min(float(row["day_low"]), current_price) if row.get("day_low") else current_price
+        extremes = intraday_extremes.get(row["stock_code"])
+        if extremes:
+            if extremes.get("day_high") is not None:
+                day_high = max(day_high, float(extremes["day_high"]))
+            if extremes.get("day_low") is not None:
+                day_low = min(day_low, float(extremes["day_low"]))
 
         # Same corporate-action guard as paper_signal_scan.py's EOD reconcile
         # (see paper_common.looks_like_unadjusted_corporate_action's docstring)
