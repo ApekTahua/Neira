@@ -1861,3 +1861,49 @@ groupby-vs-repeated-filter algorithmic question, touches the shared
 validated backtest logic, and per this log's own discipline would need
 a full 9-window walk-forward regression check before landing, not
 something to bundle into a same-day I/O fix.
+
+## MIN_HOLD_DAYS/TP1 blocked-crossing study + W9 (2026 H1) deep dive (2026-08-07)
+
+Two read-only research passes tonight, zero changes to `backtest_v3.py` --
+both used a runtime monkeypatch/direct call against the existing
+`walk_forward_data_2021-01-01_2026-06-30.pkl` cache, not the live/frozen
+`V3_PAPER` config.
+
+**Study 1 -- does `MIN_HOLD_DAYS=3` blocking a real TP1 crossing actually
+cost money?** User flagged a live example (BLES, day 1 of hold, close
+already above TP1 but blocked). Instrumented `evaluate_position_exit` to
+log every day a position's `high >= tp1_price` fired while `hold_ok` was
+still false, across all 9 walk-forward windows: 85/392 trades (21.7%)
+hit this at least once; 73 of those 85 (86%) captured TP1 anyway once the
+gate opened -- delayed, not lost. Only 8 positions (2.0% of all trades,
+~Rp11.4M combined across all 9 windows) round-tripped into a real SL loss
+they'd touched TP1 before hitting. **Conclusion: leave `MIN_HOLD_DAYS`
+alone** -- its job is blocking whipsaw noise-exits right after entry (the
+exact fix for the window-3 -22% incident), and this cost is small enough
+that loosening it risks reopening that wound for a 2%-of-trades problem.
+
+**Study 2 -- W9 (2026-01-02..2026-06-30), the OOS window immediately
+before live launch, was the weakest of all 9** (net -15.74%, win rate
+34.8%, PF 0.49, SL=65.2% of exits) despite alpha +19.75% (IHSG itself
+fell -35.49% that window). Pulled the actual trade list and regime
+timeline instead of trusting the aggregate number: **all 23 of the
+window's trades entered between 2026-01-05 and 2026-01-27** -- regime was
+BULLISH for exactly those 17 trading days (already past
+`REGIME_CONFIRM_DAYS=3`, so not a false-start flip), then flipped BEARISH
+on 2026-01-28 and held BEARISH for the remaining ~94 days straight, during
+which the strategy correctly opened zero new positions (that's *why* it
+only lost -15.74% while the index fell -35.49%, not despite it). 15 of
+23 entries were SL losses, mean hold 2.0 days, mean -12.15% -- almost all
+opened in the back half of that 17-day bullish stretch, right before it
+turned. **Same shape as the already-documented window-3 bull-trap, one
+level up**: not a false-start flip (that's fixed), but a genuine
+multi-week bullish run that reversed hard right as positions piled in
+late into it. `TREND_STRENGTH_MIN`/`REGIME_CONFIRM_DAYS` don't address
+this -- both were satisfied the whole time; the trend was real, it just
+ended. **Not fixed tonight, not attempting a same-night parameter change
+off one eyeballed window** -- exactly the mistake the hysteresis-band
+sweep already taught this log not to make. Flagging as the next real
+research thread: something like "how late into a confirmed bullish run is
+still safe to enter" (a trend-age or momentum-deceleration signal, not a
+regime-confirm-days tweak) needs its own swept, all-9-window validation
+before it goes anywhere near the live config.
