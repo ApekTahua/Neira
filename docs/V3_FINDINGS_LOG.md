@@ -1907,3 +1907,39 @@ research thread: something like "how late into a confirmed bullish run is
 still safe to enter" (a trend-age or momentum-deceleration signal, not a
 regime-confirm-days tweak) needs its own swept, all-9-window validation
 before it goes anywhere near the live config.
+
+**CORRECTION + follow-up test (same night):** the "17-day bullish stretch"
+claim above is wrong -- an artifact of filtering `regime_by_date` to
+just the W9 test window before checking for transitions, which makes the
+first day of the *filter* look like a regime-flip day even when it isn't.
+Checked the real streak: `bullish_streak_by_date` shows BULLISH running
+continuously from **2025-06-02 (at latest -- streak was already 16 that
+day) through 2026-01-27**, ~8 months, before flipping BEARISH on
+2026-01-28. And that flip wasn't a fade -- `trend_strength` (IHSG's
+separation from ma50) went from +3.21% to -4.36% in ONE trading day, then
+kept falling to -8.79% within a week. Not a bull trap; a genuine long
+bull market ending in a sharp, fast reversal. The system's own response
+(zero new entries for the following 94 days once BEARISH latched) is
+exactly why the window only lost -15.74% against IHSG's -35.49% -- that
+part worked as designed.
+
+Given that correction, ran the actual testable version of the "trend-age"
+hypothesis pooled across all 392 trades from all 9 windows (not just
+eyeballing W9): does `bullish_streak_by_date` at entry (days into a
+confirmed run, uncapped) or `trend_strength` at entry predict SL losses?
+**No.** Mann-Whitney wins-vs-losses p=0.67 (streak) and p=0.28 (trend
+strength); Spearman rho(streak, pnl_pct)=-0.027 (p=0.59, indistinguishable
+from zero); win rate by streak bucket is flat-to-slightly-improving with
+higher streak (51.4% at streak 6-9 up to 54.4% at streak 20+), not
+declining. Per-window check confirms this isn't masked by aggregation --
+W1 and W8 also had long streaks at entry (mean ~157-160 and ~99
+respectively) with strong win rates (54.5%, 65.6%); W9's streak (~164-170)
+wasn't unusual, other windows saw similar values and did fine. **The
+trend-age hypothesis is dead, confirmed empirically, not just discarded on
+priors.** W9's loss isn't a timing-gate problem at all -- it's a sharp,
+fast, largely unpredictable-in-advance regime break, the kind of tail risk
+inherent to any long-biased momentum strategy, not a bug this system's
+rules can front-run without also killing entries in the many other
+long-running-bullish windows that went on to do fine. Nothing to build
+here. Closing this thread rather than let a wrong framing stand
+uncorrected in this log.
