@@ -283,6 +283,14 @@ def main():
     ]
     weekly_cut = train_liquid_bullish["weekly_ma_spread"].quantile(bt.QUANTILE_CUT)
     sector_cut = train_liquid_bullish["sector_rs_momentum"].quantile(bt.QUANTILE_CUT)
+    # Live analog of simulate_window's own weekly_comp_abs_cap block -- same train-derived,
+    # applied-out-of-sample methodology as weekly_cut/sector_cut above. None (default, the
+    # frozen V3_PAPER run) => no-op, score_candidates behaves exactly as before.
+    weekly_comp_abs_cap = None
+    if bt.SCORE_WEEKLY_COMP_ABS_CAP_Q is not None:
+        train_w_comp = (train_liquid_bullish["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
+        if len(train_w_comp) > 0:
+            weekly_comp_abs_cap = train_w_comp.quantile(bt.SCORE_WEEKLY_COMP_ABS_CAP_Q)
     # Refreshed daily and persisted (paper_account.log_adtv_p90) so paper_monitor.py can
     # fill entries with the exact same LIQ_SIZING reference without rebuilding the full
     # dataset every 15 minutes -- see compute_entry_fill()'s docstring in backtest_v3.py.
@@ -346,7 +354,8 @@ def main():
         max_new = min(slots_free, bt.MAX_NEW_ENTRIES_PER_DAY)
         if max_new > 0:
             day_data = df[df["trade_date"] == today]
-            scored = bt.score_candidates(day_data, weekly_cut, sector_cut, top_n=15)
+            scored = bt.score_candidates(day_data, weekly_cut, sector_cut, top_n=15,
+                                          weekly_comp_abs_cap=weekly_comp_abs_cap)
             for sig in scored:
                 if len(candidates) >= max_new:
                     break

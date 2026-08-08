@@ -21,7 +21,7 @@ import traceback
 import requests
 import numpy as np
 
-PAPER_VERSION = "V3_PAPER"
+PAPER_VERSION = os.environ.get("PAPER_VERSION", "V3_PAPER")
 
 # Real broker fee structure reported by the user, on top of config.py's
 # existing percentage BUY_FEE/SELL_FEE (0.18% / 0.28%) -- a flat surcharge
@@ -142,12 +142,18 @@ TELEGRAM_API = "https://api.telegram.org/bot"
 
 def notify(text: str) -> None:
     """Same requests-based Telegram pattern as src/notifier.py, kept as
-    an independent copy since notifier.py is a frozen V1 live file."""
+    an independent copy since notifier.py is a frozen V1 live file.
+    Tags the message with PAPER_VERSION when it isn't the original V3_PAPER
+    run, so two concurrent runs sharing one Telegram chat stay distinguishable
+    -- V3_PAPER's own messages are left byte-identical (no tag) since that
+    run is frozen and this is purely cosmetic, not a config change."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_USER_ID")
     if not token or not chat_id:
         print("WARNING: TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID not set.")
         return
+    if PAPER_VERSION != "V3_PAPER":
+        text = f"[{PAPER_VERSION}] {text}"
     url = f"{TELEGRAM_API}{token}/sendMessage"
     try:
         resp = requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=15)

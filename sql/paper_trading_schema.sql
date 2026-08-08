@@ -105,3 +105,31 @@ with new_run as (
 )
 insert into paper_account (run_id, cash, last_signal_date)
 select id, 100000000, null from new_run;
+
+-- V3.1_PAPER seed (2026-08-08): second, independent, concurrent paper run --
+-- V3_PAPER above stays untouched and frozen (governance rule, see
+-- paper_common.py's module docstring). V3.1 config = V3_PAPER's config plus
+-- three stacked, walk-forward-validated changes from docs/V3_FINDINGS_LOG.md
+-- ("Fine neighbor sweep confirms the wcap plateau", 2026-08-08):
+-- ARA_FILTER_ENABLED=1, ATR_PRICE_RATIO_MAX=0.08 (was 0.10),
+-- SCORE_WEEKLY_COMP_ABS_CAP_Q=0.81 (was off). Set via env on the V3.1
+-- trigger workflows (PAPER_VERSION, V3_ARA_FILTER, V3_ATR_PRICE_RATIO_MAX,
+-- V3_SCORE_WEEKLY_COMP_ABS_CAP_Q), not in this repo's frozen config.py.
+with new_run_v31 as (
+  insert into backtest_runs (
+    version, period_start, period_end, initial_capital, final_capital,
+    net_profit_pct, benchmark_pct, alpha_pct, total_trades, win_rate,
+    profit_factor, max_drawdown, notes, strategy_summary, is_published
+  )
+  select
+    'V3.1_PAPER', current_date, current_date, 100000000, 100000000,
+    0, 0, 0, 0, 0,
+    null, 0,
+    'Live paper trading, V3.1: V3_PAPER''s frozen config plus ARA_FILTER_ENABLED=1, ATR_PRICE_RATIO_MAX=0.08, SCORE_WEEKLY_COMP_ABS_CAP_Q=0.81 -- strongest walk-forward-validated (neighbor-checked) candidate found in research. Frozen at launch -- see docs/V3_FINDINGS_LOG.md governance note.',
+    'V3.1 Paper Trading (started 2026-08-08)',
+    false
+  where not exists (select 1 from backtest_runs where version = 'V3.1_PAPER')
+  returning id
+)
+insert into paper_account (run_id, cash, last_signal_date)
+select id, 100000000, null from new_run_v31;
