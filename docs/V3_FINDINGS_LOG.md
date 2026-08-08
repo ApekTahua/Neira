@@ -2174,3 +2174,48 @@ unlikely to resolve a noise floor that's about sample size, not shape. If drawdo
 alone becomes a live priority, this is ready to revisit with that framing; chasing alpha
 through this specific mechanism needs a fundamentally larger trade sample first, not another
 threshold sweep. Both flags stay off.
+
+## V3.1 filters (ARA lock + ATR ceiling) validated for the first time -- best-looking candidate of the night (2026-08-08)
+
+`ARA_FILTER_ENABLED` and `ATR_PRICE_RATIO_MAX` were built (see the "V3.1 candidate entry
+filters" commit) specifically to be swept once `diagnose_score_power.py` existed as the
+validation gate -- per project memory, that script had never actually been run before
+tonight. Now that it has (twice, extensively -- see the entries above), this closes the
+loop: both flags pure monkeypatch-tested against the full 9-window walk-forward, zero code
+changes (both are module-globals `score_candidates` reads fresh at call time).
+
+| config | mean alpha | win_gt50 | beat0 | mean PF | mean maxDD |
+|---|---|---|---|---|---|
+| baseline (ARA off, ATR<=0.10) | +21.71% | 4/9 | 6/9 | 1.58 | -16.08% |
+| ARA on (ATR<=0.10) | +14.28% | 3/9 | 5/9 | 1.42 | -16.04% |
+| ATR<=0.06 | +23.81% | 3/9 | 6/9 | 2.42 | -12.88% |
+| ATR<=0.07 | +18.55% | 5/9 | 7/9 | 1.68 | -14.55% |
+| ATR<=0.08 | **+33.03%** | 4/9 | 7/9 | 2.03 | -15.17% |
+| ATR<=0.09 | +29.58% | 5/9 | 6/9 | 1.98 | -15.80% |
+| ATR<=0.12 | +23.48% | 2/9 | 5/9 | 1.41 | -17.88% |
+| ATR<=0.15 | +18.38% | 4/9 | 6/9 | 1.38 | -16.04% |
+| ARA on + ATR<=0.08 | +29.69% | **5/9** | **7/9** | 1.95 | -15.33% |
+
+**ARA lock filter alone: net negative.** Excluding candidates currently locked at their
+own auto-reject ceiling sounds like it should only remove bad fills, but alpha drops
+(21.71%->14.28%) and win-rate-consistency drops (4/9->3/9). Checked per-window: it helps
+window 9 a lot (-15.74%->-0.36%) but costs window 4 badly (50.49%->3.16%) and trims window
+8 (129.13%->91.40%) -- a real tradeoff, not a free filter, on its own.
+
+**Tightening the ATR ceiling from 0.10 to 0.08 is the best single change tested tonight.**
+Checked neighbors specifically (0.06/0.07/0.09) before trusting it, same discipline as
+every other sweep -- and unlike the weekly-comp sweeps, 0.08 AND 0.09 both cluster well
+above every other value tested (33.03% and 29.58%, vs everything else in the 14-24% range),
+a plateau, not an isolated spike (0.07 dips oddly between 0.06 and 0.08, the one blemish
+in an otherwise clean shape). **Combining ARA-on with ATR<=0.08 is the single best-rounded
+result of the entire night**: best win-rate-consistency of everything tested (5/9, tied with
+ATR<=0.09 alone) AND best beat-bench count (7/9, tied with ATR<=0.08 alone) simultaneously --
+the ARA filter's downside gets absorbed/offset once paired with the tighter vol ceiling,
+even though it was net-negative alone.
+
+**Not deployed tonight -- flagged as the strongest validated candidate to come out of this
+whole session, for a deliberate adoption decision, not an auto-flip.** Both flags stay at
+their current defaults (off / 0.10) in the live-mirroring baseline. If this gets adopted:
+`ATR_PRICE_RATIO_MAX=0.08` with `ARA_FILTER_ENABLED=1` is the config to carry forward,
+`ATR_PRICE_RATIO_MAX` alone (no ARA) if simplicity is preferred over that last bit of
+win-rate-consistency.
