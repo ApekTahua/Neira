@@ -2240,3 +2240,39 @@ point among three (0.90/0.85/0.80), and 0.90/0.85 are clearly worse** -- the exa
 multiple times tonight already. Not run finer (0.78/0.79/0.81/0.82) yet. Noting this as the
 most promising open thread for next time, explicitly NOT as a validated result -- needs the
 same neighbor-check discipline as everything else before it's trusted.
+
+## Fine neighbor sweep confirms the wcap plateau -- real, not a lucky spike (2026-08-08)
+
+Ran the finer grid the entry above flagged as missing: wcap in
+{0.70, 0.75, 0.78, 0.79, 0.80, 0.81, 0.82}, ara+atr0.08 fixed.
+
+| wcap | win_gt50 | beat0 | alpha_mean | pf_mean | dd_mean | dd_worst |
+|---|---|---|---|---|---|---|
+| 0.70 | 2/9 | 7/9 | +12.31% | 1.32 | -11.45% | -23.26% |
+| 0.75 | 3/9 | 6/9 | +10.84% | 1.53 | -11.57% | -19.45% |
+| 0.78 | 3/9 | 5/9 | +8.86% | 1.29 | -10.46% | -13.66% |
+| 0.79 | 4/9 | 6/9 | +15.94% | 1.75 | -10.36% | -14.38% |
+| 0.80 | 5/9 | 6/9 | +34.80% | 2.75 | -8.94% | -12.29% |
+| 0.81 | 6/9 | 7/9 | +22.49% | 2.00 | -9.62% | **-11.56%** |
+| 0.82 | 4/9 | 7/9 | **+35.92%** | **3.81** | -9.08% | -12.45% |
+
+Not an isolated spike -- **0.80/0.81/0.82 cluster together as a real plateau**, clearly
+separated from 0.70-0.79 on almost every axis: alpha roughly doubles (9-16% -> 22-36%),
+win-rate-consistency climbs 2/9->3/9->3/9->4/9 then jumps to 5/9-6/9 in the plateau, and
+worst-case drawdown improves from -23%/-19% down to -12%/-11%. This clears the
+neighbor-check bar the entry above said it needed.
+
+Picking a specific point inside the plateau: 0.80 has the single highest win_gt50-adjacent
+combo but only 5/9; **0.81 has the best win_gt50 (6/9, tied-best of the whole sweep) AND
+best beat0 (7/9) AND the best worst-case drawdown (-11.56%)**, trading a bit of raw alpha
+(22.49% vs 0.80's 34.80% or 0.82's 35.92%) for consistency -- more in line with this
+project's standing preference (win-rate-consistency + beat-bench over peak alpha, see the
+trend-strength-gate entries above). 0.82 has the best raw alpha/PF but win_gt50 drops back
+to 4/9, no cleaner than 0.79.
+
+**Still not deployed.** This is now a validated (neighbor-checked) candidate stack --
+ARA_FILTER_ENABLED=1 + ATR_PRICE_RATIO_MAX=0.08 + SCORE_WEEKLY_COMP_ABS_CAP_Q=0.81 -- the
+strongest, least-fragile finding of the whole session. Needs a deliberate adoption decision
+before it touches the live V3_PAPER config (frozen by design, see
+`project_paper_trading_pipeline_status` memory) -- a real config change ships as a new
+versioned run (V3.1_PAPER), never a silent edit.
