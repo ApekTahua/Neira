@@ -275,6 +275,11 @@ SCORE_OUTLIER_GAP_MULT = float(_outlier_gap_env) if _outlier_gap_env else None
 # quantile among qualifying candidates. See score_candidates docstring. None (default) = off.
 _weekly_cap_env = os.environ.get("V3_SCORE_WEEKLY_COMP_CAP_Q")
 SCORE_WEEKLY_COMP_CAP_Q = float(_weekly_cap_env) if _weekly_cap_env else None
+# Train-derived-absolute follow-up to SCORE_WEEKLY_COMP_CAP_Q -- see simulate_window's
+# weekly_comp_abs_cap comment. Quantile of the TRAIN period's own w_comp distribution
+# (large, stable sample), not a per-day quantile of a tiny same-day pool. None = off.
+_weekly_abs_cap_env = os.environ.get("V3_SCORE_WEEKLY_COMP_ABS_CAP_Q")
+SCORE_WEEKLY_COMP_ABS_CAP_Q = float(_weekly_abs_cap_env) if _weekly_abs_cap_env else None
 # Realism check on a known, disclosed simplification: every fill so far
 # (backtest AND live paper engine) executes at the exact observed
 # price, no cost for actually crossing the spread or moving an illiquid
@@ -530,7 +535,7 @@ def apply_slippage(price: float, side: str, participation: float = 0.0) -> float
 
 def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: float, top_n: int = 15,
                       skip_top_n: int = 0, outlier_gap_mult: float = None,
-                      weekly_comp_cap_q: float = None) -> list:
+                      weekly_comp_cap_q: float = None, weekly_comp_abs_cap: float = None) -> list:
     """Filters a single trading day's cross-section to qualifying candidates (liquidity,
     weekly-trend, sector-momentum, ATR sanity) and returns the top-N by score as plain dicts.
     Extracted so the live paper-trading signal scan (src/paper_signal_scan.py) calls the exact
@@ -552,7 +557,14 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
     the normalized sector_rs_momentum component is essentially identical between rank-1 and
     everyone else, and its own top quintile shows no reversion pattern (best mean forward
     return of any quintile). A per-day quantile cut on the weekly component specifically is
-    more surgical than dropping by rank/combined-score, which conflates the two factors."""
+    more surgical than dropping by rank/combined-score, which conflates the two factors.
+
+    `weekly_comp_abs_cap` (default None, off): same idea, but a fixed absolute value learned
+    once from the TRAIN period's own w_comp distribution (see simulate_window), not a
+    per-day quantile of that day's own often-tiny qualifying pool -- the within-day version
+    swept non-monotonically across neighboring thresholds (small-sample noise); this trades
+    that noise for the same train-derived, applied-out-of-sample discipline weekly_cut/
+    sector_cut already use."""
     candidates = day_slice[
         (day_slice["adtv_20"] >= cfg.ADTV_MIN)
         & (day_slice["weekly_ma_spread"] >= weekly_cut)
@@ -581,6 +593,10 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
     if weekly_comp_cap_q is not None and len(candidates) >= 3:
         cap = candidates["w_comp"].quantile(weekly_comp_cap_q)
         candidates = candidates[candidates["w_comp"] <= cap]
+        if candidates.empty:
+            return []
+    if weekly_comp_abs_cap is not None:
+        candidates = candidates[candidates["w_comp"] <= weekly_comp_abs_cap]
         if candidates.empty:
             return []
     pool = candidates.nlargest(top_n + skip_top_n + 1, "score")
@@ -904,6 +920,19 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     print(f"{prefix}[THRESHOLDS from train {FETCH_START}..{train_end} only] "
           f"weekly_ma_spread >= {weekly_cut:.2f}, sector_rs_momentum >= {sector_cut:.4f}")
 
+    # Train-derived ABSOLUTE cap on the weekly component (SCORE_WEEKLY_COMP_ABS_CAP_Q below)
+    # -- follow-up to SCORE_WEEKLY_COMP_CAP_Q, which capped at a WITHIN-DAY quantile of
+    # that day's own (often tiny, sometimes single-digit) qualifying pool and swept as
+    # non-monotonic/fragile across neighboring thresholds (see V3_FINDINGS_LOG.md). This
+    # instead learns one stable cutoff from the full train-period distribution of w_comp
+    # among historically-qualifying candidates -- same train-only, applied-out-of-sample
+    # methodology as weekly_cut/sector_cut/score_p90 above, not a noisy daily statistic.
+    weekly_comp_abs_cap = None
+    if SCORE_WEEKLY_COMP_ABS_CAP_Q is not None:
+        train_w_comp = (train_liquid_bullish["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
+        if len(train_w_comp) > 0:
+            weekly_comp_abs_cap = train_w_comp.quantile(SCORE_WEEKLY_COMP_ABS_CAP_Q)
+
     # Train-derived reference for score-weighted sizing (SCORE_SIZING_ENABLED
     # below) -- same score formula used at entry time, applied to the train
     # qualifying population itself, 90th percentile. Never touches test data.
@@ -1118,7 +1147,8 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             pending_entries.extend(score_candidates(day_data, weekly_cut, sector_cut, top_n=15,
                                                       skip_top_n=SCORE_SKIP_TOP_N,
                                                       outlier_gap_mult=SCORE_OUTLIER_GAP_MULT,
-                                                      weekly_comp_cap_q=SCORE_WEEKLY_COMP_CAP_Q))
+                                                      weekly_comp_cap_q=SCORE_WEEKLY_COMP_CAP_Q,
+                                                      weekly_comp_abs_cap=weekly_comp_abs_cap))
 
         pos_market_value = 0.0
         for pos in positions:

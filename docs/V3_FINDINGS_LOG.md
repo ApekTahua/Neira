@@ -2125,3 +2125,52 @@ what actually captures those.
 
 **No change made -- this confirms the existing default is already right, not a reason to
 touch it.** Genuinely reassuring result, not just a null one.
+
+## weekly_comp_cap follow-up: train-derived absolute version -- confirms the drawdown effect, doesn't fix the noise (2026-08-08)
+
+Direct follow-up to the weekly_comp_cap_q entry above. That version capped `w_comp` at a
+quantile of THAT DAY's own qualifying pool -- often single digits in size, a plausible
+source of the non-monotonic swings it showed. Built `weekly_comp_abs_cap`
+(`V3_SCORE_WEEKLY_COMP_ABS_CAP_Q`, default None/off, byte-identical -- reverified via W9
+rerun + 12/12 suite): learns ONE fixed cutoff per window from the full TRAIN period's own
+`w_comp` distribution among historically-qualifying candidates -- same train-only,
+applied-out-of-sample discipline `weekly_cut`/`sector_cut`/`score_p90` already use, a large
+and stable reference sample instead of a noisy daily one.
+
+Swept 0.95 down to 0.50. Below 0.65 the filter becomes too strict to trade at all (0.60
+collapsed to 1 trade total across all 9 windows, 0.50 to zero) -- expected, a candidate
+already needs `w_comp >= 0` by construction (weekly_ma_spread >= weekly_cut is part of the
+qualifying gate itself), so a train-quantile cap much below that floor guts the candidate
+pool entirely. Usable range is 0.65-0.95:
+
+| abs_cap_q | mean alpha | mean maxDD | worst maxDD | trades |
+|---|---|---|---|---|
+| baseline (off) | +21.71% | -16.08% | -21.61% | 392 |
+| 0.95 | +22.94% | -15.00% | -25.47% | 356 |
+| 0.90 | +19.82% | -9.87% | -17.10% | 294 |
+| 0.85 | +20.94% | -10.47% | -16.83% | 302 |
+| 0.80 | +32.83% | -9.51% | -12.76% | 290 |
+| 0.75 | +13.31% | -10.94% | -18.59% | 293 |
+| 0.70 | +17.34% | -13.83% | -21.70% | 335 |
+| 0.65 | +19.27% | -10.32% | -15.49% | 292 |
+
+**Same two-part verdict as the within-day version, now confirmed independently by a second,
+differently-constructed filter -- which makes both halves more trustworthy, not less.**
+Drawdown: every single value from 0.65-0.95 beats baseline's mean drawdown, several by a
+lot (-16.08% -> as low as -9.51%). Two unrelated filter constructions (a noisy daily
+statistic and a stable train-derived one) both show this same consistent pattern -- real
+evidence this is a genuine property of removing overextended entries, not a construction
+artifact. Alpha: still bumpy (0.80 spikes to +32.83%, its immediate neighbors 0.85 and 0.75
+sit at +20.94% and +13.31% -- an isolated peak, not a plateau). Since a differently-built
+filter produces the SAME qualitative shape (drawdown solid, alpha noisy) rather than fixing
+it, the noise looks like an intrinsic property of this strategy's small per-window trade
+count (already down to ~290-350 across 9 windows, i.e. ~30-40/window) rather than something
+a smarter filter construction can engineer away.
+
+**Stopping this specific thread here.** Two independent constructions agree: this family is
+a genuine, adoptable-shaped drawdown-reduction tool, and not (yet, at any single hand-picked
+threshold) a trustworthy source of extra alpha. A third filter-construction attempt is
+unlikely to resolve a noise floor that's about sample size, not shape. If drawdown reduction
+alone becomes a live priority, this is ready to revisit with that framing; chasing alpha
+through this specific mechanism needs a fundamentally larger trade sample first, not another
+threshold sweep. Both flags stay off.
