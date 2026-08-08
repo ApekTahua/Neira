@@ -2219,3 +2219,24 @@ their current defaults (off / 0.10) in the live-mirroring baseline. If this gets
 `ATR_PRICE_RATIO_MAX=0.08` with `ARA_FILTER_ENABLED=1` is the config to carry forward,
 `ATR_PRICE_RATIO_MAX` alone (no ARA) if simplicity is preferred over that last bit of
 win-rate-consistency.
+
+## Quick stack test: best candidate x drawdown-reducer -- one promising point, not yet trusted (2026-08-08)
+
+Stacked tonight's two survivors -- ARA-on+ATR<=0.08 (best single change) and
+`weekly_comp_abs_cap` (confirmed drawdown-reducer) -- to see if they compound.
+
+| config | alpha_mean | dd_mean | dd_worst | win_gt50 | beat0 |
+|---|---|---|---|---|---|
+| baseline | +21.71% | -16.08% | -21.61% | 4/9 | 6/9 |
+| ara+atr0.08 alone | +29.69% | -15.33% | -22.06% | 5/9 | 7/9 |
+| + wcap 0.90 | +16.45% | -11.23% | -15.17% | 4/9 | 5/9 |
+| + wcap 0.85 | +18.92% | -9.79% | -15.16% | 2/9 | 6/9 |
+| + wcap 0.80 | **+34.80%** | **-8.94%** | **-12.29%** | 5/9 | 6/9 |
+
+wcap 0.80 stacked on top beats everything tested all night on BOTH alpha and drawdown
+simultaneously -- best of the whole session by a real margin if it holds. **But it's one
+point among three (0.90/0.85/0.80), and 0.90/0.85 are clearly worse** -- the exact
+"isolated peak, check the neighbors" situation this log has flagged (and been burned by)
+multiple times tonight already. Not run finer (0.78/0.79/0.81/0.82) yet. Noting this as the
+most promising open thread for next time, explicitly NOT as a validated result -- needs the
+same neighbor-check discipline as everything else before it's trusted.
