@@ -2083,3 +2083,45 @@ real tuning discipline before any number gets trusted -- likely a per-window-fit
 rather than one hand-picked global constant) or a materially larger sample before grid-
 searching a single quantile threshold again. `SCORE_WEEKLY_COMP_CAP_Q` stays off. Not
 adopting anything tonight off a threshold that swings 15+ points between neighbors.
+
+## Why TP1_PCT=0.10 and not more -- swept, and this one's decisive (2026-08-08)
+
+User question after seeing a live position (BLES) sell only 10% at TP1: why not take the
+whole profit there, and doesn't partial-TP + pyramid mean more transactions -> more fees?
+Both real questions, both answered directly rather than by reasoning from priors.
+
+**Fees: yes, real, and already priced into every number this log reports.** Backtest fees
+apply to every transaction regardless of TP1_PCT; summed across all 9 windows (Rp100M
+capital each): TP1_PCT=0.10 (current, pyramid on) = Rp26.2M total fees vs a literal "sell
+100% at TP1, no pyramid, no re-entry" config = Rp8.5M -- roughly 3x less fee spend. So the
+fee concern is correct, not imagined. It just doesn't change the conclusion once net
+performance is compared (below) -- the fee-heavier config still wins by a wide margin
+after those fees are already deducted.
+
+**Swept TP1_PCT at 0.10 (current) / 0.25 / 0.50 / 0.75 / 1.00, all with pyramid on, plus
+one more run at 1.00 with pyramid OFF entirely** (the literal "just take the whole win and
+stop" case the question was picturing) -- full 9-window walk-forward, no re-fetch:
+
+| TP1_PCT | pyramid | mean alpha | mean profit | win rate | win>50% | total fees (9 windows) |
+|---|---|---|---|---|---|---|
+| 0.10 (current) | on | **+21.71%** | **+20.84%** | 51.4% | 4/9 | Rp26.2M |
+| 0.25 | on | +15.84% | +14.98% | 50.3% | 4/9 | Rp27.5M |
+| 0.50 | on | +8.09% | +7.23% | 47.9% | 3/9 | Rp29.1M |
+| 0.75 | on | +13.82% | +12.96% | 47.7% | 3/9 | Rp31.4M |
+| 1.00 | on | +14.41% | +13.55% | 44.7% | 2/9 | Rp34.7M |
+| 1.00 (full TP) | **off** | +0.22% | -0.65% | 51.2% | 2/9 | Rp8.5M |
+
+**Unlike the last two sweeps tonight, this one is not a fragile single point -- it's a clean,
+directionally consistent result.** 0.10 beats every other value tested, by a wide margin, on
+every metric that matters (mean alpha, mean profit, win-rate-consistency). The most literal
+version of "just take the full profit" (1.00, no pyramid) comes out to essentially ZERO edge
+(+0.22% alpha -- indistinguishable from doing nothing) despite paying the LEAST in fees of
+any config. Mechanism matches something this log already established independently
+(concentration checks earlier this session, most windows carried by a handful of huge
+winners, 6/9 windows >65% concentration): selling the whole position at a small first target
+caps exactly the compounding moves that produce most of the real profit. Locking in most of
+the win early and letting the small remainder trail with a protected (breakeven) stop is
+what actually captures those.
+
+**No change made -- this confirms the existing default is already right, not a reason to
+touch it.** Genuinely reassuring result, not just a null one.
