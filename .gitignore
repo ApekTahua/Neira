@@ -17,3 +17,4 @@ src/w3_capped_trades.csv
 diagnose_score_power_summary.csv
 diagnose_score_power_by_window.csv
 diagnose_score_power_raw.csv
+rank1_component_raw.csv

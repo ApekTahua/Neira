@@ -2017,3 +2017,69 @@ angle is asking WHY rank-1 fails (which of weekly_ma_spread vs sector_rs_momentu
 outlier score, and whether gating on each factor's own extremity separately -- rather than
 the combined score's magnitude -- is more surgical), not more threshold values on the same
 combined signal.
+
+## Decomposed WHY rank-1 fails; built the surgical version; drawdown effect real, profit effect not trustworthy yet (2026-08-07, same night)
+
+Followed the log's own suggested next angle. Replicated diagnose_score_power's day-loop
+against the local walk-forward cache (no live fetch needed -- a mechanism question doesn't
+need this week's freshest data), capturing `weekly_ma_spread` and `sector_rs_momentum`'s
+individual normalized components (`w_comp`, `s_comp`) instead of just the combined score.
+
+**Rank-1's outlier-ness comes almost entirely from `w_comp`, not `s_comp`.** Rank-1 mean
+`w_comp`=48.78 vs rank-2+'s 19.72 (2.5x) -- but mean `s_comp` is nearly identical (16.92 vs
+16.74). Pooled Spearman correlations of each component alone against 20-day forward return
+were both statistically flat (w_comp rho=-0.026 p=0.28, s_comp rho=-0.008 p=0.74) -- but that
+is because the real relationship is non-monotonic, which a linear rank correlation can't see.
+Quintile breakdown makes it visible: `w_comp`'s top quintile (mean 41.97, closely matching
+rank-1's own profile) is the ONLY quintile where win rate and mean return both drop
+(50.3% win, matching rank-1's badness, sl_hit_20=100% exactly), after rising cleanly through
+Q1-Q3. `s_comp`'s top quintile shows no such reversal -- its highest bucket has the SECOND-
+BEST mean return of the whole table (12.04%). An "imbalance" hypothesis (one factor
+dominating the other) was tested and killed first (rho=-0.014, p=0.90 within rank-1 alone,
+pooled bucket table not monotonic) before landing on this cleaner, component-specific read.
+
+**Built `weekly_comp_cap_q`** (`V3_SCORE_WEEKLY_COMP_CAP_Q`, default None/off, byte-identical
+-- reverified via W9 rerun, still 23/-15.74%/34.8%, plus 12/12 regression suite): excludes
+candidates whose `w_comp` exceeds this within-day quantile of that day's own qualifying pool.
+Targets the actual driver directly instead of using rank or combined score as a fuzzy proxy.
+
+**Swept 7 quantile values (0.95 down to 0.35) across the full 9-window walk-forward --
+applying the exact discipline this log already learned the hard way from the hysteresis-band
+episode: don't trust one point, check the neighbors.** Good news and a real caution, not a
+clean win:
+
+| cap_q | mean alpha | mean maxDD | worst maxDD | trades |
+|---|---|---|---|---|
+| baseline (off) | +21.71% | -16.08% | -21.61% | 392 |
+| 0.95 | +14.07% | -16.17% | -21.39% | 364 |
+| 0.90 | +14.57% | -14.68% | -23.97% | 355 |
+| 0.85 | +20.50% | -11.34% | -14.76% | 329 |
+| 0.75 | **+34.57%** | -10.92% | -16.71% | 332 |
+| 0.60 | +19.99% | -11.05% | -18.44% | 288 |
+| 0.50 | +22.06% | **-9.87%** | **-13.86%** | 313 |
+| 0.35 | +30.95% | -10.09% | -14.12% | 292 |
+
+**Drawdown improvement is the trustworthy part of this result.** Every single tested value
+reduces mean drawdown vs baseline, most by a lot (-16.08% -> roughly -10 to -11% for every
+cap_q <= 0.85) -- consistent, monotonic-ish, and mechanistically sensible: removing the most
+overextended entries removes exactly the trades most prone to a violent reversal. This part
+is believable.
+
+**The alpha/profit numbers are NOT trustworthy at any single value.** They zigzag
+non-monotonically across neighboring thresholds -- 0.75 looks spectacular (+34.57%), its
+immediate neighbor 0.60 is actually WORSE than baseline (+19.99% vs +21.71%), then 0.50 and
+0.35 climb back up. Only 3 of 7 tested values (0.75, 0.50, 0.35) even beat baseline's mean
+alpha; 0.90/0.95/0.85/0.60 land below it. Trade counts are already down to 288-364 (some
+individual windows down to 11-16 trades), which is exactly the small-sample regime where a
+few trades falling in or out of a filter at one exact cutoff can swing an aggregate by
+double digits -- textbook version of the same trap the 2%-hysteresis-band episode already
+named in this log: a great-looking single point in a noisy landscape, not a validated optimum.
+
+**Where this leaves it:** the mechanism is real and now well-understood (extreme
+weekly_ma_spread specifically drives the bad outcomes; sector momentum doesn't). The
+drawdown-reduction effect looks genuinely adoptable-shaped. The profit/alpha effect needs
+real tuning discipline before any number gets trusted -- likely a per-window-fit cutoff
+(learned from each window's own train split, the same way weekly_cut/sector_cut already are,
+rather than one hand-picked global constant) or a materially larger sample before grid-
+searching a single quantile threshold again. `SCORE_WEEKLY_COMP_CAP_Q` stays off. Not
+adopting anything tonight off a threshold that swings 15+ points between neighbors.

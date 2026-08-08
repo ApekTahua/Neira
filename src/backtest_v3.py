@@ -270,6 +270,11 @@ SCORE_SKIP_TOP_N = int(os.environ.get("V3_SCORE_SKIP_TOP_N", "0"))
 # unconditionally. None (default) = off, byte-identical. Unvalidated -- see V3_FINDINGS_LOG.md.
 _outlier_gap_env = os.environ.get("V3_SCORE_OUTLIER_GAP_MULT")
 SCORE_OUTLIER_GAP_MULT = float(_outlier_gap_env) if _outlier_gap_env else None
+# More surgical follow-up to the two flags above: caps the weekly_ma_spread component
+# specifically (not sector_rs_momentum, not the combined score) at its own within-day
+# quantile among qualifying candidates. See score_candidates docstring. None (default) = off.
+_weekly_cap_env = os.environ.get("V3_SCORE_WEEKLY_COMP_CAP_Q")
+SCORE_WEEKLY_COMP_CAP_Q = float(_weekly_cap_env) if _weekly_cap_env else None
 # Realism check on a known, disclosed simplification: every fill so far
 # (backtest AND live paper engine) executes at the exact observed
 # price, no cost for actually crossing the spread or moving an illiquid
@@ -524,7 +529,8 @@ def apply_slippage(price: float, side: str, participation: float = 0.0) -> float
 
 
 def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: float, top_n: int = 15,
-                      skip_top_n: int = 0, outlier_gap_mult: float = None) -> list:
+                      skip_top_n: int = 0, outlier_gap_mult: float = None,
+                      weekly_comp_cap_q: float = None) -> list:
     """Filters a single trading day's cross-section to qualifying candidates (liquidity,
     weekly-trend, sector-momentum, ATR sanity) and returns the top-N by score as plain dicts.
     Extracted so the live paper-trading signal scan (src/paper_signal_scan.py) calls the exact
@@ -537,7 +543,16 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
     period-consistent problem: ~2x the average score magnitude, ~20% higher ATR%, and a stop-
     loss-hit rate of 82-98% in both halves of a 4.5-year sample (vs ~75-85% for rank 2+), the
     likely signature of a same-day outlier/overextension the score formula can't distinguish
-    from genuine sustainable momentum. See docs/V3_FINDINGS_LOG.md."""
+    from genuine sustainable momentum. See docs/V3_FINDINGS_LOG.md.
+
+    `weekly_comp_cap_q` (default None, off) excludes candidates whose normalized
+    weekly_ma_spread component exceeds this within-day quantile of the qualifying pool.
+    Follow-up to skip_top_n: decomposing rank-1's score found the outlier-ness comes almost
+    entirely from an extreme weekly_ma_spread component (mean ~2.5x the rest of the pool) --
+    the normalized sector_rs_momentum component is essentially identical between rank-1 and
+    everyone else, and its own top quintile shows no reversion pattern (best mean forward
+    return of any quintile). A per-day quantile cut on the weekly component specifically is
+    more surgical than dropping by rank/combined-score, which conflates the two factors."""
     candidates = day_slice[
         (day_slice["adtv_20"] >= cfg.ADTV_MIN)
         & (day_slice["weekly_ma_spread"] >= weekly_cut)
@@ -558,10 +573,16 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
         candidates = candidates[~np.array(locked, dtype=bool)]
     if candidates.empty:
         return []
+    candidates["w_comp"] = (candidates["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
     candidates["score"] = (
-        (candidates["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
+        candidates["w_comp"]
         + (candidates["sector_rs_momentum"] - sector_cut) / max(abs(sector_cut), 1e-6)
     )
+    if weekly_comp_cap_q is not None and len(candidates) >= 3:
+        cap = candidates["w_comp"].quantile(weekly_comp_cap_q)
+        candidates = candidates[candidates["w_comp"] <= cap]
+        if candidates.empty:
+            return []
     pool = candidates.nlargest(top_n + skip_top_n + 1, "score")
     start = skip_top_n
     # Conditional variant of skip_top_n: only drop the #1 candidate on days it's a real
@@ -1096,7 +1117,8 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             day_data = df[df["trade_date"] == trade_date]
             pending_entries.extend(score_candidates(day_data, weekly_cut, sector_cut, top_n=15,
                                                       skip_top_n=SCORE_SKIP_TOP_N,
-                                                      outlier_gap_mult=SCORE_OUTLIER_GAP_MULT))
+                                                      outlier_gap_mult=SCORE_OUTLIER_GAP_MULT,
+                                                      weekly_comp_cap_q=SCORE_WEEKLY_COMP_CAP_Q))
 
         pos_market_value = 0.0
         for pos in positions:
