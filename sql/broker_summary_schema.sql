@@ -42,7 +42,9 @@ create table if not exists broker_summary (
                                 -- type column (confirmed by fetching the real page). Left here
                                 -- for a future direct source that does provide it; for now,
                                 -- join against the `brokers` reference table on broker_code.
-  lot bigint not null,
+  lot bigint not null,          -- can ALSO carry a "2.0 M" style abbreviation for big lot
+                                 -- counts, same as val_rupiah -- both need the same K/M/B/T
+                                 -- parser in the n8n Code node, not a plain Number() cast
   val_rupiah bigint,           -- parsed to a real Rupiah integer -- NOT the raw "10.2 B"
                                 -- string the source HTML shows, see n8n Code node fix
   avg_price numeric,
