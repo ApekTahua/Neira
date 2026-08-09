@@ -50,7 +50,7 @@ regime+weekly+sector signal, not just size/regime/trend-strength as today.
 
 **Status**:
 - Schema applied to Supabase 2026-08-08: `sql/broker_summary_schema.sql`,
-  table `broker_summary_daily` (normalized: one row per broker per side
+  table `broker_summary` (normalized: one row per broker per side
   per stock per day, not a JSON blob per stock-day -- needed for
   plain-SQL rolling accumulation queries).
 - n8n workflow built and debugged 2026-08-08, full node-by-node recipe in
@@ -63,7 +63,7 @@ regime+weekly+sector signal, not just size/regime/trend-strength as today.
   column in the actual table data -- confirmed by fetching the raw page.
   The column that looked like it might be type was a rank number (1st/2nd/
   3rd biggest broker that day). `investor_type` stays a nullable column on
-  `broker_summary_daily` for now, unpopulated. Getting real Foreign/Local/
+  `broker_summary` for now, unpopulated. Getting real Foreign/Local/
   BUMN classification needs either (a) a separate static broker-code
   reference table (IDX broker classifications are largely static, a
   one-time lookup, not scraped per request) or (b) re-querying per `fd`
@@ -76,7 +76,7 @@ regime+weekly+sector signal, not just size/regime/trend-strength as today.
   ~900MB-1GB, comparable to `ihsg_eod` itself -- not a blocker, just
   something to weigh before backfilling past the initial test.
 - `brokers` reference table built 2026-08-09 (99 rows: 4 BUMN, 32
-  Foreign, 63 Local) -- joined against `broker_summary_daily.broker_code`
+  Foreign, 63 Local) -- joined against `broker_summary.broker_code`
   at analysis time for investor-type classification, since Indopremier's
   own table has none (see finding above). First pass sourced from a
   public compiled list caught 2 real errors when the user cross-checked
@@ -92,8 +92,20 @@ regime+weekly+sector signal, not just size/regime/trend-strength as today.
   `delisting_date` -- confirmed empty on every row, not just unread).
   `ihsg_eod.foreign_buy`/`foreign_sell` (per-stock aggregate foreign flow)
   turned up ALREADY live and used elsewhere -- worth knowing for this
-  initiative, since `broker_summary_daily` adds per-broker detail on top
+  initiative, since `broker_summary` adds per-broker detail on top
   of it rather than duplicating it.
+- **Moved to a dedicated second Supabase project 2026-08-09** (separate
+  from the main one) -- user's call, keeps this dataset's storage growth
+  (est. 900MB-1GB at full year/full universe) from eating into the main
+  project's headroom. `broker_summary` (table renamed from
+  `broker_summary_daily` during setup, keep this file in sync with that)
+  + `brokers` both confirmed live and correct there (99/99 rows verified
+  via REST). Still exist on the MAIN project too as of this writing --
+  cleanup (drop them there once the second project is trusted) is a
+  pending, explicitly-confirm-first step, not done automatically. No
+  native SQL join between the two projects -- combine in Python/pandas at
+  analysis time, same as every other multi-source script in this repo
+  already does.
 - NOT yet backfilled (workflow built, not yet run for real), NOT yet
   analyzed, NOT yet wired into any scoring or gating logic.
 
@@ -106,10 +118,9 @@ folklore idea ("this broker is always the bandar") is not evidence; a
 backtested, out-of-sample, neighbor-stable result is.
 
 **Next steps** (in order):
-1. Apply `sql/broker_summary_schema.sql` to Supabase.
-2. Run n8n backfill for a small test batch, January 2026 only (scope --
-   full ~900-emiten universe vs a smaller liquid subset -- is an open
-   decision, see chat).
+1. ~~Apply `sql/broker_summary_schema.sql` to the (second) Supabase.~~ DONE 2026-08-09.
+2. Run n8n backfill for January 2026, full universe (user's call --
+   chose full ~900-emiten over a smaller test subset).
 3. Eyeball parsed data against a few known accumulation stories, sanity-check.
 4. Once >=1 clean month exists: engineer candidate features (net foreign
    flow, broker concentration/top-N share, rolling N-day accumulation by
