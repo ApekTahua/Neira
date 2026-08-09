@@ -75,6 +75,25 @@ regime+weekly+sector signal, not just size/regime/trend-strength as today.
   trivial (<100MB); a full-year full-universe backfill would land
   ~900MB-1GB, comparable to `ihsg_eod` itself -- not a blocker, just
   something to weigh before backfilling past the initial test.
+- `brokers` reference table built 2026-08-09 (99 rows: 4 BUMN, 32
+  Foreign, 63 Local) -- joined against `broker_summary_daily.broker_code`
+  at analysis time for investor-type classification, since Indopremier's
+  own table has none (see finding above). First pass sourced from a
+  public compiled list caught 2 real errors when the user cross-checked
+  against real data (RB's name AND type were wrong, BB was wrongly
+  guessed Foreign); user then supplied the complete authoritative
+  Foreign/BUMN lists, resolving all 99 rows. `DB` and `ML` still have no
+  known company name (type confirmed Foreign, name unverified).
+- Storage audit (prompted by this work) also found and dropped 3 fully
+  dead tables (`quant_results`, `stock_universe`, `app_scrape_state` --
+  zero references in either repo) and 8 dead `ihsg_eod` columns
+  (`first_trade`, `tradeable_shares`, `weight_for_index`,
+  `non_regular_volume/value/frequency`, `index_individual`,
+  `delisting_date` -- confirmed empty on every row, not just unread).
+  `ihsg_eod.foreign_buy`/`foreign_sell` (per-stock aggregate foreign flow)
+  turned up ALREADY live and used elsewhere -- worth knowing for this
+  initiative, since `broker_summary_daily` adds per-broker detail on top
+  of it rather than duplicating it.
 - NOT yet backfilled (workflow built, not yet run for real), NOT yet
   analyzed, NOT yet wired into any scoring or gating logic.
 
