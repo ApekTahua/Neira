@@ -3,6 +3,9 @@
 -- Table renamed broker_summary_daily -> broker_summary 2026-08-09 (user
 -- call while setting up the second project) -- this file is the source of
 -- truth for the name, keep it in sync with whatever's actually deployed.
+-- `source` column dropped 2026-08-09 -- single source (Indopremier),
+-- hardcoded constant, wasn't earning its keep (same call as dropping
+-- `brokers.confidence` earlier the same day).
 --
 -- Written by an n8n workflow pulling Indopremier's public
 -- data-brokersummary.php per (stock_code, trade_date), NOT by any Python
@@ -11,10 +14,19 @@
 -- feedback-never-touch-n8n memory: never touch n8n directly, only
 -- document the exact change for the user to apply by hand).
 --
+-- `board=all` deliberately includes Nego/Tunai (off-market negotiated
+-- block deals), not just regular continuous-auction trades -- a stock can
+-- show zero regular-market activity in ihsg_eod (open/high/low/volume
+-- all 0) while still having real broker rows here from a Nego deal that
+-- day. That's correct, not a bug -- negotiated block trades are often the
+-- more telling bandarmology signal, not noise to filter out.
+--
 -- One row per broker per side per stock per day (not one JSON blob per
 -- stock-day) -- normalized so rolling per-broker/per-stock accumulation
 -- queries (the whole point of bandarmology analysis) are plain SQL, not
--- JSON parsing on every read.
+-- JSON parsing on every read. Indopremier's own report caps at top-10
+-- buyers + top-10 sellers by volume (not every broker that transacted) --
+-- a source limit, not something this schema or the scrape truncates.
 --
 -- Lives on its own Supabase project now, separate from the main one --
 -- no native SQL join with ihsg_eod/backtest_* tables, combine in Python
@@ -34,9 +46,8 @@ create table if not exists broker_summary (
   val_rupiah bigint,           -- parsed to a real Rupiah integer -- NOT the raw "10.2 B"
                                 -- string the source HTML shows, see n8n Code node fix
   avg_price numeric,
-  source text not null default 'indopremier',
   created_at timestamptz not null default now(),
-  unique (trade_date, stock_code, broker_code, side, source)
+  unique (trade_date, stock_code, broker_code, side)
 );
 
 create index if not exists broker_summary_stock_date_idx on broker_summary (stock_code, trade_date);
