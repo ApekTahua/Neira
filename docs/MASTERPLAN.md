@@ -100,12 +100,10 @@ regime+weekly+sector signal, not just size/regime/trend-strength as today.
   project's headroom. `broker_summary` (table renamed from
   `broker_summary_daily` during setup, keep this file in sync with that)
   + `brokers` both confirmed live and correct there (99/99 rows verified
-  via REST). Still exist on the MAIN project too as of this writing --
-  cleanup (drop them there once the second project is trusted) is a
-  pending, explicitly-confirm-first step, not done automatically. No
-  native SQL join between the two projects -- combine in Python/pandas at
-  analysis time, same as every other multi-source script in this repo
-  already does.
+  via REST). Dropped from the main project 2026-08-09 -- cutover
+  complete, one source of truth now. No native SQL join between the two
+  projects -- combine in Python/pandas at analysis time, same as every
+  other multi-source script in this repo already does.
 - NOT yet backfilled (workflow built, not yet run for real), NOT yet
   analyzed, NOT yet wired into any scoring or gating logic.
 
