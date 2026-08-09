@@ -49,20 +49,34 @@ entries by whether foreign/big-broker flow agrees with the existing
 regime+weekly+sector signal, not just size/regime/trend-strength as today.
 
 **Status**:
-- Schema designed: `sql/broker_summary_schema.sql`, table
-  `broker_summary_daily` (normalized: one row per broker per side per
-  stock per day, not a JSON blob per stock-day -- needed for plain-SQL
-  rolling accumulation queries). Not yet applied to Supabase (MCP was
-  disconnected when this was written -- apply manually or once reconnected).
-- n8n workflow guidance given for a January 2026 test backfill (see chat
-  history 2026-08-08 for the exact node-by-node recipe). NOT yet run.
-- Two real bugs flagged in the user's existing "Tidy Up Variables" Code
-  node before this can scale past a single manual test: `stockCode` is
-  hardcoded to `"INCO"` (needs to come from the loop's current item), and
-  `val` is stored as the raw display string (`"10.2 B"`) instead of a
-  parsed Rupiah number.
-- NOT yet backfilled, NOT yet analyzed, NOT yet wired into any scoring or
-  gating logic.
+- Schema applied to Supabase 2026-08-08: `sql/broker_summary_schema.sql`,
+  table `broker_summary_daily` (normalized: one row per broker per side
+  per stock per day, not a JSON blob per stock-day -- needed for
+  plain-SQL rolling accumulation queries).
+- n8n workflow built and debugged 2026-08-08, full node-by-node recipe in
+  chat history. Fixed along the way: dynamic `stockCode` (was hardcoded
+  `"INCO"`), `val` parsed to a real Rupiah integer (was the raw `"10.2 B"`
+  display string), date passed through from the workflow's own input
+  instead of re-scraped from a hidden HTML field.
+- **Real finding, not a bug**: Indopremier's `data-brokersummary.php`
+  (with `fd=all&board=all`) has NO investor-type (Foreign/Local/BUMN)
+  column in the actual table data -- confirmed by fetching the raw page.
+  The column that looked like it might be type was a rank number (1st/2nd/
+  3rd biggest broker that day). `investor_type` stays a nullable column on
+  `broker_summary_daily` for now, unpopulated. Getting real Foreign/Local/
+  BUMN classification needs either (a) a separate static broker-code
+  reference table (IDX broker classifications are largely static, a
+  one-time lookup, not scraped per request) or (b) re-querying per `fd`
+  value if Indopremier's filter actually segments by investor type
+  server-side (unconfirmed, would ~3x the request volume) -- (a) is the
+  saner path, do that before (b).
+- Storage checked 2026-08-08: DB is ~360MB total, `ihsg_eod` is 306MB of
+  that (expected, years of data). Jan-2026-only broker backfill is
+  trivial (<100MB); a full-year full-universe backfill would land
+  ~900MB-1GB, comparable to `ihsg_eod` itself -- not a blocker, just
+  something to weigh before backfilling past the initial test.
+- NOT yet backfilled (workflow built, not yet run for real), NOT yet
+  analyzed, NOT yet wired into any scoring or gating logic.
 
 **Validation bar (non-negotiable)**: broker-flow "bandarmology" is a
 hypothesis to test, not an assumed edge. Before it touches live scoring it
