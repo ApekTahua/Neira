@@ -299,6 +299,17 @@ def main():
     if not np.isfinite(log_adtv_p90) or log_adtv_p90 <= 0:
         log_adtv_p90 = 1.0
 
+    # Same persist-and-reread pattern as log_adtv_p90 above, for
+    # BANDAR_SIZING_ENABLED (docs/BANDARMOLOGY_DESIGN.md). Without this,
+    # paper_monitor.py would fall back to compute_entry_fill's default
+    # concentration_p90=1.0 -- the wrong reference (raw concentration
+    # values, not the 90th-percentile-of-train ratio the multiplier is
+    # supposed to divide by) -- silently mis-sizing every V4_PAPER fill.
+    train_concentration = train_liquid_bullish["concentration"].dropna()
+    concentration_p90 = train_concentration.quantile(0.90) if len(train_concentration) > 0 else 1.0
+    if not np.isfinite(concentration_p90) or concentration_p90 <= 0:
+        concentration_p90 = 1.0
+
     regime_ok = (regime == "BULLISH" and bullish_streak_by_date.get(today, 0) >= bt.REGIME_CONFIRM_DAYS
                  and trend_strength >= bt.TREND_STRENGTH_MIN)
 
@@ -382,7 +393,7 @@ def main():
                     "signal_date": today.isoformat(), "trigger": sig["trigger"], "score": sig["score"],
                     "adtv_20": sig["adtv_20"], "avg_vol_20": sig["avg_vol_20"], "atr_at_entry": sig["atr"],
                     "entry_price_original": sig["signal_close"], "avg_price": sig["signal_close"],
-                    "target_price": sig["tp_target"],
+                    "target_price": sig["tp_target"], "concentration": sig.get("concentration"),
                     "total_lots": 0, "remaining_lots": 0, "cost_basis": 0,
                 }).execute()
                 new_candidates_notes.append(f"{sig['stock_code']} (score {sig['score']:.2f})")
@@ -434,6 +445,7 @@ def main():
     }).eq("id", run_id).execute()
     supabase.table("paper_account").update({
         "cash": cash, "last_signal_date": today.isoformat(), "log_adtv_p90": float(log_adtv_p90),
+        "concentration_p90": float(concentration_p90),
     }).eq("run_id", run_id).execute()
 
     print(f"[EOD] equity=Rp{total_equity:,.0f} ({net_profit_pct:+.2f}%) cash=Rp{cash:,.0f} open={len(still_open)}")

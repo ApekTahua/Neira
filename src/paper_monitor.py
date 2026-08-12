@@ -135,6 +135,11 @@ def main():
     account = acct[0]
     cash = float(account["cash"])
     log_adtv_p90 = float(account["log_adtv_p90"]) if account.get("log_adtv_p90") else 1.0
+    # Same persist-and-reread pattern as log_adtv_p90 -- see
+    # paper_signal_scan.py's own comment on this. Without it,
+    # BANDAR_SIZING_ENABLED would silently use the wrong reference
+    # (compute_entry_fill's default concentration_p90=1.0) for every fill.
+    concentration_p90 = float(account["concentration_p90"]) if account.get("concentration_p90") else 1.0
 
     pending = supabase.table("paper_positions").select("*").eq("run_id", run_id).eq("status", "PENDING").lt(
         "signal_date", today.isoformat()
@@ -181,8 +186,12 @@ def main():
         sig = {
             "atr": row["atr_at_entry"], "tp_target": row["target_price"], "score": row["score"],
             "adtv_20": row["adtv_20"], "avg_vol_20": row["avg_vol_20"],
+            "concentration": row.get("concentration"),
         }
-        fill = bt.compute_entry_fill(sig, entry_price, cash, prev_equity, log_adtv_p90)
+        fill = bt.compute_entry_fill(
+            sig, entry_price, cash, prev_equity, log_adtv_p90,
+            concentration_p90=concentration_p90,
+        )
         if fill is None:
             continue
 

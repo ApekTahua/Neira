@@ -20,3 +20,4 @@ diagnose_score_power_raw.csv
 rank1_component_raw.csv
 .env
 .env.*
+data/

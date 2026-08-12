@@ -133,3 +133,50 @@ with new_run_v31 as (
 )
 insert into paper_account (run_id, cash, last_signal_date)
 select id, 100000000, null from new_run_v31;
+
+-- BANDAR_SIZING_ENABLED support columns (2026-08-12): same persist-and-
+-- reread pattern paper_account.log_adtv_p90 already established for
+-- LIQ_SIZING -- paper_signal_scan.py computes concentration_p90 once/day
+-- and persists it (paper_account), and the per-position concentration
+-- value at signal time (paper_positions), so paper_monitor.py can fill
+-- entries with the exact same BANDAR_SIZING reference without rebuilding
+-- the full dataset every 15 minutes. Additive, safe on already-live
+-- V3_PAPER/V3.1_PAPER rows (both columns just stay NULL there, and
+-- BANDAR_SIZING_ENABLED defaults off for both anyway).
+alter table paper_account add column if not exists concentration_p90 numeric;
+alter table paper_positions add column if not exists concentration numeric;
+
+-- V4_PAPER seed (2026-08-12): third, independent, concurrent paper run --
+-- V3_PAPER and V3.1_PAPER above stay untouched and frozen. V4 config =
+-- V3_PAPER's EXACT frozen config plus exactly ONE change:
+-- BANDAR_SIZING_ENABLED=1 (backtest_v3.py) -- the Bandarmology
+-- concentration-based sizing multiplier, walk-forward validated
+-- (docs/BANDARMOLOGY_DESIGN.md, "V4 sizing integration built + validated"):
+-- mean alpha +21.71%->+24.09%, median alpha +12.60%->+19.09%, mean profit
+-- factor 1.58->1.88, mean max drawdown -16.08%->-15.03% (better), worst
+-- max drawdown -21.61%->-21.84% (slightly worse, disclosed tradeoff).
+-- Deliberately NOT combined with V3.1's ARA_FILTER/ATR_PRICE_RATIO_MAX/
+-- SCORE_WEEKLY_COMP_ABS_CAP_Q changes or MOVER_SIZING_ENABLED (mover_pairs
+-- sizing tested mixed, needs a redesign first, not launch-ready) -- single-
+-- variable-change discipline, so any V4-vs-V3 difference is cleanly
+-- attributable to Bandarmology alone. Set via env on the V4 trigger
+-- workflows (PAPER_VERSION, V3_BANDAR_SIZING), not in this repo's frozen
+-- config.py.
+with new_run_v4 as (
+  insert into backtest_runs (
+    version, period_start, period_end, initial_capital, final_capital,
+    net_profit_pct, benchmark_pct, alpha_pct, total_trades, win_rate,
+    profit_factor, max_drawdown, notes, strategy_summary, is_published
+  )
+  select
+    'V4_PAPER', current_date, current_date, 100000000, 100000000,
+    0, 0, 0, 0, 0,
+    null, 0,
+    'Live paper trading, V4: V3_PAPER''s exact frozen config plus BANDAR_SIZING_ENABLED=1 (Bandarmology concentration-based position sizing) -- the single validated change, isolated for clean attribution. See docs/BANDARMOLOGY_DESIGN.md for the full validation writeup.',
+    'V4 Paper Trading -- Bandarmology (started 2026-08-12)',
+    false
+  where not exists (select 1 from backtest_runs where version = 'V4_PAPER')
+  returning id
+)
+insert into paper_account (run_id, cash, last_signal_date)
+select id, 100000000, null from new_run_v4;

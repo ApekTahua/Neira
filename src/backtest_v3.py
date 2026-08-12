@@ -37,6 +37,7 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+import requests
 from supabase import create_client
 
 import config as cfg
@@ -57,6 +58,9 @@ if os.environ.get("V3_TRAILING_PCT"):
 from strategy import add_features
 from phase0c_rrg_validation import fetch_sector_indices, fetch_sector_map, compute_rs_momentum
 from phase0d_multitimeframe_validation import attach_weekly_trend
+import bandarmology_features as bf
+from bandarmology_broker_profile import per_broker_daily, candidate_movers
+from diagnose_bandarmology_power import add_forward_returns as _bandar_add_forward_returns
 
 # strategy.get_regime flips BULLISH/BEARISH the instant close crosses ma50,
 # with zero buffer -- fine for V1 (untouched, never modified here), but a
@@ -237,6 +241,35 @@ LIQ_SIZING_MAX = float(os.environ.get("V3_LIQ_SIZING_MAX", "2.0"))
 TREND_SIZING_ENABLED = os.environ.get("V3_TREND_SIZING", "0") == "1"
 TREND_SIZING_MIN = float(os.environ.get("V3_TREND_SIZING_MIN", "0.5"))
 TREND_SIZING_MAX = float(os.environ.get("V3_TREND_SIZING_MAX", "1.5"))
+# Bandarmology V4 integration (docs/BANDARMOLOGY_DESIGN.md): scales entry
+# size by that day's broker-concentration reading -- one dominant broker's
+# share of total |net| across all brokers active in the stock that day.
+# Layer 1 (full 2023-2026-07-31 backtest, restricted to 2024+): top-vs-
+# bottom quantile spread cleared the bar (7/9, improves to 8/9 winsorized)
+# and survives a liquidity-quintile breakdown without concentrating in the
+# manipulation-risk illiquid tail -- the more trustworthy of the two
+# candidate features tested (net_flow_norm was fragile to winsorizing,
+# not wired in here). Same bounds as SCORE_SIZING (a secondary signal,
+# not V3's own score, gets the same conservative range rather than a
+# wider one). Off by default until validated across the full walk-forward
+# battery -- same discipline as every other multiplier here.
+BANDAR_SIZING_ENABLED = os.environ.get("V3_BANDAR_SIZING", "0") == "1"
+BANDAR_SIZING_MIN = float(os.environ.get("V3_BANDAR_SIZING_MIN", "0.5"))
+BANDAR_SIZING_MAX = float(os.environ.get("V3_BANDAR_SIZING_MAX", "2.0"))
+# Second, independent Bandarmology multiplier -- mover_pairs, not
+# concentration. Layer 1 (docs/BANDARMOLOGY_DESIGN.md, pair-level
+# forward-return check) found this the STRONGEST Bandarmology signal all
+# session: 9/9, biggest effect size of anything tested. Kept as its own
+# separate flag/multiplier (not merged into BANDAR_SIZING) so a future
+# walk-forward can isolate each feature's own contribution -- composing
+# them blindly would make it impossible to tell which one is doing the
+# work if the combination underperforms either alone. Off by default,
+# same discipline as everything else here -- and per explicit
+# instruction, not to be promoted/wired into live paper trading without
+# being asked.
+MOVER_SIZING_ENABLED = os.environ.get("V3_MOVER_SIZING", "0") == "1"
+MOVER_SIZING_MIN = float(os.environ.get("V3_MOVER_SIZING_MIN", "0.5"))
+MOVER_SIZING_MAX = float(os.environ.get("V3_MOVER_SIZING_MAX", "2.0"))
 # Alternative framing to score-weighted sizing (rejected -- see
 # V3_FINDINGS_LOG.md): instead of predicting at entry which signal will
 # be the outlier winner, add to a position only after it's already
@@ -446,6 +479,133 @@ HOLDTIME_MIN_CHECKPOINT = 3  # matches phase0f's MIN_CHECKPOINT_DAYS
 HOLDTIME_PROGRESS_THRESHOLD = 0.40  # matches phase0f's PROGRESS_THRESHOLD
 
 
+# DB2 (Bandarmology-only project) read-only anon key -- public/RLS-enforced,
+# safe to embed same as SUPABASE_ANON_KEY above (diagnose_bandarmology_power.py
+# already does this for DB1). Used ONLY as the live/CI fallback below when
+# local Parquet isn't available -- never written to.
+BANDAR_DB2_URL = "https://ptuvkgleurjcniznveye.supabase.co"
+BANDAR_DB2_ANON_KEY = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB0dXZrZ2xldXJqY25pem52ZXllIiwi"
+    "cm9sZSI6ImFub24iLCJpYXQiOjE3ODYyNjU2NzMsImV4cCI6MjEwMTg0MTY3M30.iJM0nucEMSVAgTcpdUBlDqkYlmV3I6NrFyuk3VAuFNo"
+)
+
+
+def _fetch_concentration_from_db2(stock_codes: list) -> pd.DataFrame:
+    """Live/CI fallback for attach_bandarmology() below -- one query per
+    stock (same anti-OFFSET-timeout pattern diagnose_bandarmology_power.py's
+    load_prices already proved out on the much bigger ihsg_eod table; each
+    stock's full history here is well under the 1000-row PostgREST page
+    cap, so no pagination is needed). bandarmology_flow_daily is refreshed
+    daily by n8n independently of the monthly mover/rotation/cluster
+    cadence -- see docs/BANDARMOLOGY_DESIGN.md's "two consumers" split.
+
+    `stock_codes` comes from the caller's own dataset (df["stock_code"].
+    unique()), not self-discovered from DB2 -- a first version tried
+    self-discovery via a plain SELECT stock_code and silently truncated
+    to PostgREST's default 1000-row cap (undistincted, so it grossly
+    undercounted the real ~900-stock universe). The caller already knows
+    the real universe; asking DB2 to re-derive it was redundant AND buggy."""
+    rows = []
+    for code in stock_codes:
+        r = requests.get(
+            f"{BANDAR_DB2_URL}/rest/v1/bandarmology_flow_daily",
+            params={"select": "trade_date,stock_code,concentration", "stock_code": f"eq.{code}"},
+            headers={"apikey": BANDAR_DB2_ANON_KEY, "Authorization": f"Bearer {BANDAR_DB2_ANON_KEY}"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        rows.extend(r.json())
+    df_conc = pd.DataFrame(rows)
+    df_conc["trade_date"] = pd.to_datetime(df_conc["trade_date"]).dt.date
+    df_conc["concentration"] = pd.to_numeric(df_conc["concentration"], errors="coerce")
+    return df_conc
+
+
+def attach_bandarmology(df: pd.DataFrame) -> pd.DataFrame:
+    """Merges `concentration` (broker-flow feature, see
+    docs/BANDARMOLOGY_DESIGN.md) in -- LOCAL Parquet first (the backtest's
+    own read path, exact source Layer 1 validated it on), DB2's
+    `bandarmology_flow_daily` second (the live/CI fallback, refreshed
+    daily by n8n -- this is what actually makes BANDAR_SIZING_ENABLED
+    real in `paper_signal_scan.py`/`paper_monitor.py`, which run in
+    GitHub Actions with no local Parquet at all). Only `concentration` --
+    the one feature that survived Layer 1 validation; `net_flow_norm` was
+    flagged fragile to winsorizing and isn't wired in.
+
+    If BOTH sources are unavailable (e.g. DB2 itself is down), degrades
+    to an all-NaN `concentration` column rather than crashing the whole
+    backtest/live run -- BANDAR_SIZING_ENABLED defaults off regardless,
+    so a missing column's only effect is bandar_mult staying neutral
+    (1.0), same as the flag being off. Never a hard dependency."""
+    try:
+        raw = bf.load_raw()
+        daily = bf.daily_stock_features(bf.per_broker_net(raw))
+        conc = daily[["trade_date", "stock_code", "concentration"]]
+        return df.merge(conc, on=["trade_date", "stock_code"], how="left")
+    except SystemExit as e:
+        print(f"[BANDARMOLOGY] local backfill not found ({e}) -- trying DB2 fallback...")
+    try:
+        conc = _fetch_concentration_from_db2(df["stock_code"].unique().tolist())
+        print(f"[BANDARMOLOGY] loaded {len(conc)} concentration rows from DB2 (live fallback).")
+        return df.merge(conc, on=["trade_date", "stock_code"], how="left")
+    except Exception as e:
+        print(f"[BANDARMOLOGY] DB2 fallback also failed ({e}) -- concentration left NaN, "
+              f"BANDAR_SIZING_ENABLED stays inert regardless of the flag.")
+        df["concentration"] = np.nan
+        return df
+
+
+def attach_mover_signal(df: pd.DataFrame) -> pd.DataFrame:
+    """Merges `mover_score` in: per (stock_code, trade_date), the count of
+    flagged mover_pairs brokers (bandarmology_broker_profile.py) acting
+    that day in the direction their OWN split-half correlation
+    historically predicted as positive. This is the strongest
+    Bandarmology signal found all session (9/9 on the Layer 1 pair-level
+    forward-return check, docs/BANDARMOLOGY_DESIGN.md -- bigger effect
+    size than `concentration`).
+
+    Reuses `df`'s own close_price/volume (already fetched from Supabase
+    for the backtest itself) to compute forward returns for candidate-
+    mover selection, instead of a second, slower per-stock Supabase
+    fetch (diagnose_bandarmology_power.load_prices does 928 sequential
+    queries -- redundant when this data already exists in memory).
+
+    Same local-Parquet-required, gracefully-degrades-to-neutral pattern
+    as attach_bandarmology: if unavailable, `mover_score` is left NaN
+    (not 0 -- 0 is a real "no qualifying activity today" value once data
+    IS available, NaN means "we don't know," and compute_entry_fill
+    must tell those apart, same as it already does for concentration)."""
+    try:
+        raw = bf.load_raw()
+        bandar_min_date = raw["trade_date"].min()
+        prices = df[["stock_code", "trade_date", "close_price", "volume"]].drop_duplicates(
+            subset=["stock_code", "trade_date"])
+        prices = _bandar_add_forward_returns(prices)
+        broker_daily = per_broker_daily(raw)
+        movers = candidate_movers(broker_daily, prices)
+        movers = movers[movers["candidate_mover"]].copy()
+        movers["predicted_sign"] = np.sign(movers["corr_first_half"] + movers["corr_second_half"])
+
+        broker_net = bf.per_broker_net(raw)[["trade_date", "stock_code", "broker_code", "net_lot"]]
+        merged = broker_net.merge(movers[["stock_code", "broker_code", "predicted_sign"]],
+                                   on=["stock_code", "broker_code"], how="inner")
+        event = merged[np.sign(merged["net_lot"]) == merged["predicted_sign"]]
+        mover_score = event.groupby(["stock_code", "trade_date"]).size().reset_index(name="mover_score")
+    except SystemExit as e:
+        print(f"[BANDARMOLOGY] local backfill not found ({e}) -- mover_score left NaN, "
+              f"MOVER_SIZING_ENABLED stays inert regardless of the flag.")
+        df["mover_score"] = np.nan
+        return df
+    df = df.merge(mover_score, on=["trade_date", "stock_code"], how="left")
+    # Beyond bandarmology's own coverage start, a genuine merge-miss means
+    # "no flagged mover acted today" (0), not "unknown" -- the pre-coverage
+    # stretch stays NaN so compute_entry_fill can tell "confirmed zero"
+    # apart from "we don't know."
+    has_bandar_coverage = df["trade_date"] >= bandar_min_date
+    df.loc[has_bandar_coverage, "mover_score"] = df.loc[has_bandar_coverage, "mover_score"].fillna(0)
+    return df
+
+
 def build_full_dataset(supabase):
     print("[FETCH] Downloading stock + index data ...")
     df, idx_df = data_fetch.fetch_data(supabase, FETCH_START, TEST_END, lookback_days=cfg.LOOKBACK_DAYS)
@@ -468,6 +628,12 @@ def build_full_dataset(supabase):
     # unconditionally keeps the dataset (and its pickle cache) identical
     # between sweep cells that differ only by V3_ARA_FILTER.
     df = attach_board_limit(df)
+
+    print("[FEATURE] Bandarmology concentration (local Parquet, see attach_bandarmology docstring) ...")
+    df = attach_bandarmology(df)
+
+    print("[FEATURE] Bandarmology mover_score (local Parquet, see attach_mover_signal docstring) ...")
+    df = attach_mover_signal(df)
 
     return df.sort_values(["stock_code", "trade_date"]).reset_index(drop=True), idx_df
 
@@ -615,6 +781,8 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
         "atr": sig["atr_14"], "avg_vol_20": float(sig["avg_vol_20"]), "trigger": "V3_regime_weekly_sector",
         "tp_target": float(sig["tp_target"]), "score": float(sig["score"]),
         "adtv_20": float(sig["adtv_20"]),
+        "concentration": float(sig["concentration"]) if pd.notna(sig.get("concentration")) else None,
+        "mover_score": float(sig["mover_score"]) if pd.notna(sig.get("mover_score")) else None,
     } for _, sig in ranked.iterrows()]
 
 
@@ -683,7 +851,8 @@ def score_full_universe(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: 
 
 def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: float,
                         log_adtv_p90: float, score_p90: float = 1.0, trend_strength: float = 0.0,
-                        trend_strength_p90: float = 1.0):
+                        trend_strength_p90: float = 1.0, concentration_p90: float = 1.0,
+                        mover_score_p90: float = 1.0):
     """Sizing + fee math for filling ONE queued candidate at its execution-day open price.
     Extracted so the live paper-trading monitor (src/paper_monitor.py) fills entries through
     the exact same sizing formulas as this backtest -- score_mult/liq_mult/trend_mult, the
@@ -709,7 +878,19 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
     size_mult = min(2.0, max(0.5, sig.get("score", score_p90) / score_p90)) if SCORE_SIZING_ENABLED else 1.0
     liq_mult = min(LIQ_SIZING_MAX, max(LIQ_SIZING_MIN, np.log(max(sig.get("adtv_20", 1.0), 1.0)) / log_adtv_p90)) if LIQ_SIZING_ENABLED else 1.0
     trend_mult = min(TREND_SIZING_MAX, max(TREND_SIZING_MIN, trend_strength / trend_strength_p90)) if TREND_SIZING_ENABLED else 1.0
-    alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult, cash)
+    concentration = sig.get("concentration")
+    has_concentration = concentration is not None and np.isfinite(concentration)
+    bandar_mult = (
+        min(BANDAR_SIZING_MAX, max(BANDAR_SIZING_MIN, concentration / concentration_p90))
+        if BANDAR_SIZING_ENABLED and has_concentration else 1.0
+    )
+    mover_score = sig.get("mover_score")
+    has_mover_score = mover_score is not None and np.isfinite(mover_score)
+    mover_mult = (
+        min(MOVER_SIZING_MAX, max(MOVER_SIZING_MIN, mover_score / mover_score_p90))
+        if MOVER_SIZING_ENABLED and has_mover_score else 1.0
+    )
+    alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult * bandar_mult * mover_mult, cash)
     # Participation estimated from the pre-slippage desired size (one-pass
     # approximation, not an iterative solver -- good enough given lots is
     # further capped by liq_lots below regardless of this estimate).
@@ -965,6 +1146,28 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     if not np.isfinite(trend_strength_p90) or trend_strength_p90 <= 0:
         trend_strength_p90 = TREND_STRENGTH_MIN
 
+    # Train-derived reference for Bandarmology-weighted sizing
+    # (BANDAR_SIZING_ENABLED below). `concentration` only exists from
+    # 2023-01-02 onward (the backfill's start) -- train windows starting
+    # in 2021 will have NaN concentration for their earliest years, which
+    # .dropna() + .quantile() below handle correctly (NaN train rows just
+    # don't contribute to the threshold, same as any other missing-data
+    # row would). Never touches test data.
+    train_concentration = train_liquid_bullish["concentration"].dropna()
+    concentration_p90 = train_concentration.quantile(0.90) if len(train_concentration) > 0 else 1.0
+    if not np.isfinite(concentration_p90) or concentration_p90 <= 0:
+        concentration_p90 = 1.0
+
+    # Train-derived reference for mover-score-weighted sizing
+    # (MOVER_SIZING_ENABLED below). mover_score is an integer count, so
+    # its 90th percentile among qualifying train days is typically small
+    # (often 1-2) -- that's expected, not a bug, given how few flagged
+    # movers exist per stock on average.
+    train_mover_score = train_liquid_bullish["mover_score"].dropna()
+    mover_score_p90 = train_mover_score.quantile(0.90) if len(train_mover_score) > 0 else 1.0
+    if not np.isfinite(mover_score_p90) or mover_score_p90 <= 0:
+        mover_score_p90 = 1.0
+
     trading_days = sorted(d for d in df["trade_date"].unique() if test_start <= d <= test_end)
     if not trading_days:
         print(f"{prefix}[SIMULATE] No trading days in range -- skipping.")
@@ -1043,6 +1246,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             fill = compute_entry_fill(
                 sig, entry_price, cash, prev_equity, log_adtv_p90, score_p90,
                 trend_strength_by_date.get(trade_date, 0.0), trend_strength_p90,
+                concentration_p90, mover_score_p90,
             )
             if fill is None:
                 continue
