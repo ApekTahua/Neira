@@ -1,0 +1,63 @@
+name: Paper Trading V4 -- Daily Signal Scan (trigger)
+
+# Third, independent, concurrent paper run alongside V3_PAPER and
+# V3.1_PAPER (see paper_signal_scan_trigger.yml for the
+# schedule-must-run-from-default-branch background). Same script, same
+# run-id-lookup mechanism (paper_common.py's get_paper_run_id) -- only
+# PAPER_VERSION and BANDAR_SIZING differ, so paper_signal_scan.py itself
+# needed zero forking. V4 = V3_PAPER's EXACT frozen config plus exactly
+# ONE change (BANDAR_SIZING_ENABLED=1, Bandarmology concentration-based
+# sizing) -- deliberately NOT combined with V3.1's filter changes, for
+# clean single-variable attribution. See docs/BANDARMOLOGY_DESIGN.md for
+# the full validation writeup.
+on:
+  schedule:
+    - cron: '10 11 * * 1-5'  # same slot as V3_PAPER/V3.1_PAPER -- both need today's fresh ihsg_eod
+  workflow_dispatch:
+
+# Own concurrency group -- independent run, disjoint run_id-scoped rows, no
+# reason to queue behind V3_PAPER/V3.1_PAPER's own scan/monitor cycle.
+concurrency:
+  group: paper-trading-engine-v4
+  cancel-in-progress: false
+
+jobs:
+  signal-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ambil kode dari repository
+        uses: actions/checkout@v4
+        with:
+          ref: worktree-v2-hmm-screener
+
+      - name: Pasang Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Library Pendukung
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Jalankan Paper Trading Signal Scan (V4)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+          PAPER_VERSION: V4_PAPER
+          V3_BANDAR_SIZING: '1'
+        run: python src/paper_signal_scan.py
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_USER_ID}" \
+            -d parse_mode="Markdown" \
+            -d text="🚨 *[V4_PAPER] Paper trading daily scan FAILED* — paper_signal_scan_v4_trigger.yml crashed on $(date -u +'%Y-%m-%d %H:%M UTC'). No signal scan ran today. Check the GitHub Actions log."
