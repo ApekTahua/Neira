@@ -348,7 +348,19 @@ def main():
         print(f"[SCOREBOARD] {len(scoreboard)} tickers scored for {today}")
 
     candidates = []
-    if regime_ok:
+    # V3.1_PAPER stops opening NEW positions from here forward (2026-08-14) --
+    # confirmed via real GitHub Actions run history that it was still firing
+    # daily, unchanged, alongside V3_PAPER and V4_PAPER (the original "why 3
+    # Telegram notifications" complaint was never actually fixed). This is
+    # NOT a retroactive edit to V3.1's own exit rules: everything above this
+    # line (stale-PENDING expiry, open-position exit checks) still runs
+    # exactly as before for V3.1's existing positions, same governance rule
+    # this project already enforces everywhere else -- a frozen run's
+    # already-open positions ride to their own natural exit, never mutated
+    # mid-flight. Only which engine gets NEW capital changes. New signals
+    # now come from V4_PAPER instead.
+    stop_new_entries = pc.PAPER_VERSION == "V3.1_PAPER"
+    if regime_ok and not stop_new_entries:
         # Both OPEN and PENDING count against MAX_POSITIONS -- a queued but
         # unfilled order still occupies a slot -- and both must be checked
         # per-ticker below too. Bug found 2026-08-05: the per-ticker dedup
