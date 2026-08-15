@@ -211,6 +211,13 @@ def main():
         pc.notify(msg)
 
     new_candidates_notes = []
+    # Tracks whether any position actually closed (fully or TP1-partially)
+    # today -- used below to quiet the routine EOD summary for a retired
+    # run (pc.RETIRED_PAPER_VERSIONS) on a day where nothing happened to its
+    # remaining open positions. EXPIRE/corp-action-guard messages above/below
+    # this loop already notify immediately on their own and are untouched --
+    # this only gates the final combined summary.
+    had_exit_today = False
     for row in open_positions:
         if row["entry_date"] == today.isoformat():
             continue  # filled today by paper_monitor.py -- don't exit-check same-day, matches backtest_v4.py's own guard
@@ -250,6 +257,7 @@ def main():
                     "trigger": row["trigger"], "hold_days": hold_days,
                 }
                 _close_position(supabase, run_id, row["id"], {"remaining_lots": 0}, trade_record)
+                had_exit_today = True
                 print(f"  [EOD-RECONCILE] {row['stock_code']}: DELISTED_GAP (no print for {no_data_days}d) pnl={pnl:+,.0f}")
             else:
                 # Retry-safe: both fields are Python-computed absolute values
@@ -278,6 +286,7 @@ def main():
 
         if trade_record is not None:
             _close_position(supabase, run_id, row["id"], pos, trade_record)
+            had_exit_today = True
             print(f"  [EOD-RECONCILE] {trade_record['stock_code']}: {trade_record['exit_reason']} "
                   f"pnl={trade_record['pnl']:+,.0f}")
             if trade_record["exit_reason"] == "TP1":
@@ -373,18 +382,22 @@ def main():
         print(f"[SCOREBOARD] {len(scoreboard)} tickers scored for {today}")
 
     candidates = []
-    # V3.1_PAPER stops opening NEW positions from here forward (2026-08-14) --
-    # confirmed via real GitHub Actions run history that it was still firing
-    # daily, unchanged, alongside V3_PAPER and V4_PAPER (the original "why 3
-    # Telegram notifications" complaint was never actually fixed). This is
-    # NOT a retroactive edit to V3.1's own exit rules: everything above this
-    # line (stale-PENDING expiry, open-position exit checks) still runs
-    # exactly as before for V3.1's existing positions, same governance rule
-    # this project already enforces everywhere else -- a frozen run's
-    # already-open positions ride to their own natural exit, never mutated
-    # mid-flight. Only which engine gets NEW capital changes. New signals
-    # now come from V4_PAPER instead.
-    stop_new_entries = pc.PAPER_VERSION == "V3.1_PAPER"
+    # V3.1_PAPER stopped opening NEW positions 2026-08-14, and V3_PAPER got
+    # the same treatment 2026-08-15 (user: "Retire beneran, V4 doang" --
+    # confused why V3/V3.1 both still existed when V4 alone was enough).
+    # Confirmed via real GitHub Actions run history that V3_PAPER was still
+    # firing daily, unchanged, alongside V3.1_PAPER and V4_PAPER (the
+    # original "why 3 Telegram notifications" complaint was never actually
+    # fixed). This is NOT a retroactive edit to either run's own exit rules:
+    # everything above this line (stale-PENDING expiry, open-position exit
+    # checks) still runs exactly as before for their existing positions,
+    # same governance rule this project already enforces everywhere else --
+    # a frozen run's already-open positions ride to their own natural exit,
+    # never mutated mid-flight. Only which engine gets NEW capital changes.
+    # New signals now come from V4_PAPER alone -- see
+    # paper_common.RETIRED_PAPER_VERSIONS (single source of truth, in case
+    # a future script besides this one ever needs the same check).
+    stop_new_entries = pc.PAPER_VERSION in pc.RETIRED_PAPER_VERSIONS
     if regime_ok and not stop_new_entries:
         # Both OPEN and PENDING count against MAX_POSITIONS -- a queued but
         # unfilled order still occupies a slot -- and both must be checked
@@ -521,7 +534,16 @@ def main():
     ]
     if new_candidates_notes:
         lines.append("New candidates queued for tomorrow's open: " + ", ".join(new_candidates_notes))
-    pc.notify("\n".join(lines))
+    # A retired run (pc.RETIRED_PAPER_VERSIONS) never has new_candidates_notes
+    # (stop_new_entries gates that above) -- so on a day where none of its
+    # remaining open positions exited either, this EOD summary is pure
+    # routine noise (same equity/open-count restated, nothing changed).
+    # Skip it; EXPIRE/corp-action-guard messages above still fire immediately
+    # on their own since those are real events, not routine completions.
+    if stop_new_entries and not had_exit_today:
+        print("[EOD] Retired run, no exit today -- skipping routine Telegram summary.")
+    else:
+        pc.notify("\n".join(lines))
 
 
 if __name__ == "__main__":

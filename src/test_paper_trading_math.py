@@ -285,6 +285,18 @@ def test_score_full_universe():
     print("[OK] test_score_full_universe")
 
 
+def test_retired_paper_versions():
+    # V3_PAPER (retired 2026-08-15) and V3.1_PAPER (retired 2026-08-14) both
+    # stop new-entry generation (paper_signal_scan.py's stop_new_entries
+    # gate); V4_PAPER is the sole remaining source of new capital and must
+    # stay out of this set, or it would silently stop trading too.
+    assert "V3_PAPER" in pc.RETIRED_PAPER_VERSIONS
+    assert "V3.1_PAPER" in pc.RETIRED_PAPER_VERSIONS
+    assert "V4_PAPER" not in pc.RETIRED_PAPER_VERSIONS
+    assert pc.PRIMARY_PAPER_VERSION == "V4_PAPER"
+    print("[OK] test_retired_paper_versions")
+
+
 def test_looks_like_unadjusted_corporate_action():
     # Real confirmed splits from ihsg_eod (2026-08-02 scan) -- must all trip.
     assert pc.looks_like_unadjusted_corporate_action(67000, 3120)   # DSSA, ~1:21
@@ -315,5 +327,6 @@ if __name__ == "__main__":
     test_compute_drawdown_and_cvar()
     test_score_candidates()
     test_score_full_universe()
+    test_retired_paper_versions()
     test_looks_like_unadjusted_corporate_action()
     print("\nAll paper-trading math checks passed.")

@@ -25,6 +25,19 @@ from db_retry import retry as _retry
 
 PAPER_VERSION = os.environ.get("PAPER_VERSION", "V3_PAPER")
 
+# Single source of truth for "this run stopped taking new capital" -- used by
+# paper_signal_scan.py's stop_new_entries gate. V3_PAPER retired 2026-08-15
+# (same treatment V3.1_PAPER got 2026-08-14): user explicitly chose "retire
+# beneran, V4 doang" over keeping V3_PAPER as a quiet comparison baseline.
+# V4_PAPER is now the sole source of new entries -- see docs/V3_FINDINGS_LOG.md.
+RETIRED_PAPER_VERSIONS = ("V3_PAPER", "V3.1_PAPER")
+
+# V4_PAPER is now the implicit-default/primary run (V3_PAPER held that role
+# originally, back when it was the only run). notify() below leaves this
+# version's own messages untagged; every other concurrent run gets a
+# [PAPER_VERSION] prefix so a shared Telegram chat stays distinguishable.
+PRIMARY_PAPER_VERSION = "V4_PAPER"
+
 # Real broker fee structure reported by the user, on top of config.py's
 # existing percentage BUY_FEE/SELL_FEE (0.18% / 0.28%) -- a flat surcharge
 # on any single buy transaction over Rp10,000,000. Paper-trading-specific:
@@ -145,16 +158,22 @@ TELEGRAM_API = "https://api.telegram.org/bot"
 def notify(text: str) -> None:
     """Same requests-based Telegram pattern as src/notifier.py, kept as
     an independent copy since notifier.py is a frozen V1 live file.
-    Tags the message with PAPER_VERSION when it isn't the original V3_PAPER
-    run, so two concurrent runs sharing one Telegram chat stay distinguishable
-    -- V3_PAPER's own messages are left byte-identical (no tag) since that
-    run is frozen and this is purely cosmetic, not a config change."""
+    Tags the message with PAPER_VERSION when it isn't PRIMARY_PAPER_VERSION,
+    so concurrent runs sharing one Telegram chat stay distinguishable --
+    all 3 runs (V3_PAPER/V3.1_PAPER/V4_PAPER) post to the SAME bot+chat
+    (confirmed 2026-08-15: every trigger workflow on main references the
+    identical secrets.TELEGRAM_BOT_TOKEN/secrets.TELEGRAM_USER_ID secret
+    names, no per-workflow `environment:` scoping), so this tag -- not a
+    separate chat -- is the only thing that ever distinguished them.
+    PRIMARY_PAPER_VERSION moved from V3_PAPER to V4_PAPER 2026-08-15 when
+    V3_PAPER was retired (same reason V3.1_PAPER's messages already carried
+    a tag): purely cosmetic re-tagging, not a config change."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_USER_ID")
     if not token or not chat_id:
         print("WARNING: TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID not set.")
         return
-    if PAPER_VERSION != "V3_PAPER":
+    if PAPER_VERSION != PRIMARY_PAPER_VERSION:
         text = f"[{PAPER_VERSION}] {text}"
     url = f"{TELEGRAM_API}{token}/sendMessage"
     try:
