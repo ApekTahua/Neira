@@ -270,6 +270,24 @@ BANDAR_SIZING_MAX = float(os.environ.get("V3_BANDAR_SIZING_MAX", "2.0"))
 MOVER_SIZING_ENABLED = os.environ.get("V3_MOVER_SIZING", "0") == "1"
 MOVER_SIZING_MIN = float(os.environ.get("V3_MOVER_SIZING_MIN", "0.5"))
 MOVER_SIZING_MAX = float(os.environ.get("V3_MOVER_SIZING_MAX", "2.0"))
+# Third, independent Bandarmology multiplier -- SIGNED, magnitude-weighted
+# accumulation/distribution classifier (docs/BANDARMOLOGY_DESIGN.md,
+# "Directional Big/Small Accumulation/Distribution classifier"). Gap found
+# in mover_score above: its event condition (sign(net_lot) == predicted_sign)
+# fires identically for a bearish-predicting broker net-SELLING as for a
+# bullish-predicting broker net-BUYING -- both increment the same unsigned
+# count, so mover_score conflates Accumulation-predicting and Distribution-
+# predicting activity into one number, not a directional read. accdist_score
+# (attach_accdist_signal below) keeps predicted_sign and weights each event
+# by its own net_val (Rupiah) magnitude instead of counting brokers -- also
+# addresses the small-integer bimodal-count discontinuity documented for
+# MOVER_SIZING_ENABLED's own walk-forward result. Own separate flag/
+# multiplier, not merged into BANDAR_SIZING or MOVER_SIZING, same per-
+# feature isolation discipline as both -- off by default, unvalidated until
+# its own walk-forward runs.
+ACCDIST_SIZING_ENABLED = os.environ.get("V3_ACCDIST_SIZING", "0") == "1"
+ACCDIST_SIZING_MIN = float(os.environ.get("V3_ACCDIST_SIZING_MIN", "0.5"))
+ACCDIST_SIZING_MAX = float(os.environ.get("V3_ACCDIST_SIZING_MAX", "2.0"))
 # Alternative framing to score-weighted sizing (rejected -- see
 # V3_FINDINGS_LOG.md): instead of predicting at entry which signal will
 # be the outlier winner, add to a position only after it's already
@@ -606,6 +624,63 @@ def attach_mover_signal(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _accdist_aggregate(broker_net: pd.DataFrame, movers: pd.DataFrame) -> pd.DataFrame:
+    """Core aggregation step for attach_accdist_signal(), split out so it's
+    testable without a live Parquet/Supabase fetch (see
+    src/test_accdist_signal.py). `broker_net` needs trade_date/stock_code/
+    broker_code/net_lot/net_val; `movers` needs stock_code/broker_code/
+    predicted_sign (already filtered to candidate_mover==True by the
+    caller). Per (stock_code, trade_date):
+
+        accdist_score = sum(predicted_sign * |net_val|)
+
+    over broker-days where sign(net_lot) == predicted_sign -- the SAME
+    qualifying event attach_mover_signal() counts unsigned. Signed and
+    magnitude-weighted instead of an unsigned count: positive = net
+    Accumulation-predicting Rupiah activity that stock-day, negative = net
+    Distribution-predicting."""
+    merged = broker_net.merge(movers[["stock_code", "broker_code", "predicted_sign"]],
+                               on=["stock_code", "broker_code"], how="inner")
+    event = merged[np.sign(merged["net_lot"]) == merged["predicted_sign"]].copy()
+    event["signed_contribution"] = event["predicted_sign"] * event["net_val"].abs()
+    return (event.groupby(["stock_code", "trade_date"])["signed_contribution"]
+            .sum().reset_index(name="accdist_score"))
+
+
+def attach_accdist_signal(df: pd.DataFrame) -> pd.DataFrame:
+    """Merges `accdist_score` in -- reuses attach_mover_signal()'s exact
+    candidate-mover detection (per_broker_daily/candidate_movers/
+    _bandar_add_forward_returns, same predicted_sign derivation), only the
+    aggregation step differs (see _accdist_aggregate above). Same
+    graceful-degrade-to-NaN pattern as attach_bandarmology/
+    attach_mover_signal if the local Parquet backfill isn't available, and
+    the same NaN-vs-0 semantics: pre-coverage dates stay NaN, a genuine
+    merge-miss on/after bandarmology's coverage start is a real 0
+    (confirmed no qualifying activity that day), not "unknown"."""
+    try:
+        raw = bf.load_raw()
+        bandar_min_date = raw["trade_date"].min()
+        prices = df[["stock_code", "trade_date", "close_price", "volume"]].drop_duplicates(
+            subset=["stock_code", "trade_date"])
+        prices = _bandar_add_forward_returns(prices)
+        broker_daily = per_broker_daily(raw)
+        movers = candidate_movers(broker_daily, prices)
+        movers = movers[movers["candidate_mover"]].copy()
+        movers["predicted_sign"] = np.sign(movers["corr_first_half"] + movers["corr_second_half"])
+
+        broker_net = bf.per_broker_net(raw)[["trade_date", "stock_code", "broker_code", "net_lot", "net_val"]]
+        accdist_score = _accdist_aggregate(broker_net, movers)
+    except SystemExit as e:
+        print(f"[BANDARMOLOGY] local backfill not found ({e}) -- accdist_score left NaN, "
+              f"ACCDIST_SIZING_ENABLED stays inert regardless of the flag.")
+        df["accdist_score"] = np.nan
+        return df
+    df = df.merge(accdist_score, on=["trade_date", "stock_code"], how="left")
+    has_bandar_coverage = df["trade_date"] >= bandar_min_date
+    df.loc[has_bandar_coverage, "accdist_score"] = df.loc[has_bandar_coverage, "accdist_score"].fillna(0)
+    return df
+
+
 def build_full_dataset(supabase):
     print("[FETCH] Downloading stock + index data ...")
     df, idx_df = data_fetch.fetch_data(supabase, FETCH_START, TEST_END, lookback_days=cfg.LOOKBACK_DAYS)
@@ -634,6 +709,9 @@ def build_full_dataset(supabase):
 
     print("[FEATURE] Bandarmology mover_score (local Parquet, see attach_mover_signal docstring) ...")
     df = attach_mover_signal(df)
+
+    print("[FEATURE] Bandarmology accdist_score (local Parquet, see attach_accdist_signal docstring) ...")
+    df = attach_accdist_signal(df)
 
     return df.sort_values(["stock_code", "trade_date"]).reset_index(drop=True), idx_df
 
@@ -783,6 +861,7 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
         "adtv_20": float(sig["adtv_20"]),
         "concentration": float(sig["concentration"]) if pd.notna(sig.get("concentration")) else None,
         "mover_score": float(sig["mover_score"]) if pd.notna(sig.get("mover_score")) else None,
+        "accdist_score": float(sig["accdist_score"]) if pd.notna(sig.get("accdist_score")) else None,
     } for _, sig in ranked.iterrows()]
 
 
@@ -852,7 +931,7 @@ def score_full_universe(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: 
 def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: float,
                         log_adtv_p90: float, score_p90: float = 1.0, trend_strength: float = 0.0,
                         trend_strength_p90: float = 1.0, concentration_p90: float = 1.0,
-                        mover_score_p90: float = 1.0):
+                        mover_score_p90: float = 1.0, accdist_score_p90: float = 1.0):
     """Sizing + fee math for filling ONE queued candidate at its execution-day open price.
     Extracted so the live paper-trading monitor (src/paper_monitor.py) fills entries through
     the exact same sizing formulas as this backtest -- score_mult/liq_mult/trend_mult, the
@@ -890,7 +969,19 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
         min(MOVER_SIZING_MAX, max(MOVER_SIZING_MIN, mover_score / mover_score_p90))
         if MOVER_SIZING_ENABLED and has_mover_score else 1.0
     )
-    alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult * bandar_mult * mover_mult, cash)
+    accdist_score = sig.get("accdist_score")
+    has_accdist_score = accdist_score is not None and np.isfinite(accdist_score)
+    # SIGNED input (unlike concentration/mover_score, both >=0): a train day
+    # dominated by Distribution-predicting activity divides out negative and
+    # clips straight to the MIN bound, a strongly Accumulation-predicting day
+    # scales up toward MAX -- the ratio-and-clip formula is identical to
+    # bandar_mult/mover_mult, it's accdist_score's own sign that makes the
+    # result directional.
+    accdist_mult = (
+        min(ACCDIST_SIZING_MAX, max(ACCDIST_SIZING_MIN, accdist_score / accdist_score_p90))
+        if ACCDIST_SIZING_ENABLED and has_accdist_score else 1.0
+    )
+    alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult * bandar_mult * mover_mult * accdist_mult, cash)
     # Participation estimated from the pre-slippage desired size (one-pass
     # approximation, not an iterative solver -- good enough given lots is
     # further capped by liq_lots below regardless of this estimate).
@@ -1168,6 +1259,18 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     if not np.isfinite(mover_score_p90) or mover_score_p90 <= 0:
         mover_score_p90 = 1.0
 
+    # Train-derived reference for accdist-score-weighted sizing
+    # (ACCDIST_SIZING_ENABLED below). accdist_score is SIGNED (Rupiah-
+    # magnitude net Accumulation-minus-Distribution activity among flagged
+    # movers), unlike concentration/mover_score (both >=0) -- p90 is still
+    # the upper-tail reference (a day of strong Accumulation-predicting
+    # activity), same <=0 fallback as the other two references for
+    # robustness if the train population is thin/degenerate.
+    train_accdist = train_liquid_bullish["accdist_score"].dropna()
+    accdist_score_p90 = train_accdist.quantile(0.90) if len(train_accdist) > 0 else 1.0
+    if not np.isfinite(accdist_score_p90) or accdist_score_p90 <= 0:
+        accdist_score_p90 = 1.0
+
     trading_days = sorted(d for d in df["trade_date"].unique() if test_start <= d <= test_end)
     if not trading_days:
         print(f"{prefix}[SIMULATE] No trading days in range -- skipping.")
@@ -1246,7 +1349,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             fill = compute_entry_fill(
                 sig, entry_price, cash, prev_equity, log_adtv_p90, score_p90,
                 trend_strength_by_date.get(trade_date, 0.0), trend_strength_p90,
-                concentration_p90, mover_score_p90,
+                concentration_p90, mover_score_p90, accdist_score_p90,
             )
             if fill is None:
                 continue
