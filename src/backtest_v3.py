@@ -61,6 +61,10 @@ from phase0d_multitimeframe_validation import attach_weekly_trend
 import bandarmology_features as bf
 from bandarmology_broker_profile import per_broker_daily, candidate_movers
 from diagnose_bandarmology_power import add_forward_returns as _bandar_add_forward_returns
+# NOTE: bandarmology_rotation_detector.find_rotation_pairs() is deliberately
+# NOT imported/called here -- see _fetch_rotation_pairs_from_db2's docstring
+# below for why (measured: its own O(k^2) pure-Python pair-counting loop did
+# not finish in 65+ minutes against the current local backfill).
 
 # strategy.get_regime flips BULLISH/BEARISH the instant close crosses ma50,
 # with zero buffer -- fine for V1 (untouched, never modified here), but a
@@ -288,6 +292,27 @@ MOVER_SIZING_MAX = float(os.environ.get("V3_MOVER_SIZING_MAX", "2.0"))
 ACCDIST_SIZING_ENABLED = os.environ.get("V3_ACCDIST_SIZING", "0") == "1"
 ACCDIST_SIZING_MIN = float(os.environ.get("V3_ACCDIST_SIZING_MIN", "0.5"))
 ACCDIST_SIZING_MAX = float(os.environ.get("V3_ACCDIST_SIZING_MAX", "2.0"))
+# Fourth, independent Bandarmology multiplier -- rotation_pairs (the
+# recurring opposite-side broker-pair "tuker barang" pattern,
+# bandarmology_rotation_detector.py), not concentration/mover_score/
+# accdist_score. Layer 1 (docs/BANDARMOLOGY_DESIGN.md, "Pair-level Layer 1")
+# found rotation_pairs passes 9/9 with no reversal -- same clean pass as
+# mover_pairs, smaller effect size. Event definition tested: both brokers of
+# a flagged pair active on OPPOSITE sides that day (satisfies the pattern the
+# pair was flagged for). UNSIGNED BY DESIGN, unlike accdist_score: a rotation
+# pair has no predicted_sign the way a candidate mover does -- broker_a/
+# broker_b are stored symmetrically (find_rotation_pairs sorts them
+# alphabetically) and which one buys vs sells on any given day is not part of
+# what got flagged or what Layer 1 tested. rotation_score is a magnitude/
+# participation read ("how much flagged rotation activity is happening in
+# this stock today"), not a directional accumulation/distribution call --
+# see attach_rotation_signal's docstring for the full rationale. Own
+# separate flag/multiplier, not merged into BANDAR_SIZING/MOVER_SIZING/
+# ACCDIST_SIZING, same per-feature isolation discipline as all three -- off
+# by default, unvalidated until its own walk-forward runs.
+ROTATION_SIZING_ENABLED = os.environ.get("V3_ROTATION_SIZING", "0") == "1"
+ROTATION_SIZING_MIN = float(os.environ.get("V3_ROTATION_SIZING_MIN", "0.5"))
+ROTATION_SIZING_MAX = float(os.environ.get("V3_ROTATION_SIZING_MAX", "2.0"))
 # Alternative framing to score-weighted sizing (rejected -- see
 # V3_FINDINGS_LOG.md): instead of predicting at entry which signal will
 # be the outlier winner, add to a position only after it's already
@@ -539,6 +564,51 @@ def _fetch_concentration_from_db2(stock_codes: list) -> pd.DataFrame:
     return df_conc
 
 
+def _fetch_rotation_pairs_from_db2() -> pd.DataFrame:
+    """Sources the flagged rotation_pairs candidate set for
+    attach_rotation_signal() below -- from DB2's already-computed
+    `bandarmology_rotation_pairs` table, NOT by calling
+    bandarmology_rotation_detector.find_rotation_pairs() against the local
+    Parquet backfill in-process the way attach_mover_signal/
+    attach_accdist_signal call candidate_movers(). Real, measured reason:
+    find_rotation_pairs' per-(stock,day) step is a pure-Python O(k^2)
+    nested loop over that day's active broker codes (k up to ~90 for the
+    most liquid names) run across every (stock_code, trade_date) group in
+    the raw broker data -- against the CURRENT local backfill (extended to
+    2020-06-02, six full years, see docs/BANDARMOLOGY_DESIGN.md's
+    2026-08-15 "side-finding") this did not finish in 65+ minutes of wall
+    time and was killed; it was fast enough on the smaller 2023-2026 slice
+    the detector script's own prior runs used (see that script's docstring),
+    just doesn't scale to the now-larger history. `bandarmology_rotation_pairs`
+    is exactly the kind of artifact docs/BANDARMOLOGY_DESIGN.md already
+    describes as safe to source this way: a slow-moving, monthly-refreshed
+    structural table (`bandarmology_push_movers_rotation.py`, "refresh
+    MONTHLY, not daily... mover/rotation/cluster patterns are slow-moving,
+    broker behavioral relationships don't flip day to day"), not something
+    that needs to be recomputed fresh for every backtest run. Only the
+    PAIR-LEVEL flags come from DB2 -- the actual per-day EVENT data (which
+    stock-days saw opposite-side activity between a flagged pair) is still
+    computed entirely from the local Parquet broker_net in
+    attach_rotation_signal, same as its siblings. Paginated (PostgREST's
+    1000-row default page cap; ~4,400 rows needs 5 pages)."""
+    rows = []
+    offset, page = 0, 1000
+    while True:
+        r = requests.get(
+            f"{BANDAR_DB2_URL}/rest/v1/bandarmology_rotation_pairs",
+            params={"select": "stock_code,broker_a,broker_b", "offset": offset, "limit": page},
+            headers={"apikey": BANDAR_DB2_ANON_KEY, "Authorization": f"Bearer {BANDAR_DB2_ANON_KEY}"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        batch = r.json()
+        rows.extend(batch)
+        if len(batch) < page:
+            break
+        offset += page
+    return pd.DataFrame(rows, columns=["stock_code", "broker_a", "broker_b"])
+
+
 def attach_bandarmology(df: pd.DataFrame) -> pd.DataFrame:
     """Merges `concentration` (broker-flow feature, see
     docs/BANDARMOLOGY_DESIGN.md) in -- LOCAL Parquet first (the backtest's
@@ -703,6 +773,130 @@ def attach_accdist_signal(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _rotation_aggregate(broker_net: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:
+    """Core aggregation step for attach_rotation_signal(), split out so it's
+    testable without a live Parquet/Supabase fetch (see
+    src/test_rotation_signal.py). `broker_net` needs trade_date/stock_code/
+    broker_code/net_lot/net_val; `pairs` needs stock_code/broker_a/broker_b
+    (bandarmology_rotation_detector.find_rotation_pairs' own output columns).
+    Per (stock_code, trade_date):
+
+        rotation_score = sum(min(|net_val_a|, |net_val_b|))
+
+    over every flagged pair active on OPPOSITE sides that stock-day
+    (sign(net_lot_a) != sign(net_lot_b)) -- the SAME event definition the
+    Layer 1 pair-level check validated 9/9 (docs/BANDARMOLOGY_DESIGN.md:
+    "ROTATION pairs: event day = both brokers in a flagged pair active on
+    OPPOSITE sides that day"). The overlap magnitude (min of the two sides'
+    |net_val|, in Rupiah -- same shape as find_rotation_pairs' own
+    total_overlap_lot, just in value terms and per-day instead of summed
+    over all history) is how much of one side's net position the other
+    side's net position could plausibly have absorbed that day, summed
+    across every flagged pair active for that stock.
+
+    UNSIGNED by construction, unlike accdist_score: a rotation pair carries
+    no predicted_sign the way a candidate mover does -- broker_a/broker_b
+    are stored symmetrically (sorted alphabetically) and the Layer 1 event
+    test itself didn't care which side was buying, only that the opposite-
+    side pattern fired. Treating this as directional (predicted_sign-style)
+    would be inventing a signal the underlying detector and its own
+    validation don't support -- see attach_rotation_signal's docstring."""
+    if pairs.empty:
+        return pd.DataFrame(columns=["stock_code", "trade_date", "rotation_score"])
+    pairs = pairs[["stock_code", "broker_a", "broker_b"]].reset_index(drop=True)
+    pairs["pair_id"] = pairs.index
+
+    # Matches find_rotation_pairs' own net_lot != 0 filter -- a broker with
+    # zero net that day isn't really "active on a side."
+    net = broker_net[broker_net["net_lot"] != 0][
+        ["trade_date", "stock_code", "broker_code", "net_lot", "net_val"]]
+
+    side_a = pairs.merge(net, left_on=["stock_code", "broker_a"], right_on=["stock_code", "broker_code"])
+    side_a = side_a.rename(columns={"net_lot": "net_lot_a", "net_val": "net_val_a"})
+    side_b = pairs.merge(net, left_on=["stock_code", "broker_b"], right_on=["stock_code", "broker_code"])
+    side_b = side_b.rename(columns={"net_lot": "net_lot_b", "net_val": "net_val_b"})
+
+    both = side_a[["pair_id", "stock_code", "trade_date", "net_lot_a", "net_val_a"]].merge(
+        side_b[["pair_id", "stock_code", "trade_date", "net_lot_b", "net_val_b"]],
+        on=["pair_id", "stock_code", "trade_date"])
+    event = both[np.sign(both["net_lot_a"]) != np.sign(both["net_lot_b"])].copy()
+    event["overlap_value"] = np.minimum(event["net_val_a"].abs(), event["net_val_b"].abs())
+    return (event.groupby(["stock_code", "trade_date"])["overlap_value"]
+            .sum().reset_index(name="rotation_score"))
+
+
+def _rotation_score_p90(train_rotation: pd.Series) -> float:
+    """Train-derived upper-tail reference scale for ROTATION_SIZING_ENABLED's
+    rotation_mult (see simulate_window). Applying the accdist_score lesson
+    proactively (docs/BANDARMOLOGY_DESIGN.md's 2026-08-15 correction) instead
+    of rediscovering it: rotation_score requires a real intersection (a
+    stock-day where a FLAGGED pair happens to be active on opposite sides),
+    a narrow condition, so it is expected to be sparse/mostly-zero from the
+    start -- a plain quantile(0.90) over the full population would land at
+    or near 0.0 and trip the degenerate <=0 fallback far more than the
+    "genuinely no signal" case it's meant for. Fix (same shape as
+    _accdist_score_p90, unsigned here since rotation_score is already >=0 by
+    construction): restrict to days an event actually occurred (nonzero)
+    before taking the reference quantile. Split out here so it's directly
+    unit-testable (see src/test_rotation_signal.py)."""
+    nonzero = train_rotation.dropna()
+    nonzero = nonzero[nonzero != 0]
+    p90 = nonzero.quantile(0.90) if len(nonzero) > 0 else 1.0
+    if not np.isfinite(p90) or p90 <= 0:
+        p90 = 1.0
+    return p90
+
+
+def attach_rotation_signal(df: pd.DataFrame) -> pd.DataFrame:
+    """Merges `rotation_score` in -- the flagged pair candidates come from
+    DB2's `bandarmology_rotation_pairs` (see _fetch_rotation_pairs_from_db2's
+    docstring for why this is sourced differently from
+    attach_mover_signal/attach_accdist_signal's local
+    find_rotation_pairs()-would-be-too-slow situation), the same lift-ratio-
+    flagged opposite-side pair candidates already Layer-1-validated 9/9 on
+    the pair-level forward-return check (docs/BANDARMOLOGY_DESIGN.md). The
+    per-day EVENT data (which stock-days actually saw opposite-side activity
+    between a flagged pair) still comes entirely from the local Parquet
+    broker_net, same as every other Bandarmology signal here -- only the
+    slow-moving pair-flagging step is sourced externally.
+
+    Same graceful-degrade-to-NaN pattern as attach_bandarmology/
+    attach_mover_signal/attach_accdist_signal if EITHER source is
+    unavailable (DB2 unreachable, or local Parquet backfill missing), and
+    the same NaN-vs-0 semantics: pre-coverage dates stay NaN, a genuine
+    merge-miss on/after bandarmology's coverage start is a real 0
+    (confirmed no qualifying rotation activity that stock-day), not
+    "unknown".
+
+    Deliberately UNSIGNED -- see _rotation_aggregate's docstring for why
+    this differs from accdist_score's signed design: rotation_pairs measures
+    a recurring opposite-side RELATIONSHIP between two brokers ("tuker
+    barang" -- internal churn/repositioning), not either broker's own
+    directional conviction, and neither the detector nor the Layer 1
+    validation attaches a predicted market direction to it."""
+    try:
+        pairs = _fetch_rotation_pairs_from_db2()
+    except Exception as e:
+        print(f"[BANDARMOLOGY] DB2 rotation_pairs fetch failed ({e}) -- rotation_score left NaN, "
+              f"ROTATION_SIZING_ENABLED stays inert regardless of the flag.")
+        df["rotation_score"] = np.nan
+        return df
+    try:
+        raw = bf.load_raw()
+        bandar_min_date = raw["trade_date"].min()
+        broker_net = bf.per_broker_net(raw)[["trade_date", "stock_code", "broker_code", "net_lot", "net_val"]]
+        rotation_score = _rotation_aggregate(broker_net, pairs)
+    except SystemExit as e:
+        print(f"[BANDARMOLOGY] local backfill not found ({e}) -- rotation_score left NaN, "
+              f"ROTATION_SIZING_ENABLED stays inert regardless of the flag.")
+        df["rotation_score"] = np.nan
+        return df
+    df = df.merge(rotation_score, on=["trade_date", "stock_code"], how="left")
+    has_bandar_coverage = df["trade_date"] >= bandar_min_date
+    df.loc[has_bandar_coverage, "rotation_score"] = df.loc[has_bandar_coverage, "rotation_score"].fillna(0)
+    return df
+
+
 def build_full_dataset(supabase):
     print("[FETCH] Downloading stock + index data ...")
     df, idx_df = data_fetch.fetch_data(supabase, FETCH_START, TEST_END, lookback_days=cfg.LOOKBACK_DAYS)
@@ -734,6 +928,9 @@ def build_full_dataset(supabase):
 
     print("[FEATURE] Bandarmology accdist_score (local Parquet, see attach_accdist_signal docstring) ...")
     df = attach_accdist_signal(df)
+
+    print("[FEATURE] Bandarmology rotation_score (DB2 pairs + local Parquet events, see attach_rotation_signal docstring) ...")
+    df = attach_rotation_signal(df)
 
     return df.sort_values(["stock_code", "trade_date"]).reset_index(drop=True), idx_df
 
@@ -884,6 +1081,7 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
         "concentration": float(sig["concentration"]) if pd.notna(sig.get("concentration")) else None,
         "mover_score": float(sig["mover_score"]) if pd.notna(sig.get("mover_score")) else None,
         "accdist_score": float(sig["accdist_score"]) if pd.notna(sig.get("accdist_score")) else None,
+        "rotation_score": float(sig["rotation_score"]) if pd.notna(sig.get("rotation_score")) else None,
     } for _, sig in ranked.iterrows()]
 
 
@@ -953,7 +1151,8 @@ def score_full_universe(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: 
 def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: float,
                         log_adtv_p90: float, score_p90: float = 1.0, trend_strength: float = 0.0,
                         trend_strength_p90: float = 1.0, concentration_p90: float = 1.0,
-                        mover_score_p90: float = 1.0, accdist_score_p90: float = 1.0):
+                        mover_score_p90: float = 1.0, accdist_score_p90: float = 1.0,
+                        rotation_score_p90: float = 1.0):
     """Sizing + fee math for filling ONE queued candidate at its execution-day open price.
     Extracted so the live paper-trading monitor (src/paper_monitor.py) fills entries through
     the exact same sizing formulas as this backtest -- score_mult/liq_mult/trend_mult, the
@@ -1003,7 +1202,17 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
         min(ACCDIST_SIZING_MAX, max(ACCDIST_SIZING_MIN, accdist_score / accdist_score_p90))
         if ACCDIST_SIZING_ENABLED and has_accdist_score else 1.0
     )
-    alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult * bandar_mult * mover_mult * accdist_mult, cash)
+    rotation_score = sig.get("rotation_score")
+    has_rotation_score = rotation_score is not None and np.isfinite(rotation_score)
+    # UNSIGNED input (like concentration/mover_score, not accdist_score) --
+    # rotation_score is always >=0 by construction (see _rotation_aggregate),
+    # so this ratio-and-clip formula has no directional read built in, same
+    # shape as bandar_mult/mover_mult.
+    rotation_mult = (
+        min(ROTATION_SIZING_MAX, max(ROTATION_SIZING_MIN, rotation_score / rotation_score_p90))
+        if ROTATION_SIZING_ENABLED and has_rotation_score else 1.0
+    )
+    alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult * bandar_mult * mover_mult * accdist_mult * rotation_mult, cash)
     # Participation estimated from the pre-slippage desired size (one-pass
     # approximation, not an iterative solver -- good enough given lots is
     # further capped by liq_lots below regardless of this estimate).
@@ -1288,6 +1497,15 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     # concentration_p90/mover_score_p90 above use.
     accdist_score_p90 = _accdist_score_p90(train_liquid_bullish["accdist_score"])
 
+    # Train-derived reference for rotation-score-weighted sizing
+    # (ROTATION_SIZING_ENABLED below). See _rotation_score_p90's docstring --
+    # rotation_score is sparse (checked empirically, see the walk-forward
+    # sanity check in docs/BANDARMOLOGY_DESIGN.md), so this uses the same
+    # nonzero-only-quantile approach as accdist_score_p90, not the plain
+    # quantile(0.90)-of-the-full-population pattern concentration_p90/
+    # mover_score_p90 above use.
+    rotation_score_p90 = _rotation_score_p90(train_liquid_bullish["rotation_score"])
+
     trading_days = sorted(d for d in df["trade_date"].unique() if test_start <= d <= test_end)
     if not trading_days:
         print(f"{prefix}[SIMULATE] No trading days in range -- skipping.")
@@ -1366,7 +1584,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             fill = compute_entry_fill(
                 sig, entry_price, cash, prev_equity, log_adtv_p90, score_p90,
                 trend_strength_by_date.get(trade_date, 0.0), trend_strength_p90,
-                concentration_p90, mover_score_p90, accdist_score_p90,
+                concentration_p90, mover_score_p90, accdist_score_p90, rotation_score_p90,
             )
             if fill is None:
                 continue

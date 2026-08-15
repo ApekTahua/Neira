@@ -973,6 +973,150 @@ Critic pass (same "investigate then critique" discipline as everything else this
 
 **Verdict: still does not clear this doc's promotion bar -- same headline gate counts unchanged from baseline, worst-case drawdown still meaningfully worse.** But this is now a real, verified result about the corrected design, not an artifact -- the multiplier itself is confirmed no longer a binary switch among the rows capable of expressing it, and the aggregation formula's earlier independent verification (`test_accdist_signal.py`) stands unchanged. The reason fixing the bug barely moved the backtest outcome is a separate, genuine finding: this sizing input is a near-no-op for real trades not because of a threshold bug but because a same-day, same-stock bandarmology event essentially never coincides with this particular screener's entry signal. `ACCDIST_SIZING_ENABLED` stays off, not promoted. A next step for anyone continuing this (not started): a rolling/lookback version of `accdist_score` (e.g. trailing N-day sum, the way `mover_pairs`' validated long-horizon persistence result -- see above -- already suggests broker behavior matters over weeks, not just the entry day) would shrink the sparsity gap `concentration` doesn't have, before any further MIN/MAX bound sweep on a same-day-only version of this feature.
 
+### ROTATION_SIZING_ENABLED: rotation_pairs V4 sizing candidate -- same mixed/sparse shape as accdist_score, not promoted (2026-08-15)
+
+Fourth, independent Bandarmology V4 sizing candidate, following the exact
+isolation discipline as `BANDAR_SIZING_ENABLED`/`MOVER_SIZING_ENABLED`/
+`ACCDIST_SIZING_ENABLED` before it: `rotation_pairs` was the other feature
+that passed Layer 1's pair-level forward-return check 9/9 with no reversal
+(see "Pair-level Layer 1" above) but had never been tried as a sizing input
+-- this round designs and tests that.
+
+**Event/score design -- UNSIGNED, unlike accdist_score.** Re-read the
+Layer 1 event definition carefully before assuming the signed pattern
+carries over: the test that validated `rotation_pairs` used "both brokers
+in a flagged pair active on OPPOSITE sides that day" -- a symmetric
+condition. `bandarmology_rotation_detector.find_rotation_pairs()` stores
+`broker_a`/`broker_b` sorted alphabetically with no `predicted_sign` the
+way `candidate_movers()` attaches one to each mover -- which broker buys
+vs. sells on any given day is not part of what got flagged, and the Layer 1
+test itself didn't care which side was which, only that the pattern fired.
+Treating this as directional (accdist-style) would have invented a
+market-direction call the underlying detector and its own validation don't
+support. Designed instead as a magnitude/participation signal: per
+(stock_code, trade_date), `rotation_score = sum(min(|net_val_a|,
+|net_val_b|))` over every flagged pair active on opposite sides that day --
+the overlap value (Rupiah) each side's net position could plausibly have
+absorbed from the other, summed across every flagged pair active for that
+stock, unsigned by construction (always >= 0). Implemented as
+`_rotation_aggregate()`/`_rotation_score_p90()`/`attach_rotation_signal()`
+in `src/backtest_v3.py`, wired as `ROTATION_SIZING_ENABLED` (env
+`V3_ROTATION_SIZING`, default OFF, own `ROTATION_SIZING_MIN`/`_MAX` = 0.5/2.0,
+same bounds as the other three). `src/test_rotation_signal.py` covers the
+aggregation logic (opposite-side vs. same-side vs. one-side-only-active,
+unsigned output, empty-pairs edge case) and the sparsity-aware threshold
+(mirrors `test_accdist_signal.py`'s mostly-zero fixture).
+
+**Sparsity checked empirically before assuming, per the accdist lesson --
+confirmed real, applied the nonzero-percentile fix from the start.**
+`rotation_score` is nonzero on only 9.02% of stock-days (112,099 of
+1,242,246 rows in the full cached dataset) -- not as extreme as
+`accdist_score`'s ~92% zero-mass, but the same failure mode would still
+apply (`train.quantile(0.90)` over a 91%-zero population lands well inside
+the zero-mass). `_rotation_score_p90()` was built nonzero-only from the
+start rather than discovering the bug after the fact.
+
+**Real operational finding along the way, unrelated to the signal's own
+merit: `find_rotation_pairs()` does not finish in practical time against
+the current local backfill.** Its per-(stock, day) pair-counting step is a
+pure-Python O(k^2) nested loop over that day's active broker codes (k up to
+~90 for the most liquid names); against the now-six-year local Parquet
+history (extended to 2020-06-02, see the 2026-08-15 accdist correction's
+side-finding) it ran 65+ minutes without finishing and was killed -- it was
+fast enough on the smaller 2023-2026 slice the detector script's own prior
+runs used, just doesn't scale to the larger history now on disk. Fix:
+`attach_rotation_signal()` sources the flagged PAIRS from DB2's already-
+computed `bandarmology_rotation_pairs` table (4,438 rows, paginated fetch,
+~1s) instead of recomputing `find_rotation_pairs(raw)` in-process --
+justified by this doc's own framing of that table as a slow-moving,
+monthly-refreshed structural artifact ("CORRECTION 2026-08-12" above:
+"mover/rotation/cluster patterns are slow-moving... don't need daily
+refresh"), not something that needs a fresh local recompute per backtest
+run. Only the pair-level flags come from DB2; the per-day EVENT data (which
+stock-days actually saw opposite-side activity) is still computed entirely
+from the local Parquet `broker_net`, same as every sibling signal. Confirmed
+this doesn't affect the live paper-trading path either way: `data/` is
+gitignored, so in CI `bf.load_raw()` raises immediately and
+`attach_rotation_signal()` takes the fast NaN fallback regardless of DB2 --
+identical to `attach_mover_signal`/`attach_accdist_signal`'s existing
+behavior there. `bandarmology_rotation_detector.py` itself was not modified.
+
+**Multiplier distribution sanity check (same discipline as the accdist
+fix round) -- confirmed not degenerate, but real fills mostly floor
+anyway, same structural sparsity story as accdist_score:**
+- **Population level** (nonzero `rotation_score` rows, n=112,099,
+  evaluated against all 9 windows' train-derived p90, n=1,008,891
+  window-observations): train p90 ranges Rp 4.7B-13.7B across the 9
+  windows -- a real, positive, always-computed Rupiah scale, never the
+  degenerate fallback. **3.46% land strictly between 0.5x/2.0x**, 93.50%
+  floor, 3.04% cap -- the floor-heavy shape is expected given `rotation_score`
+  is compared against its own 90th percentile (most nonzero days are well
+  under that magnitude), not a bug.
+- **At real trade fills** (instrumented `compute_entry_fill` during the
+  actual 9-window walk-forward, 285 total entry attempts -- same count as
+  the accdist check, expected: entry-signal generation is identical
+  regardless of which downstream sizing multiplier is toggled):
+  **281/285 (98.6%) floor to exactly 0.5x, 1 (0.4%) caps to 2.0x, 3 (1.1%)
+  land strictly between.** Only 32/285 (11.2%) of real fills had a
+  genuinely nonzero `rotation_score` for that specific stock+day -- nearly
+  identical to `accdist_score`'s 99.3%-floor finding, and the same root
+  cause: a flagged-pair opposite-side event essentially never coincides
+  with the specific stock+day this screener's weekly/sector-momentum entry
+  rule actually fires on. Practical consequence: in this portfolio's real
+  trade set, `ROTATION_SIZING_ENABLED` behaves close to (not literally, per
+  the population-level check above) a blanket "halve most position sizes"
+  toggle rather than the graded participation signal it was designed to
+  express.
+
+9-window walk-forward, isolated test (`BANDAR_SIZING`/`MOVER_SIZING`/
+`ACCDIST_SIZING` all off, so this isolates `rotation_score`'s own
+contribution). Baseline reproduced byte-identical to every prior recorded
+run in this doc (confirms the DB2-sourced patch didn't disturb anything
+when the flag is off):
+
+| metric | off (baseline, byte-identical) | rotation_score on |
+|---|---|---|
+| Windows beating bench | 6/9 | 6/9 (same count, different windows -- W6 drops out, W1 joins) |
+| Win rate >50% | 4/9 | 4/9 (same count, different windows -- W1 drops out, W4 joins) |
+| Mean alpha | +21.71% | +16.41% (worse) |
+| Median alpha | +12.60% | **+18.42% (better)** |
+| Mean profit | +20.84% | +15.54% (worse) |
+| Median profit | +2.96% | **+17.40% (better, stays solidly positive)** |
+| Mean profit factor | 1.58 | **1.90 (better)** |
+| Median profit factor | 1.12 | **1.67 (better, stays above breakeven)** |
+| Mean max drawdown | -16.08% | -15.00% (~flat, slightly better) |
+| Worst max drawdown | -21.61% | -25.05% (worse) |
+
+**Verdict: does not clear this doc's promotion bar -- and the shape is
+close to a repeat of `ACCDIST_SIZING_ENABLED`'s result, not a new
+finding.** Same headline gate counts (6/9 beat-bench, 4/9 win-rate>50%)
+unchanged from baseline, just different window membership. Median
+profit/alpha/PF all improve and stay clearly positive/above breakeven
+(continuous magnitude-weighted sizing behaving as designed, not the
+bimodal-count collapse `MOVER_SIZING_ENABLED` showed) -- but mean-level
+metrics get worse and worst-case drawdown gets meaningfully worse
+(-21.61%->-25.05%), traced to the same window as the accdist finding: W8
+(2025 H2, baseline's best window by far) shrinks from +129.13%
+profit/-20.55% drawdown/96 trades to +41.92%/-25.05%/103 trades. Per-window
+alpha actually improved in 7/9 windows (W1, W2, W3, W4, W5, W7, W9) and only
+worsened in 2 (W6, and W8 by a large margin, -87.21pp) -- the mean-level
+regression is concentrated almost entirely in how much W8 alone carries the
+baseline's average, same dynamic as every other Bandarmology sizing
+candidate tested this session. `ROTATION_SIZING_ENABLED`
+stays off, not promoted, same hold as `BANDAR_SIZING_ENABLED`/
+`MOVER_SIZING_ENABLED`/`ACCDIST_SIZING_ENABLED`. Consistent with, not
+contradicted by, `accdist_score`'s prior finding: **two independently
+designed Bandarmology sizing candidates (one signed/directional, one
+unsigned/magnitude) now show the same structural ceiling** -- the
+underlying signals may carry real information (both passed Layer 1 9/9),
+but same-day, same-stock candidate-mover/rotation-pair events rarely
+coincide with this specific screener's entry day, so the sizing multiplier
+mostly degenerates to a near-constant floor at real fills regardless of how
+the raw feature is designed. The rolling/lookback redesign flagged at the
+end of the accdist section above (a trailing N-day sum instead of
+same-day-only) would very plausibly help this feature too, for the same
+reason -- not attempted this round.
+
 ## Open questions (resolve once real data exists, not before)
 
 - Exact rolling window length (10d vs 20d vs adaptive) -- tune against
