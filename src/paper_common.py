@@ -21,6 +21,8 @@ import traceback
 import requests
 import numpy as np
 
+from db_retry import retry as _retry
+
 PAPER_VERSION = os.environ.get("PAPER_VERSION", "V3_PAPER")
 
 # Real broker fee structure reported by the user, on top of config.py's
@@ -103,14 +105,14 @@ def total_buy_fee(gross_value: float, buy_fee_pct: float) -> float:
 def get_paper_run_id(supabase) -> int:
     """Looks up the ongoing paper run's id every time rather than
     hardcoding it -- see sql/paper_trading_schema.sql's seed comment."""
-    res = (
+    res = _retry(lambda: (
         supabase.table("backtest_runs")
         .select("id")
         .eq("version", PAPER_VERSION)
         .order("id", desc=True)
         .limit(1)
         .execute()
-    )
+    ))
     if not res.data:
         raise RuntimeError(
             f"No backtest_runs row with version='{PAPER_VERSION}' -- run "
@@ -127,13 +129,13 @@ def trading_days_elapsed(supabase, since_date, as_of_date) -> int:
     for what counts as a trading day."""
     if since_date is None:
         return None
-    res = (
+    res = _retry(lambda: (
         supabase.table("ihsg_eod")
         .select("trade_date")
         .gt("trade_date", since_date.isoformat())
         .lte("trade_date", as_of_date.isoformat())
         .execute()
-    )
+    ))
     return len({r["trade_date"] for r in res.data})
 
 

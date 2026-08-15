@@ -6,13 +6,12 @@ Deliberately NOT imported by V1's backtest.py/screener.py — those keep
 their own inline fetch logic untouched (see plan Global Constraints).
 """
 
-import random
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 import pandas as pd
-from postgrest.exceptions import APIError
+
+from db_retry import retry as _retry
 
 # I/O-bound (network round trips to Supabase), not CPU-bound -- a thread
 # pool gets near-linear speedup here despite the GIL. 12 is a middling
@@ -20,31 +19,9 @@ from postgrest.exceptions import APIError
 # not so many that it looks like a burst attack against PostgREST.
 FETCH_CONCURRENCY = 12
 
-
-def _retry(fn, attempts=4, base_delay=2.0):
-    """2026-08-14: found in production that a Postgres statement timeout
-    (57014, e.g. ihsg_eod missing an index) crashed this exact retry loop --
-    all 12 concurrent workers hit the same deterministic failure and retried
-    on the identical fixed schedule (2s/4s/6s), a thundering-herd pattern
-    that just re-triggers the same DB load instead of relieving it. Jitter
-    spreads the retries out; classifying 57014 specifically (vs a generic
-    network blip) makes the next incident's log immediately diagnosable
-    instead of needing a full GitHub Actions log pull to identify, like this
-    one did."""
-    for i in range(attempts):
-        try:
-            return fn()
-        except APIError as e:
-            if i == attempts - 1:
-                raise
-            if e.code == "57014":
-                print(f"  [RETRY] Postgres statement timeout (57014) on attempt {i + 1}/{attempts} -- "
-                      f"likely a missing/inadequate index, not a transient blip.")
-            time.sleep(base_delay * (i + 1) + random.uniform(0, base_delay))
-        except Exception:
-            if i == attempts - 1:
-                raise
-            time.sleep(base_delay * (i + 1) + random.uniform(0, base_delay))
+# _retry() itself now lives in db_retry.py (shared with the live paper-
+# trading path) -- imported here under its old name so every existing
+# `_retry(...)` call site below is untouched. See db_retry.py's docstring.
 
 
 def fetch_data(supabase, start_date: date, end_date: date, lookback_days: int = 280):

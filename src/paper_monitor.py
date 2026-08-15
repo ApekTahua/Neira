@@ -34,6 +34,7 @@ os.environ.setdefault("V3_TEST_END", date.today().isoformat())
 import config as cfg  # noqa: E402
 import backtest_v4 as bt  # noqa: E402
 import paper_common as pc  # noqa: E402
+from db_retry import retry as _retry  # noqa: E402
 from supabase import create_client  # noqa: E402
 
 LOT_SIZE = bt.LOT_SIZE
@@ -70,7 +71,7 @@ def _detect_breadth_crash(supabase) -> tuple:
     """(is_crash, fraction_red, universe_size). Universe = tickers with a
     real print today (volume > 0) -- excludes suspended/no-trade names so
     a pile of frozen zero-volume rows can't dilute the fraction."""
-    res = supabase.table("ihsg_realtime").select("change_percentage, volume").execute()
+    res = _retry(lambda: supabase.table("ihsg_realtime").select("change_percentage, volume").execute())
     rows = [r for r in (res.data or [])
             if r.get("volume") and r["volume"] > 0 and r.get("change_percentage") is not None]
     if not rows:
@@ -129,7 +130,7 @@ def main():
 
     today = date.today()
     run_id = pc.get_paper_run_id(supabase)
-    acct = supabase.table("paper_account").select("*").eq("run_id", run_id).limit(1).execute().data
+    acct = _retry(lambda: supabase.table("paper_account").select("*").eq("run_id", run_id).limit(1).execute()).data
     if not acct:
         sys.exit(f"No paper_account row for run_id={run_id} -- run sql/paper_trading_schema.sql's seed first.")
     account = acct[0]
@@ -146,7 +147,10 @@ def main():
         # positions' capital would still show as "cash", double-counting it against that
         # same capital's now-committed cost_basis. Writing through after each mutation means
         # a crash at any point leaves cash and positions consistent with each other.
-        supabase.table("paper_account").update({"cash": cash}).eq("run_id", run_id).execute()
+        # Retry-safe: `cash` is an absolute snapshot value written with an .eq("run_id",...)
+        # filter, not an additive/decrementing update -- replaying the same write after a
+        # lost response reapplies the identical final value, no double-application risk.
+        _retry(lambda: supabase.table("paper_account").update({"cash": cash}).eq("run_id", run_id).execute())
 
     log_adtv_p90 = float(account["log_adtv_p90"]) if account.get("log_adtv_p90") else 1.0
     # Same persist-and-reread pattern as log_adtv_p90 -- see
@@ -155,17 +159,17 @@ def main():
     # (compute_entry_fill's default concentration_p90=1.0) for every fill.
     concentration_p90 = float(account["concentration_p90"]) if account.get("concentration_p90") else 1.0
 
-    pending = supabase.table("paper_positions").select("*").eq("run_id", run_id).eq("status", "PENDING").lt(
+    pending = _retry(lambda: supabase.table("paper_positions").select("*").eq("run_id", run_id).eq("status", "PENDING").lt(
         "signal_date", today.isoformat()
-    ).execute().data
-    open_positions = supabase.table("paper_positions").select("*").eq("run_id", run_id).eq("status", "OPEN").execute().data
+    ).execute()).data
+    open_positions = _retry(lambda: supabase.table("paper_positions").select("*").eq("run_id", run_id).eq("status", "OPEN").execute()).data
 
     tickers = sorted({p["stock_code"] for p in pending} | {p["stock_code"] for p in open_positions})
     if not tickers:
         print("[MONITOR] No pending/open positions -- nothing to do.")
         return
 
-    live_res = supabase.table("ihsg_realtime").select("*").in_("stock_code", tickers).execute()
+    live_res = _retry(lambda: supabase.table("ihsg_realtime").select("*").in_("stock_code", tickers).execute())
     live = {r["stock_code"]: r for r in live_res.data}
 
     freshest = max((r["updated_at"] for r in live.values()), default=None)
@@ -220,14 +224,17 @@ def main():
             continue  # extra flat fee would overdraw cash -- skip this fill this poll, retried next poll
         cash -= cash_out
 
-        supabase.table("paper_positions").update({
+        # Retry-safe: every field is an absolute value keyed by this row's own id, not
+        # a delta -- replaying the same write after a lost response re-applies the same
+        # final state rather than double-filling.
+        _retry(lambda: supabase.table("paper_positions").update({
             "status": "OPEN", "entry_date": today.isoformat(), "avg_price": entry_price,
             "tp1_price": fill["tp1_price"], "sl_price": fill["sl_price"],
             "total_lots": fill["lots"], "remaining_lots": fill["lots"], "cost_basis": cash_out,
             "checkpoint_day": fill["checkpoint_day"], "highest_price": entry_price,
             "day_high": entry_price, "day_low": entry_price,
             "filled_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", row["id"]).execute()
+        }).eq("id", row["id"]).execute())
         _persist_cash()
         pc.notify(f"\U0001F7E2 *FILLED* {row['stock_code']} @ Rp{entry_price:,.0f} x {fill['lots']} lot(s)")
         print(f"[MONITOR] FILLED {row['stock_code']} @ {entry_price:.0f} x{fill['lots']}lot cash_out=Rp{cash_out:,.0f}")
@@ -238,9 +245,9 @@ def main():
     # as a floor/ceiling so a spike this monitor's own polls missed still
     # gets caught by SL/TP1. Read-only merge: never narrows what this monitor
     # already tracked itself, only widens it.
-    intraday_res = supabase.table("ihsg_intraday").select("stock_code, day_high, day_low").eq(
+    intraday_res = _retry(lambda: supabase.table("ihsg_intraday").select("stock_code, day_high, day_low").eq(
         "trade_date", today.isoformat()
-    ).in_("stock_code", tickers).execute()
+    ).in_("stock_code", tickers).execute())
     intraday_extremes = {r["stock_code"]: r for r in intraday_res.data}
 
     # ---- Check exits on OPEN positions ----
@@ -272,7 +279,8 @@ def main():
                    f"action -- SKIPPING SL/TP check this poll, please verify manually.")
             print(f"[MONITOR][CORP-ACTION-GUARD] {msg}")
             pc.notify(msg)
-            supabase.table("paper_positions").update({"day_high": day_high, "day_low": day_low}).eq("id", row["id"]).execute()
+            # Retry-safe: absolute day_high/day_low overwrite, not additive.
+            _retry(lambda: supabase.table("paper_positions").update({"day_high": day_high, "day_low": day_low}).eq("id", row["id"]).execute())
             continue
 
         pos = _position_dict_from_row(row)
@@ -283,24 +291,39 @@ def main():
         cash += cash_delta
 
         if trade_record is None:
-            supabase.table("paper_positions").update({"day_high": day_high, "day_low": day_low}).eq("id", row["id"]).execute()
+            # Retry-safe: absolute overwrite, not additive.
+            _retry(lambda: supabase.table("paper_positions").update({"day_high": day_high, "day_low": day_low}).eq("id", row["id"]).execute())
             continue
 
         if trade_record["exit_reason"] == "TP1":
-            supabase.table("paper_positions").update({
+            # Retry-safe: every field below is an absolute snapshot of `pos`/day_high/day_low,
+            # not a delta -- a replayed write after a lost response re-applies the same state.
+            _retry(lambda: supabase.table("paper_positions").update({
                 "avg_price": pos["avg_price"], "tp1_price": pos["tp1_price"], "sl_price": pos["sl_price"],
                 "total_lots": pos["total_lots"], "remaining_lots": pos["remaining_lots"], "cost_basis": pos["cost_basis"],
                 "tp1_hit": True, "day_high": day_high, "day_low": day_low,
                 "tp1_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", row["id"]).execute()
+            }).eq("id", row["id"]).execute())
             _persist_cash()
         else:
-            supabase.table("paper_positions").update({
+            # Retry-safe: absolute overwrite keyed by this row's own id.
+            _retry(lambda: supabase.table("paper_positions").update({
                 "status": "CLOSED", "remaining_lots": pos["remaining_lots"],
                 "exit_date": today.isoformat(), "exit_price": trade_record["exit_price"],
                 "exit_reason": trade_record["exit_reason"], "pnl": trade_record["pnl"], "pnl_pct": trade_record["pnl_pct"],
                 "exited_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", row["id"]).execute()
+            }).eq("id", row["id"]).execute())
+            # Deliberately NOT wrapped in retry: this is a bare INSERT with no
+            # idempotency key (no unique constraint on run_id/stock_code/exit_date etc in
+            # sql/paper_trading_schema.sql). If the first attempt actually succeeded
+            # server-side and only the response was lost to a transient blip, a retry
+            # would silently create a second identical backtest_trades row for the same
+            # exit, double-counting this trade in win-rate/profit-factor/frontend charts
+            # -- worse than the status quo (an uncaught exception here crashes the run,
+            # exactly like before this change; run_guarded() alerts and the next poll
+            # picks up cleanly since paper_positions is already CLOSED). Unlike the
+            # update()s above, there's no absolute-value replay that makes a retry safe
+            # here without an on_conflict target.
             supabase.table("backtest_trades").insert({
                 "run_id": run_id, "stock_code": trade_record["stock_code"],
                 "entry_date": trade_record["entry_date"].isoformat(), "exit_date": today.isoformat(),
