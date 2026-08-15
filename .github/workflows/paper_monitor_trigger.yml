@@ -43,6 +43,10 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+          # Same pin as paper_signal_scan_trigger.yml -- keeps V3_PAPER's
+          # entry-fill sizing byte-identical after BANDAR_SIZING_ENABLED's
+          # default flipped to ON 2026-08-15.
+          V3_BANDAR_SIZING: '0'
         run: python src/paper_monitor.py
 
       # Deliberately no failure alert here (unlike the daily-scan trigger):
