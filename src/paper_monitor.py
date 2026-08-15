@@ -134,6 +134,20 @@ def main():
         sys.exit(f"No paper_account row for run_id={run_id} -- run sql/paper_trading_schema.sql's seed first.")
     account = acct[0]
     cash = float(account["cash"])
+
+    def _persist_cash():
+        # Write-through after every cash-affecting position mutation, not just once at
+        # the end of main() (the old behavior). paper_positions row updates below commit
+        # individually and durably as the loop goes; if `cash` were only written once at
+        # the end and this run crashed partway through a multi-fill/multi-exit poll (a real
+        # risk -- see the bare-.execute() calls in this file, none go through data_fetch.py's
+        # hardened _retry, so a single transient Supabase error anywhere in the loop takes
+        # the whole run down), paper_account.cash would silently stay stale: already-filled
+        # positions' capital would still show as "cash", double-counting it against that
+        # same capital's now-committed cost_basis. Writing through after each mutation means
+        # a crash at any point leaves cash and positions consistent with each other.
+        supabase.table("paper_account").update({"cash": cash}).eq("run_id", run_id).execute()
+
     log_adtv_p90 = float(account["log_adtv_p90"]) if account.get("log_adtv_p90") else 1.0
     # Same persist-and-reread pattern as log_adtv_p90 -- see
     # paper_signal_scan.py's own comment on this. Without it,
@@ -214,6 +228,7 @@ def main():
             "day_high": entry_price, "day_low": entry_price,
             "filled_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", row["id"]).execute()
+        _persist_cash()
         pc.notify(f"\U0001F7E2 *FILLED* {row['stock_code']} @ Rp{entry_price:,.0f} x {fill['lots']} lot(s)")
         print(f"[MONITOR] FILLED {row['stock_code']} @ {entry_price:.0f} x{fill['lots']}lot cash_out=Rp{cash_out:,.0f}")
 
@@ -278,6 +293,7 @@ def main():
                 "tp1_hit": True, "day_high": day_high, "day_low": day_low,
                 "tp1_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", row["id"]).execute()
+            _persist_cash()
         else:
             supabase.table("paper_positions").update({
                 "status": "CLOSED", "remaining_lots": pos["remaining_lots"],
@@ -293,13 +309,17 @@ def main():
                 "exit_reason": trade_record["exit_reason"], "trigger": trade_record["trigger"],
                 "hold_days": int(trade_record["hold_days"]),
             }).execute()
+            _persist_cash()
 
         emoji = "\U0001F534" if trade_record["pnl"] < 0 else "\U0001F7E2"
         pc.notify(f"{emoji} *{trade_record['exit_reason']}* {trade_record['stock_code']} @ "
                   f"Rp{trade_record['exit_price']:,.0f} pnl=Rp{trade_record['pnl']:+,.0f}")
         print(f"[MONITOR] {trade_record['exit_reason']} {trade_record['stock_code']} pnl={trade_record['pnl']:+,.0f}")
 
-    supabase.table("paper_account").update({"cash": cash}).eq("run_id", run_id).execute()
+    _persist_cash()  # redundant with the write-through calls above when the loop completes
+    # cleanly (idempotent, same value) -- kept as a final safety net for the no-op case
+    # (nothing filled/exited this poll) and cheap insurance against any mutation site above
+    # this comment missed adding its own write-through call.
     print(f"[MONITOR] done. cash=Rp{cash:,.0f}")
 
 
