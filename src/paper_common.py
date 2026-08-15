@@ -60,7 +60,7 @@ def compute_drawdown_and_cvar(equity_history: list, today_equity: float) -> tupl
     """Pure function so it's independently testable (see
     test_paper_trading_math.py) -- extracted rather than left inline in
     paper_signal_scan.py so the same money-math discipline used for
-    compute_entry_fill/evaluate_position_exit in backtest_v3.py applies here.
+    compute_entry_fill/evaluate_position_exit in backtest_v4.py applies here.
 
     `equity_history` = prior days' portfolio_value in date order (today's
     NOT included). Returns (drawdown_pct, cvar_95):
@@ -68,7 +68,7 @@ def compute_drawdown_and_cvar(equity_history: list, today_equity: float) -> tupl
         <= 0. Previously hardcoded to 0.0 on every insert -- a real gap,
         fixed here.
       - cvar_95: mean daily return of the days at/below the 5th-percentile
-        return (same quantile-then-average method as backtest_v3.py's
+        return (same quantile-then-average method as backtest_v4.py's
         simulate_window -- kept identical on purpose, so a "live CVaR" and
         a "backtest CVaR" are actually comparable numbers, not two
         different formulas sharing a label), or None before there are at

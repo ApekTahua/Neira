@@ -9,7 +9,7 @@ V2 HMM-gate plan — superseded, see below).
 
 **UPDATE, most important finding in this file**: everything below the
 TL;DR was written from 3 hand-picked windows. A real 9-window rolling
-walk-forward (`walk_forward_v3.py`, see "Walk-forward validation" section
+walk-forward (`walk_forward_v4.py`, see "Walk-forward validation" section
 near the end) shows the true picture is meaningfully weaker and more
 fragile than the 3-window story suggested — only 4/9 windows clear 50%
 win rate, median profit and median profit factor are both net losers,
@@ -30,7 +30,7 @@ Read that section before trusting anything below at face value.
   relative-strength top quintile`, on liquid stocks (ADTV≥1B), thresholds
   learned on train data only.
 
-  Portfolio backtest (`src/backtest_v3.py`) after 3 bug fixes (see below)
+  Portfolio backtest (`src/backtest_v4.py`) after 3 bug fixes (see below)
   but BEFORE regime hysteresis: window 1 (2024-07..2026-06) +216.94%
   profit / 55.4% win / PF 1.84 / DD -24.33%; window 2 (2023-07..2024-12,
   a choppier period) fell to +16.29% / 50.0% win (exact coin flip) / PF
@@ -77,7 +77,7 @@ Read that section before trusting anything below at face value.
   including the 2% reported above as though it were tuned — it wasn't;
   it was picked a priori and got lucky-looking results on the first try.
 
-  **Redesigned as volatility-relative** (`VOL_BAND_MULT`, `backtest_v3.py`):
+  **Redesigned as volatility-relative** (`VOL_BAND_MULT`, `backtest_v4.py`):
   band width = `VOL_BAND_MULT × IHSG's trailing 20-day daily-return
   std-dev`, instead of a flat percentage — widens automatically in
   choppy periods, narrows in calm ones. Swept `VOL_BAND_MULT` 1.0/2.0/3.0
@@ -172,7 +172,7 @@ of scope, V1 is frozen); worth fixing if V1 ever gets touched again.
 | Weekly-trend alignment | `phase0d_multitimeframe_validation.py` | **Strongest single feature** — clean monotonic win rate/return, bullish-regime-conditional, inverts bearish |
 | Combined ML model (8-12 features, HistGradientBoosting) | `phase0e_ml_combined_model.py`, `phase0h_leaner_interaction_model.py` | **Failed twice** — AUC ~0.50 (random) in most folds even after pruning to just the validated features + explicit regime-interaction terms. The two real univariate signals got *negative* permutation importance in the combined model. |
 | Explicit rule intersection (bullish + weekly-trend Q5 + sector-RRG Q5, no ML) | `phase0g_rule_intersection_test.py` | **This is the one that worked.** OOS mean 20d return +7.48% vs +1.18% baseline, concentration check clean (12.6% from top-5 tickers vs V1/V2's 90%+). |
-| Adaptive hold-time (`expected_hold_days = |TP-entry|/ATR`, checkpoint exit) | `phase0f_holdtime_exit_backtest.py`, integrated into `backtest_v3.py` (`V3_ADAPTIVE_HOLDTIME`) | **Integrated, verified correct, and essentially inert for this entry rule's population.** First integration attempt had a real bug (computed against `tp1_price`, which by definition made `expected_hold_days` collapse to the fixed constant `TP1_MULT=1.5` — never variable, never able to reach the 5-day gate; caught via a suspiciously-exact match to the no-hold-time baseline, not accepted at face value). Fixed to use `tp_target` (SMC swing-high). Diagnostic trace then showed only 1 of 118 entries in window 2 ever reaches `HOLDTIME_MIN_DAYS=5` (median ~1-2 days, matching phase0f's original population almost exactly) — the mechanism fires correctly when it should, there's just almost nothing for it to act on in this specific rule's trade population. Left off by default; not worth pursuing further here. |
+| Adaptive hold-time (`expected_hold_days = |TP-entry|/ATR`, checkpoint exit) | `phase0f_holdtime_exit_backtest.py`, integrated into `backtest_v4.py` (`V3_ADAPTIVE_HOLDTIME`) | **Integrated, verified correct, and essentially inert for this entry rule's population.** First integration attempt had a real bug (computed against `tp1_price`, which by definition made `expected_hold_days` collapse to the fixed constant `TP1_MULT=1.5` — never variable, never able to reach the 5-day gate; caught via a suspiciously-exact match to the no-hold-time baseline, not accepted at face value). Fixed to use `tp_target` (SMC swing-high). Diagnostic trace then showed only 1 of 118 entries in window 2 ever reaches `HOLDTIME_MIN_DAYS=5` (median ~1-2 days, matching phase0f's original population almost exactly) — the mechanism fires correctly when it should, there's just almost nothing for it to act on in this specific rule's trade population. Left off by default; not worth pursuing further here. |
 
 **Lesson: a simple, explicit, hand-built rule beat every ML attempt on
 the same features, twice.** Don't default to throwing a gradient-boosted
@@ -180,7 +180,7 @@ model at this kind of data — validate the rule-based hypothesis directly
 first. Trees didn't cleanly isolate the sharp joint-percentile region a
 manual AND-rule finds trivially.
 
-## Bugs found and fixed in backtest_v3.py (all confirmed real, not hypothetical)
+## Bugs found and fixed in backtest_v4.py (all confirmed real, not hypothetical)
 
 1. **Survivorship bias** — `data_fetch.py` built the tradeable stock
    universe from whichever stocks were trading on the *last day* of the
@@ -230,7 +230,7 @@ manual AND-rule finds trivially.
    machine for regime detection) and stefan-jansen/machine-learning-for-trading
    (HMM regime probabilities are inherently smoother than a raw
    threshold) — both pointed at the same gap. **Fix**:
-   `compute_regime_with_hysteresis()` in `backtest_v3.py` (V3-only,
+   `compute_regime_with_hysteresis()` in `backtest_v4.py` (V3-only,
    `strategy.py` untouched) — a Schmitt-trigger band: enter BULLISH only
    2% above ma50, exit only 2% below. Requires a sustained move to flip
    state. **Result: improved every single metric in both OOS windows.**
@@ -437,7 +437,7 @@ likely a genuinely different playbook for "weak/choppy bullish" vs
 
 Followed up on the "CRITICAL, unresolved" item above. Added
 `ENTRY_CLUSTER_WINDOW_DAYS`/`MAX_ENTRIES_PER_CLUSTER_WINDOW` to
-`backtest_v3.py`: caps how many of the *currently open* positions may
+`backtest_v4.py`: caps how many of the *currently open* positions may
 have been entered within a trailing N-day window, independent of
 `MAX_POSITIONS`/`MAX_NEW_ENTRIES_PER_DAY`. Rationale: REGIME_CONFIRM_DAYS
 only gates the *first* entry after a flip — a false rally that persists
@@ -548,10 +548,10 @@ correctness over speed for now.
 
 ## Walk-forward validation: the real picture is weaker than 3 windows suggested
 
-Refactored `backtest_v3.py` (`simulate_window()` extracted from `main()`,
+Refactored `backtest_v4.py` (`simulate_window()` extracted from `main()`,
 behavior-preserving — verified by rerunning window 3 post-refactor,
 exact match to -5.44%/41.7%/PF0.29/DD-6.22%/12 trades) and built
-`walk_forward_v3.py`: fetches the full history ONCE, then runs 9 rolling
+`walk_forward_v4.py`: fetches the full history ONCE, then runs 9 rolling
 non-overlapping 6-month test windows (2022-01-01..2026-06-30), train
 always expanding from FETCH_START (2021-01-01) — same methodology as
 every single-window run before this, just repeated across the whole
@@ -973,7 +973,7 @@ Three parameters swept across the full 9-window walk-forward:
 0.80 -> 0.60**, a genuine bracketed improvement on every axis). Combined
 with the earlier position-sizing round (pyramiding adopted at
 `PYRAMID_ADD_PCT=0.20`), this is the current best validated V3
-configuration. Also fixed in this round: `walk_forward_v3.py` now
+configuration. Also fixed in this round: `walk_forward_v4.py` now
 caches its fetch locally, since every sweep point (11 full walk-forward
 runs across both rounds) had been re-downloading the identical 5.5-year
 dataset from Supabase -- real, avoidable load that contributed to a
@@ -1487,7 +1487,7 @@ live paper engine, executes at the exact observed price with zero cost
 for crossing the spread or moving an illiquid name's own volume -- a
 known, disclosed simplification, but never actually quantified.
 
-**Added `apply_slippage()`** in `backtest_v3.py`: widens buys / narrows
+**Added `apply_slippage()`** in `backtest_v4.py`: widens buys / narrows
 sells by `SLIPPAGE_BASE_BPS` (5, a flat spread-crossing cost) +
 `SLIPPAGE_IMPACT_BPS` (50, scaled by `participation` = order quantity
 / the stock's own `avg_vol_20` -- how big a bite out of its daily
@@ -1603,7 +1603,7 @@ fat left tail of bad days, or the reverse. Baseline (slippage off):
 mean -3.72%, worst -5.64% (window 8, the standout winner -- its
 CVaR is also its worst, a reminder that the best-returning window
 isn't the smoothest one). Printed per-window and in the aggregate
-summary in `walk_forward_v3.py`; stored in `simulate_window()`'s
+summary in `walk_forward_v4.py`; stored in `simulate_window()`'s
 returned `metrics` dict as `cvar_95`. **Update, same day**: wired into
 the `backtest_runs` Supabase insert (`cvar_95` column added via MCP
 migration) and shown on `/backtest` next to Max Drawdown.
@@ -1631,14 +1631,14 @@ CVaR(95%) computed the same way as the batch backtest's (worst-5%-of-
 days mean daily return) but withheld (`None`) until 20+ days of live
 history exist -- noisy and misleading on a handful of days otherwise.
 9/9 dry-run checks pass. No walk-forward re-check needed -- doesn't
-touch `backtest_v3.py`'s shared entry/exit functions, only the live-only
+touch `backtest_v4.py`'s shared entry/exit functions, only the live-only
 EOD snapshot step.
 
 ## Full-universe daily scoreboard -- backend shipped (2026-08-02)
 
 Queued below yesterday, built today (Sunday, day before paper trading's
 Monday launch). Shipped exactly the scoped v1: `score_full_universe()`
-in `backtest_v3.py` (new function, zero lines changed in
+in `backtest_v4.py` (new function, zero lines changed in
 `score_candidates`/`evaluate_position_exit`/`simulate_window` -- no
 walk-forward re-check needed, same reasoning as the CVaR live-engine fix
 above), wired into `paper_signal_scan.py`'s daily run, writing to a new
@@ -1660,7 +1660,7 @@ stable, not rush a frontend integration alongside it.
 
 User request (2026-08-01, weekend before paper trading's Monday launch):
 today the daily scan only surfaces the stocks that actually qualify as
-new candidates (`score_candidates` in `backtest_v3.py`, currently called
+new candidates (`score_candidates` in `backtest_v4.py`, currently called
 with `top_n=15` from `paper_signal_scan.py`; V1's separate Telegram bot
 posts its own top-10, `src/screener.py:162`). Everything else in the
 IHSG universe is invisible -- if a user searches a specific ticker on
@@ -1670,7 +1670,7 @@ with a confidence label (something like Strong Buy / Buy / Watch / Wait)
 and, ideally, a target price to wait for.
 
 **Why this is cheaper than it sounds, for the classification half.**
-`score_candidates` (`backtest_v3.py:404-429`) currently does two things
+`score_candidates` (`backtest_v4.py:404-429`) currently does two things
 in one step: (1) a hard gate -- `adtv_20 >= ADTV_MIN AND weekly_ma_spread
 >= weekly_cut AND sector_rs_momentum >= sector_cut AND ATR sanity`,
 which is why anything failing the gate never gets a score at all today
@@ -1709,7 +1709,7 @@ be explicit in the UI copy that this is an entry screener, not a full
 buy-and-sell advisory.
 
 **Why "what price to wait for" is the part that needs real caution, not
-a quick add.** Nothing in `backtest_v3.py` today computes a pullback or
+a quick add.** Nothing in `backtest_v4.py` today computes a pullback or
 support target -- entries fire at next available open once the gate
 clears, full stop. Any "wait for Rp X" number would have to come from a
 brand-new heuristic (e.g. distance back to `weekly_cut`/`sector_cut` in
@@ -1856,7 +1856,7 @@ scan already set `last_signal_date=2026-08-03` so it'll skip until
 tomorrow; the actual wall-clock improvement is confirmed by the next
 real scheduled run, not asserted here. Deliberately did NOT touch the
 CPU-bound per-stock `add_features()` loop in the same function
-(`build_full_dataset`, `backtest_v3.py`) in the same pass -- that's a
+(`build_full_dataset`, `backtest_v4.py`) in the same pass -- that's a
 groupby-vs-repeated-filter algorithmic question, touches the shared
 validated backtest logic, and per this log's own discipline would need
 a full 9-window walk-forward regression check before landing, not
@@ -1864,7 +1864,7 @@ something to bundle into a same-day I/O fix.
 
 ## MIN_HOLD_DAYS/TP1 blocked-crossing study + W9 (2026 H1) deep dive (2026-08-07)
 
-Two read-only research passes tonight, zero changes to `backtest_v3.py` --
+Two read-only research passes tonight, zero changes to `backtest_v4.py` --
 both used a runtime monkeypatch/direct call against the existing
 `walk_forward_data_2021-01-01_2026-06-30.pkl` cache, not the live/frozen
 `V3_PAPER` config.

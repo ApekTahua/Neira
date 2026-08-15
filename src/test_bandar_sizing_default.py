@@ -34,7 +34,7 @@ def _bandar_flag(env_overrides: dict) -> str:
     env.pop("V3_BANDAR_SIZING", None)
     env.update(env_overrides)
     out = subprocess.run(
-        [sys.executable, "-c", "import backtest_v3 as bt; print(bt.BANDAR_SIZING_ENABLED)"],
+        [sys.executable, "-c", "import backtest_v4 as bt; print(bt.BANDAR_SIZING_ENABLED)"],
         cwd=REPO_SRC, env=env, capture_output=True, text=True, timeout=60,
     )
     assert out.returncode == 0, f"subprocess import failed: {out.stderr}"
@@ -51,7 +51,7 @@ assert _bandar_flag({"V3_BANDAR_SIZING": "1"}) == "True", "explicit '1' must sti
 print("[PASS] BANDAR_SIZING_ENABLED defaults ON, env var still overrides both ways")
 
 # ---- compute_entry_fill actually applies bandar_mult when the flag is on ----
-import backtest_v3 as bt  # noqa: E402
+import backtest_v4 as bt  # noqa: E402
 
 sig = {
     "atr": 50.0, "tp_target": 1200.0, "score": 2.0,

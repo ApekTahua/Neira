@@ -13,7 +13,7 @@ Responsibilities:
   3. Recompute regime/thresholds over full history through today and
      queue today's new PENDING candidates -- filled at tomorrow's open
      by paper_monitor.py. Uses the exact same score_candidates() the
-     backtest uses (src/backtest_v3.py) -- zero drift.
+     backtest uses (src/backtest_v4.py) -- zero drift.
   4. Snapshot today's EOD equity (real drawdown_pct off the running peak,
      not a placeholder), update the backtest_runs summary row (including
      max_drawdown and cvar_95, the latter once 20+ days of history exist).
@@ -40,7 +40,7 @@ import numpy as np
 os.environ.setdefault("V3_TEST_END", date.today().isoformat())
 
 import config as cfg  # noqa: E402
-import backtest_v3 as bt  # noqa: E402
+import backtest_v4 as bt  # noqa: E402
 import paper_common as pc  # noqa: E402
 from supabase import create_client  # noqa: E402
 
@@ -56,7 +56,7 @@ PENDING_EXPIRY_SESSIONS = 2
 
 def _position_dict_from_row(row: dict) -> dict:
     """paper_positions columns -> the dict shape evaluate_position_exit()
-    expects (same keys backtest_v3's own position dicts use)."""
+    expects (same keys backtest_v4's own position dicts use)."""
     return {
         "stock_code": row["stock_code"],
         "entry_date": date.fromisoformat(row["entry_date"]) if row["entry_date"] else None,
@@ -196,7 +196,7 @@ def main():
     new_candidates_notes = []
     for row in open_positions:
         if row["entry_date"] == today.isoformat():
-            continue  # filled today by paper_monitor.py -- don't exit-check same-day, matches backtest_v3.py's own guard
+            continue  # filled today by paper_monitor.py -- don't exit-check same-day, matches backtest_v4.py's own guard
 
         # A suspended stock still gets an EOD row on some feeds -- open=high=low=0 with
         # close frozen at the last real print (DOOH, 2026-08-06: exactly this shape).
@@ -210,7 +210,7 @@ def main():
         )
         if not has_real_print:
             # No real trading today -- suspension, ARA-lock with no print, or delisting.
-            # Same DELISTING_GAP_DAYS force-exit the backtest applies (src/backtest_v3.py's
+            # Same DELISTING_GAP_DAYS force-exit the backtest applies (src/backtest_v4.py's
             # simulate_window "no bar found" branch): without this, a delisted position
             # would sit open forever, frozen at its last mark-to-market price, never
             # contributing its real loss.
@@ -293,7 +293,7 @@ def main():
             weekly_comp_abs_cap = train_w_comp.quantile(bt.SCORE_WEEKLY_COMP_ABS_CAP_Q)
     # Refreshed daily and persisted (paper_account.log_adtv_p90) so paper_monitor.py can
     # fill entries with the exact same LIQ_SIZING reference without rebuilding the full
-    # dataset every 15 minutes -- see compute_entry_fill()'s docstring in backtest_v3.py.
+    # dataset every 15 minutes -- see compute_entry_fill()'s docstring in backtest_v4.py.
     train_log_adtv = np.log(train_liquid_bullish["adtv_20"].clip(lower=1))
     log_adtv_p90 = train_log_adtv.quantile(0.90) if len(train_log_adtv) > 0 else 1.0
     if not np.isfinite(log_adtv_p90) or log_adtv_p90 <= 0:

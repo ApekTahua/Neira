@@ -1,5 +1,5 @@
 """
-walk_forward_v3.py -- runs backtest_v3's simulate_window() across many
+walk_forward_v4.py -- runs backtest_v4's simulate_window() across many
 rolling out-of-sample test windows instead of 3 hand-picked ones.
 
 Why: 3 manually-chosen windows can't distinguish "the rule is weak in a
@@ -27,7 +27,7 @@ existing "window 3" (2023-01-01..2023-06-30) as a built-in consistency
 check -- should reproduce -5.44%/41.7% win if the harness is correct.
 
 Usage:
-    SUPABASE_URL=... SUPABASE_KEY=... python src/walk_forward_v3.py
+    SUPABASE_URL=... SUPABASE_KEY=... python src/walk_forward_v4.py
 """
 
 import os
@@ -35,13 +35,13 @@ import pickle
 import sys
 from datetime import date, timedelta
 
-# Must be set before importing backtest_v3 -- it reads these as
+# Must be set before importing backtest_v4 -- it reads these as
 # module-level constants at import time. FETCH_START stays at the
 # existing default (2021-01-01); TEST_END is widened to cover the whole
 # schedule below so build_full_dataset's one fetch spans everything.
 os.environ.setdefault("V3_TEST_END", "2026-06-30")
 
-import backtest_v3 as bt  # noqa: E402
+import backtest_v4 as bt  # noqa: E402
 from supabase import create_client  # noqa: E402
 
 
@@ -143,8 +143,8 @@ def main():
         print(f"  Max DD     : mean {traded['max_dd'].mean():.2f}%  worst {traded['max_dd'].min():.2f}%")
         print(f"  CVaR(95%)  : mean {traded['cvar_95'].mean():.2f}%  worst {traded['cvar_95'].min():.2f}%")
 
-    res_df.to_csv("walk_forward_v3_summary.csv", index=False)
-    print("\n[OK] Saved walk_forward_v3_summary.csv")
+    res_df.to_csv("walk_forward_v4_summary.csv", index=False)
+    print("\n[OK] Saved walk_forward_v4_summary.csv")
 
 
 if __name__ == "__main__":

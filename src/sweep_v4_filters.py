@@ -1,4 +1,4 @@
-"""sweep_v31_filters.py -- picks the V3.1 entry-filter settings by sweeping
+"""sweep_v4_filters.py -- picks the V3.1 entry-filter settings by sweeping
 them through the full walk-forward, instead of eyeballing one number.
 
 Why a sweep and not a single pick: the hysteresis-band episode in
@@ -23,14 +23,14 @@ Default axes sweep ATR alone (both auto-reject knobs off) so the ceiling is
 read against the live baseline. Phase 2 turns the filters on at whichever
 ATR plateau phase 1 finds -- see the axis env vars below.
 
-Reuses walk_forward_v3's pickle cache, so the expensive full-history fetch
+Reuses walk_forward_v4's pickle cache, so the expensive full-history fetch
 happens once for the whole grid rather than once per cell.
 
 Read the output as: prefer a setting whose neighbours are also fine over
 one isolated spike. Report the plateau, not the peak.
 
 Usage:
-    SUPABASE_URL=... SUPABASE_KEY=... python src/sweep_v31_filters.py
+    SUPABASE_URL=... SUPABASE_KEY=... python src/sweep_v4_filters.py
 """
 
 import itertools
@@ -40,7 +40,7 @@ import sys
 
 # Axes are env-overridable so phase 2 (auto-reject filters, once the ATR
 # plateau is known) doesn't have to re-run the whole grid:
-#   SWEEP_ATR=0.08,0.07  SWEEP_ARA=0,1  SWEEP_ARB=0,1  python src/sweep_v31_filters.py
+#   SWEEP_ATR=0.08,0.07  SWEEP_ARA=0,1  SWEEP_ARB=0,1  python src/sweep_v4_filters.py
 def _axis(env_name: str, default: list) -> list:
     raw = os.environ.get(env_name, "")
     return [v.strip() for v in raw.split(",") if v.strip()] or default
@@ -66,7 +66,7 @@ def main():
             "V3_ARA_FILTER": ara, "V3_ARB_EXIT_REALISM": arb,
         }
         proc = subprocess.run(
-            [sys.executable, os.path.join(here, "walk_forward_v3.py")],
+            [sys.executable, os.path.join(here, "walk_forward_v4.py")],
             env=env, capture_output=True, text=True,
         )
         sys.stdout.write(proc.stdout)
@@ -75,10 +75,10 @@ def main():
             print(f"[SWEEP] {label} FAILED (exit {proc.returncode}) -- continuing", flush=True)
             continue
 
-        # walk_forward_v3.py rewrites this CSV each run; read it before the
+        # walk_forward_v4.py rewrites this CSV each run; read it before the
         # next cell overwrites it.
         import pandas as pd
-        summary_path = os.path.join(os.getcwd(), "walk_forward_v3_summary.csv")
+        summary_path = os.path.join(os.getcwd(), "walk_forward_v4_summary.csv")
         if not os.path.exists(summary_path):
             print(f"[SWEEP] {label}: no summary csv produced -- skipping", flush=True)
             continue
@@ -110,8 +110,8 @@ def main():
     print(res.to_string(index=False))
     print("\nBaseline is the live frozen config: atr_max=0.10, ara=0, arb=0.")
     print("Pick a PLATEAU (neighbouring cells also healthy), not the single best cell.")
-    res.to_csv("sweep_v31_filters_summary.csv", index=False)
-    print("\n[OK] Saved sweep_v31_filters_summary.csv")
+    res.to_csv("sweep_v4_filters_summary.csv", index=False)
+    print("\n[OK] Saved sweep_v4_filters_summary.csv")
 
 
 if __name__ == "__main__":

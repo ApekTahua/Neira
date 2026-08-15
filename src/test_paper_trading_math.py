@@ -1,7 +1,7 @@
 """Dry-run self-check for the shared functions the live paper-trading
 engine calls (src/paper_signal_scan.py, src/paper_monitor.py) --
 compute_entry_fill, evaluate_position_exit, score_candidates
-(src/backtest_v3.py) and paper_common.total_buy_fee. No Supabase
+(src/backtest_v4.py) and paper_common.total_buy_fee. No Supabase
 connection needed -- this is the part of the plan's dry-run step that
 doesn't require the new tables to exist yet (see docs/V3_FINDINGS_LOG.md
 "Live paper trading" section for why full end-to-end testing is blocked
@@ -9,7 +9,7 @@ on that).
 
 Expected values are computed independently in this file (not by calling
 back into the functions under test), against the exact formulas
-documented in backtest_v3.py's compute_entry_fill/evaluate_position_exit
+documented in backtest_v4.py's compute_entry_fill/evaluate_position_exit
 docstrings.
 
 Usage: python src/test_paper_trading_math.py
@@ -20,7 +20,7 @@ from datetime import date
 
 os.environ.setdefault("V3_TEST_END", "2026-07-31")
 
-import backtest_v3 as bt  # noqa: E402
+import backtest_v4 as bt  # noqa: E402
 import paper_common as pc  # noqa: E402
 import config as cfg  # noqa: E402
 

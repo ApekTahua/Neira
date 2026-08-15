@@ -152,7 +152,7 @@ wrong per the user and must not be how this is built:
    (user's explicit point). Score a rolling window (10-20 trading days),
    not a single day. Two features: (a) magnitude -- sum of net flow over
    the window, normalized by the stock's own ADTV (reuse the ADTV concept
-   already in `src/backtest_v3.py`/V3, don't reinvent); (b) consistency --
+   already in `src/backtest_v4.py`/V3, don't reinvent); (b) consistency --
    `days_net_positive / active_days` in the window. High magnitude + low
    consistency (one huge day, rest flat/negative) is a weaker signal than
    the same magnitude spread evenly -- flag, don't just sum.
@@ -594,7 +594,7 @@ tracked in this doc. Whoever builds the frontend page must include this.
 
 ### V4 sizing integration built + validated, promotion explicitly deferred (2026-08-12)
 
-Built `BANDAR_SIZING_ENABLED` (`backtest_v3.py`, default OFF): a
+Built `BANDAR_SIZING_ENABLED` (`backtest_v4.py`, default OFF): a
 `bandar_mult` on position size, same pattern/bounds as `size_mult`/
 `liq_mult`/`trend_mult`, driven by `concentration` (the one feature that
 survived Layer 1). `attach_bandarmology()` merges it in from local
@@ -668,7 +668,7 @@ yet, per the explicit "keep enhancing before aggregating" instruction.
 
 ### mover_pairs V4 sizing candidate: strongest RAW signal, weaker SIZING multiplier (2026-08-12)
 
-Built `MOVER_SIZING_ENABLED` (`backtest_v3.py`, off by default, separate
+Built `MOVER_SIZING_ENABLED` (`backtest_v4.py`, off by default, separate
 flag from `BANDAR_SIZING_ENABLED` so each feature's own contribution
 stays isolable): `mover_score` = count of flagged `mover_pairs` brokers
 acting in their own historically-predicted direction that stock-day,
@@ -903,7 +903,7 @@ as the lead candidate for whenever V4 integration resumes.
 
 User's explicit V4 request (2026-08-12 message, "detect accumulation/distribution big or small, based on transactions, for V4, regardless the minimum lack of full data"): revisited after re-reading this doc + `attach_mover_signal()` closely rather than starting a fresh Phase-1 validation (that work is already done, exhaustively, above -- redoing it would waste the existing evidence).
 
-**Real gap found in the current `mover_score` (`backtest_v3.py:558-606`), not previously documented:** the event condition is `sign(net_lot) == predicted_sign` -- this fires equally for a broker with NEGATIVE `predicted_sign` net-SELLING today (a bearish-predicting event) as for a broker with POSITIVE `predicted_sign` net-BUYING (bullish-predicting). Both increment the same unsigned `mover_score` count. **`mover_score` is not directional** -- it measures "how many flagged movers are acting true to their own historical pattern today," not Accumulation vs Distribution. This is a second, previously-undiagnosed candidate explanation for the "genuinely mixed" `MOVER_SIZING_ENABLED` walk-forward result (line 669-718 above), alongside the already-documented bimodal-integer-count discontinuity.
+**Real gap found in the current `mover_score` (`backtest_v4.py:558-606`), not previously documented:** the event condition is `sign(net_lot) == predicted_sign` -- this fires equally for a broker with NEGATIVE `predicted_sign` net-SELLING today (a bearish-predicting event) as for a broker with POSITIVE `predicted_sign` net-BUYING (bullish-predicting). Both increment the same unsigned `mover_score` count. **`mover_score` is not directional** -- it measures "how many flagged movers are acting true to their own historical pattern today," not Accumulation vs Distribution. This is a second, previously-undiagnosed candidate explanation for the "genuinely mixed" `MOVER_SIZING_ENABLED` walk-forward result (line 669-718 above), alongside the already-documented bimodal-integer-count discontinuity.
 
 **Proposed fix, addresses both known problems at once:**
 ```
@@ -917,7 +917,7 @@ signed_score = sum(predicted_sign * |net_val|)  # per (stock_code, trade_date), 
 
 ### ACCDIST_SIZING_ENABLED built + isolated walk-forward: fixes MOVER's specific symptom, still doesn't clear the bar (2026-08-15)
 
-Built `attach_accdist_signal()`/`_accdist_aggregate()` (`backtest_v3.py`), wired as `ACCDIST_SIZING_ENABLED` (env `V3_ACCDIST_SIZING`, default OFF, own `ACCDIST_SIZING_MIN`/`_MAX` bounds, 0.5/2.0 same as the other two multipliers). Reuses `attach_mover_signal()`'s exact candidate-mover detection (`per_broker_daily`/`candidate_movers`/`_bandar_add_forward_returns`, same `predicted_sign` derivation) -- only the aggregation step changed, per the plan above: `accdist_score = sum(predicted_sign * |net_val|)` over the same qualifying events (`sign(net_lot) == predicted_sign`), instead of an unsigned count. Same NaN-vs-0 semantics as `mover_score`/`concentration` (pre-coverage dates NaN, post-coverage merge-misses a real 0). `compute_entry_fill`'s `accdist_mult` reuses the identical `min(MAX, max(MIN, value/train_p90))` clip formula `bandar_mult`/`mover_mult` already use -- the directionality comes entirely from `accdist_score` itself being signed (a Distribution-dominated train day divides out negative and clips straight to the 0.5x floor; a strong Accumulation day scales toward the 2.0x cap), not from new branching logic. Added `src/test_accdist_signal.py` (assert-based, no Supabase/Parquet needed) covering the three behaviors that actually differ from `mover_score`: a bullish and bearish qualifying event on the same stock-day net to a signed sum (not an unsigned count of 2); a sign-mismatched event is excluded, not flipped; a stock/day with no flagged movers produces no row (the NaN-vs-0 boundary is `attach_accdist_signal`'s job one layer up, not the aggregator's).
+Built `attach_accdist_signal()`/`_accdist_aggregate()` (`backtest_v4.py`), wired as `ACCDIST_SIZING_ENABLED` (env `V3_ACCDIST_SIZING`, default OFF, own `ACCDIST_SIZING_MIN`/`_MAX` bounds, 0.5/2.0 same as the other two multipliers). Reuses `attach_mover_signal()`'s exact candidate-mover detection (`per_broker_daily`/`candidate_movers`/`_bandar_add_forward_returns`, same `predicted_sign` derivation) -- only the aggregation step changed, per the plan above: `accdist_score = sum(predicted_sign * |net_val|)` over the same qualifying events (`sign(net_lot) == predicted_sign`), instead of an unsigned count. Same NaN-vs-0 semantics as `mover_score`/`concentration` (pre-coverage dates NaN, post-coverage merge-misses a real 0). `compute_entry_fill`'s `accdist_mult` reuses the identical `min(MAX, max(MIN, value/train_p90))` clip formula `bandar_mult`/`mover_mult` already use -- the directionality comes entirely from `accdist_score` itself being signed (a Distribution-dominated train day divides out negative and clips straight to the 0.5x floor; a strong Accumulation day scales toward the 2.0x cap), not from new branching logic. Added `src/test_accdist_signal.py` (assert-based, no Supabase/Parquet needed) covering the three behaviors that actually differ from `mover_score`: a bullish and bearish qualifying event on the same stock-day net to a signed sum (not an unsigned count of 2); a sign-mismatched event is excluded, not flipped; a stock/day with no flagged movers produces no row (the NaN-vs-0 boundary is `attach_accdist_signal`'s job one layer up, not the aggregator's).
 
 **Side-finding while regenerating the cache, unrelated to this feature's own result:** the local Parquet backfill (`data/bandarmology_history/`) now has real data back to 2020-06-02 (file mtimes 2026-08-13/14), not 2023-01-01 as this doc's "Local historical backfill" section still states -- extended by someone/something between the last cache build (2026-08-12) and this session, not documented elsewhere. Patched the existing `.cache/walk_forward_data_2021-01-01_2026-06-30.pkl` in place (loaded the pickle, ran `attach_accdist_signal()` against it, re-saved -- no Supabase refetch, no `SUPABASE_URL`/`KEY` needed or available in this environment) rather than a full rebuild; confirmed the OFF baseline reproduces the exact previously-recorded numbers below byte-for-byte after the patch, so the patch itself didn't disturb anything. One real consequence: `accdist_score` has 0 NaN rows across the whole cached df (full 2020-2026 coverage), while `concentration`/`mover_score` in the same cached df still show their original NaN gaps before 2023-01-02 (computed before the backfill was extended) -- harmless for this isolated test specifically (their multipliers are gated off regardless of data presence when their own flags are off), but flagging so a future combined-feature run doesn't assume all three columns share one coverage start.
 
@@ -948,7 +948,7 @@ Critic pass (same "investigate then critique" discipline as everything else this
 
 ### Fix applied + rerun 2026-08-15: threshold corrected, multiplier confirmed continuous, walk-forward verdict unchanged (for a different, now-legitimate reason)
 
-**Fix** (`backtest_v3.py`, new `_accdist_score_p90()` helper, replacing the inline `train.quantile(0.90)` at the old call site): restrict to TRAIN days where `accdist_score != 0` (an event actually happened), then take `.abs().quantile(0.90)` of that subset -- magnitude-based, always positive regardless of the accumulation/distribution mix in the train window, immune to the zero-mass. `concentration_p90`/`mover_score_p90` don't need this treatment because `concentration` is computed from `daily_stock_features(per_broker_net(raw))` -- every actively-traded stock-day gets a value, no "candidate mover" gate -- while `accdist_score`/`mover_score` both require a broker to be flagged as a historically-predictive mover for that specific stock AND act in its predicted direction that specific day, a much narrower intersection. Degenerate fallback (`p90 = 1.0` if no nonzero training days exist at all) kept for the genuine edge case.
+**Fix** (`backtest_v4.py`, new `_accdist_score_p90()` helper, replacing the inline `train.quantile(0.90)` at the old call site): restrict to TRAIN days where `accdist_score != 0` (an event actually happened), then take `.abs().quantile(0.90)` of that subset -- magnitude-based, always positive regardless of the accumulation/distribution mix in the train window, immune to the zero-mass. `concentration_p90`/`mover_score_p90` don't need this treatment because `concentration` is computed from `daily_stock_features(per_broker_net(raw))` -- every actively-traded stock-day gets a value, no "candidate mover" gate -- while `accdist_score`/`mover_score` both require a broker to be flagged as a historically-predictive mover for that specific stock AND act in its predicted direction that specific day, a much narrower intersection. Degenerate fallback (`p90 = 1.0` if no nonzero training days exist at all) kept for the genuine edge case.
 
 **Confirmed the fix, not just asserted it.** Old (buggy): `accdist_score_p90 = 1.0` in all 9 windows (verified in the correction above). New: `accdist_score_p90` ranges Rp 707,990,000 -- Rp 1,000,000,000 across the 9 windows -- a real, positive, Rupiah-scale reference, not the degenerate fallback. `test_accdist_signal.py` gained a direct unit test for `_accdist_score_p90()` (a mostly-zero fixture that reproduces the exact bug -- plain `quantile(0.90)` lands at 0.0 -- then confirms the fixed function returns a positive magnitude scale instead; plus the genuine all-zero/empty edge case still falls back to 1.0). Then checked the actual multiplier distribution two ways:
 - **Among the population capable of ever landing off the floor** (nonzero `accdist_score` days, n=101,153, evaluated against all 9 windows' train-derived p90, n=910,377 window-observations): **3.95% now land strictly between 0.5x/2.0x**, vs the verified **0.00%** under the bug. 93.06% still clip to the 0.5x floor and 2.99% to the 2.0x cap -- expected, not a residual bug: roughly half of nonzero `accdist_score` values are negative (Distribution-predicting), and the ratio-clip formula floors *any* negative value regardless of magnitude by design (same as `bandar_mult`/`mover_mult`'s formula shape). The fix's job was only to stop the zero-mass from forcing a degenerate denominator -- confirmed done.
@@ -1000,7 +1000,7 @@ the overlap value (Rupiah) each side's net position could plausibly have
 absorbed from the other, summed across every flagged pair active for that
 stock, unsigned by construction (always >= 0). Implemented as
 `_rotation_aggregate()`/`_rotation_score_p90()`/`attach_rotation_signal()`
-in `src/backtest_v3.py`, wired as `ROTATION_SIZING_ENABLED` (env
+in `src/backtest_v4.py`, wired as `ROTATION_SIZING_ENABLED` (env
 `V3_ROTATION_SIZING`, default OFF, own `ROTATION_SIZING_MIN`/`_MAX` = 0.5/2.0,
 same bounds as the other three). `src/test_rotation_signal.py` covers the
 aggregation logic (opposite-side vs. same-side vs. one-side-only-active,
@@ -1131,7 +1131,7 @@ above). User explicitly asked to revisit promotion now that the
 alternatives are exhausted.
 
 **Change**: `BANDAR_SIZING_ENABLED`'s default flipped from
-`os.environ.get("V3_BANDAR_SIZING", "0") == "1"` to `"1"` (`backtest_v3.py`)
+`os.environ.get("V3_BANDAR_SIZING", "0") == "1"` to `"1"` (`backtest_v4.py`)
 -- env var override kept intact in both directions, only the default
 changed.
 
@@ -1167,7 +1167,7 @@ Traced the entire live path end to end before touching anything:
   actually executes live -- it was built and working since the 2026-08-12
   session, just never previously exercised because the flag was off.
 - `score_candidates()` already returns `concentration` in every signal
-  dict (`backtest_v3.py:1081`); `paper_signal_scan.py` already persists it
+  dict (`backtest_v4.py:1081`); `paper_signal_scan.py` already persists it
   onto the `PENDING` `paper_positions` row (line 408) and already persists
   `concentration_p90` onto `paper_account` (line 460).
 - `paper_monitor.py` already reads `concentration_p90` back off

@@ -41,7 +41,7 @@ isolation, then the surrounding sweep showed a 61%-501% swing on nearby
 values -- one lucky point, not a real optimum). "Top rank could still be
 better in some other period" is a real possibility this script's original
 aggregate-only output couldn't rule out. So it now ALSO breaks the same
-comparison down by the same 6-month rolling windows walk_forward_v3.py
+comparison down by the same 6-month rolling windows walk_forward_v4.py
 uses, and reports whether "top 2 underperforms rank 6-12" holds in most/
 all windows or is itself period-specific -- the walk-forward's own
 consistency standard, applied to this question too.
@@ -62,13 +62,13 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 import config as cfg  # noqa: E402
-import backtest_v3 as bt  # noqa: E402
+import backtest_v4 as bt  # noqa: E402
 from supabase import create_client  # noqa: E402
 
 HORIZONS = (5, 10, 20)
 TOP_N_TRACKED = 12  # how deep into the daily ranking to follow
 START = os.environ.get("DIAG_START", "2022-01-01")
-WINDOW_MONTHS = 6  # matches walk_forward_v3.py's rolling-window size
+WINDOW_MONTHS = 6  # matches walk_forward_v4.py's rolling-window size
 
 
 def _month_add(d: date, months: int) -> date:
@@ -79,7 +79,7 @@ def _month_add(d: date, months: int) -> date:
 
 def window_label(d: date, first_start: date, months: int = WINDOW_MONTHS) -> str:
     """Which non-overlapping N-month block `d` falls into, counted from
-    first_start -- same block boundaries walk_forward_v3.py's own
+    first_start -- same block boundaries walk_forward_v4.py's own
     build_schedule() produces, so results from the two scripts line up."""
     cursor = first_start
     while True:
@@ -188,7 +188,7 @@ def main():
     # ---- Per-window robustness check (the direct answer to "top rank could
     # still be better sometimes -- one aggregate number doesn't rule that
     # out") -- same score ordering as block A, but broken down by the same
-    # 6-month windows walk_forward_v3.py uses, so a period-specific fluke
+    # 6-month windows walk_forward_v4.py uses, so a period-specific fluke
     # can't hide inside one big average. ----
     print("\n" + "=" * 96)
     print("D. PER-WINDOW CHECK -- does 'top 2 underperforms rank 6-12' hold consistently,")
@@ -232,7 +232,7 @@ def main():
     print("Block D is what decides whether A's finding is a real, actionable pattern")
     print("or a single-sample artifact -- read it before acting on A at all.")
     print("\nOne diagnostic is not a mandate: anything adopted from here still has")
-    print("to clear walk_forward_v3.py before it goes anywhere near a live run.")
+    print("to clear walk_forward_v4.py before it goes anywhere near a live run.")
 
     # Small aggregates are what get published/read afterwards; the raw
     # candidate-day table stays a build artifact (it can run to tens of

@@ -9,7 +9,7 @@ trading day: rank the day's stocks into quintiles, then compare mean
 forward return (close-to-close, 5/10/20 sessions) of the top vs bottom
 quintile. A real signal shows top > bottom consistently across
 sub-periods, not just in one lucky stretch -- same anti-fluke standard
-as walk_forward_v3.py and diagnose_score_power.py's own window
+as walk_forward_v4.py and diagnose_score_power.py's own window
 breakdown (the hysteresis-band sweep is the cautionary tale for why
 this matters: a single-window read passed as "validated" once, wasn't).
 

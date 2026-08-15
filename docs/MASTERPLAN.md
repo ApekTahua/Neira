@@ -15,7 +15,7 @@ to `src/archive_v2/` (not deleted, git history intact): the original
 approach, and a self-contained `phase0e`-`phase0i` ML research cluster.
 `strategy.py`/`hmm_model.py` and `phase0_signal_validation.py`/`phase0b`/
 `phase0c`/`phase0d` stayed in `src/` despite looking similarly old --
-`backtest_v3.py` genuinely still imports them. See
+`backtest_v4.py` genuinely still imports them. See
 `src/archive_v2/README.md` for the full breakdown.
 
 ## V1 -- Live production (main branch)

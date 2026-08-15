@@ -2,7 +2,7 @@
 
 Anchored on real bars from ihsg_eod, and on the limit distribution measured
 over 2025-01-01+ (bars closing AT their high cluster just under 10 / 20 /
-25 / 35% and collapse immediately above each -- see backtest_v3's comment
+25 / 35% and collapse immediately above each -- see backtest_v4's comment
 block for the counts).
 
 The board problem this guards against: IDX sets the limit by BOARD, and
@@ -21,7 +21,7 @@ os.environ.setdefault("V3_ARB_EXIT_REALISM", "1")
 
 import pandas as pd  # noqa: E402
 
-import backtest_v3 as bt  # noqa: E402
+import backtest_v4 as bt  # noqa: E402
 
 
 # ---- limit inference ------------------------------------------------------

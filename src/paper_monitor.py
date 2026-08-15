@@ -32,7 +32,7 @@ from datetime import date, datetime, timezone
 os.environ.setdefault("V3_TEST_END", date.today().isoformat())
 
 import config as cfg  # noqa: E402
-import backtest_v3 as bt  # noqa: E402
+import backtest_v4 as bt  # noqa: E402
 import paper_common as pc  # noqa: E402
 from supabase import create_client  # noqa: E402
 

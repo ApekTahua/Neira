@@ -1,4 +1,4 @@
-"""Dry-run self-check for backtest_v3._accdist_aggregate() and
+"""Dry-run self-check for backtest_v4._accdist_aggregate() and
 _accdist_score_p90() -- the aggregation step and the train-derived scaling
 step behind ACCDIST_SIZING_ENABLED (see attach_accdist_signal's docstring
 and docs/BANDARMOLOGY_DESIGN.md, "Directional Big/Small
@@ -15,7 +15,7 @@ os.environ.setdefault("V3_TEST_END", "2026-06-30")
 
 import pandas as pd  # noqa: E402
 
-from backtest_v3 import _accdist_aggregate, _accdist_score_p90  # noqa: E402
+from backtest_v4 import _accdist_aggregate, _accdist_score_p90  # noqa: E402
 
 D1, D2 = date(2026, 1, 5), date(2026, 1, 6)
 
@@ -93,4 +93,4 @@ print("[PASS] _accdist_score_p90 is no longer dominated by the zero-mass "
 print("[PASS] _accdist_score_p90 still falls back to 1.0 for a genuinely "
       "all-zero/empty train population")
 
-print("\nAll backtest_v3._accdist_aggregate / _accdist_score_p90 checks passed.")
+print("\nAll backtest_v4._accdist_aggregate / _accdist_score_p90 checks passed.")

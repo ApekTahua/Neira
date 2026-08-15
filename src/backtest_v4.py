@@ -1,5 +1,5 @@
 """
-backtest_v3.py — full portfolio backtest of the ONE entry rule that
+backtest_v4.py — full portfolio backtest of the ONE entry rule that
 survived every Phase 0 test tonight with genuine out-of-sample evidence:
 
     BULLISH regime (IHSG vs its own MA50)
@@ -28,7 +28,7 @@ Train split (threshold-fitting only, never simulated): 2021-01-01..2024-06-30
 Test split (the only period actually traded/reported): 2024-07-31..2026-06-30
 
 Usage:
-    SUPABASE_URL=... SUPABASE_KEY=... python src/backtest_v3.py
+    SUPABASE_URL=... SUPABASE_KEY=... python src/backtest_v4.py
 """
 
 import os
@@ -396,7 +396,7 @@ ATR_PRICE_RATIO_MAX = float(os.environ.get("V3_ATR_PRICE_RATIO_MAX", "0.10"))
                             # this caps signal-day volatility directly, price-agnostic (GOTO/BUKA
                             # stay eligible despite low price since their ATR% is normal, ~4%).
                             # Env-overridable so the V3.1 candidate ceiling can be swept through
-                            # walk_forward_v3.py without editing this file; the 0.10 default
+                            # walk_forward_v4.py without editing this file; the 0.10 default
                             # keeps the frozen live V3_PAPER run byte-identical.
 
 # ---- Auto-reject (ARA/ARB) detection -- both filters OFF by default -------
@@ -1842,9 +1842,9 @@ def main():
     if metrics is None:
         return
 
-    df_trades.to_csv("backtest_v3_trades.csv", index=False)
-    df_equity.to_csv("backtest_v3_equity.csv", index=False)
-    print(f"\n[OK] Saved backtest_v3_trades.csv ({len(df_trades)} rows), backtest_v3_equity.csv ({len(df_equity)} rows).")
+    df_trades.to_csv("backtest_v4_trades.csv", index=False)
+    df_equity.to_csv("backtest_v4_equity.csv", index=False)
+    print(f"\n[OK] Saved backtest_v4_trades.csv ({len(df_trades)} rows), backtest_v4_equity.csv ({len(df_equity)} rows).")
 
     if os.environ.get("V3_SKIP_SAVE", "0") == "1":
         print("[SKIP] V3_SKIP_SAVE=1 -- not writing to Supabase (dev/sweep run).")

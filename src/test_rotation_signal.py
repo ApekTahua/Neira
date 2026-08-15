@@ -1,4 +1,4 @@
-"""Dry-run self-check for backtest_v3._rotation_aggregate() and
+"""Dry-run self-check for backtest_v4._rotation_aggregate() and
 _rotation_score_p90() -- the aggregation step and the train-derived scaling
 step behind ROTATION_SIZING_ENABLED (see attach_rotation_signal's docstring
 and docs/BANDARMOLOGY_DESIGN.md, "rotation_pairs V4 sizing candidate").
@@ -15,7 +15,7 @@ os.environ.setdefault("V3_TEST_END", "2026-06-30")
 
 import pandas as pd  # noqa: E402
 
-from backtest_v3 import _rotation_aggregate, _rotation_score_p90  # noqa: E402
+from backtest_v4 import _rotation_aggregate, _rotation_score_p90  # noqa: E402
 
 D1, D2, D3 = date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)
 
@@ -101,4 +101,4 @@ print("[PASS] _rotation_score_p90 is not dominated by the zero-mass "
 print("[PASS] _rotation_score_p90 still falls back to 1.0 for a genuinely "
       "all-zero/empty train population")
 
-print("\nAll backtest_v3._rotation_aggregate / _rotation_score_p90 checks passed.")
+print("\nAll backtest_v4._rotation_aggregate / _rotation_score_p90 checks passed.")
