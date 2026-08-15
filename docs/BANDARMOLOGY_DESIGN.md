@@ -899,6 +899,22 @@ approach (not just its original 5-day parameterization) is the right
 shape for a Bandarmology feature, and reinforces treating `mover_pairs`
 as the lead candidate for whenever V4 integration resumes.
 
+### Directional Big/Small Accumulation/Distribution classifier -- gap found, redesign started (2026-08-15)
+
+User's explicit V4 request (2026-08-12 message, "detect accumulation/distribution big or small, based on transactions, for V4, regardless the minimum lack of full data"): revisited after re-reading this doc + `attach_mover_signal()` closely rather than starting a fresh Phase-1 validation (that work is already done, exhaustively, above -- redoing it would waste the existing evidence).
+
+**Real gap found in the current `mover_score` (`backtest_v3.py:558-606`), not previously documented:** the event condition is `sign(net_lot) == predicted_sign` -- this fires equally for a broker with NEGATIVE `predicted_sign` net-SELLING today (a bearish-predicting event) as for a broker with POSITIVE `predicted_sign` net-BUYING (bullish-predicting). Both increment the same unsigned `mover_score` count. **`mover_score` is not directional** -- it measures "how many flagged movers are acting true to their own historical pattern today," not Accumulation vs Distribution. This is a second, previously-undiagnosed candidate explanation for the "genuinely mixed" `MOVER_SIZING_ENABLED` walk-forward result (line 669-718 above), alongside the already-documented bimodal-integer-count discontinuity.
+
+**Proposed fix, addresses both known problems at once:**
+```
+signed_score = sum(predicted_sign * |net_val|)  # per (stock_code, trade_date), over qualifying events
+```
+- Signed: positive = net Accumulation-predicting activity, negative = net Distribution-predicting.
+- Magnitude-weighted + continuous: fixes the small-p90 bimodal-count discontinuity the same way `concentration`'s percentile transform already does.
+- Big/Small buckets: train-derived percentiles of `signed_score`, same pattern as every other feature in this doc (no hand-picked thresholds before real distribution data).
+
+**Plan**: build as a new isolated flag (own name, not merged into `BANDAR_SIZING_ENABLED` or `MOVER_SIZING_ENABLED`, same isolation discipline as every prior feature here so each one's own contribution stays measurable), full 9-window walk-forward, off vs on, same promotion bar as everything else in this doc. Dispatched to a quant-analyst pass; results to be appended here once back, honest either way (a real negative result is exactly as valuable as a positive one, per this doc's own established standard).
+
 ## Open questions (resolve once real data exists, not before)
 
 - Exact rolling window length (10d vs 20d vs adaptive) -- tune against
