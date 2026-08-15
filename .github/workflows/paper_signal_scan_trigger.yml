@@ -51,7 +51,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
           # Pinned explicitly 2026-08-15 when BANDAR_SIZING_ENABLED's default
-          # flipped to ON in backtest_v3.py (docs/BANDARMOLOGY_DESIGN.md) --
+          # flipped to ON in backtest_v4.py (docs/BANDARMOLOGY_DESIGN.md) --
           # V3_PAPER is the frozen baseline V4_PAPER was split off from
           # specifically to isolate this exact change; without this pin the
           # default flip would silently change V3_PAPER's own new-entry

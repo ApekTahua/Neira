@@ -7,7 +7,7 @@ name: V3.1 Filter Sweep (research)
 #
 # Sweeps the ATR ceiling x ARA filter grid through the full walk-forward so
 # the V3.1 settings get chosen from a plateau rather than eyeballed -- see
-# src/sweep_v31_filters.py's docstring for why that distinction matters here.
+# src/sweep_v4_filters.py's docstring for why that distinction matters here.
 on:
   workflow_dispatch:
     inputs:
@@ -64,7 +64,7 @@ jobs:
           SWEEP_ATR: ${{ inputs.atr }}
           SWEEP_ARA: ${{ inputs.ara }}
           SWEEP_ARB: ${{ inputs.arb }}
-        run: python src/sweep_v31_filters.py
+        run: python src/sweep_v4_filters.py
 
       - name: Jalankan Diagnose Score Power
         if: inputs.job == 'diagnose_score_power'
@@ -86,8 +86,8 @@ jobs:
           SWEEP_ARA: ${{ inputs.ara }}
           SWEEP_ARB: ${{ inputs.arb }}
         run: |
-          python src/publish_research_result.py sweep_v31_filters sweep_v31_filters_summary.csv "run ${{ github.run_number }}"
-          python src/publish_research_result.py walk_forward_v3 walk_forward_v3_summary.csv "run ${{ github.run_number }}"
+          python src/publish_research_result.py sweep_v4_filters sweep_v4_filters_summary.csv "run ${{ github.run_number }}"
+          python src/publish_research_result.py walk_forward_v4 walk_forward_v4_summary.csv "run ${{ github.run_number }}"
           python src/publish_research_result.py diagnose_score_power diagnose_score_power_summary.csv "run ${{ github.run_number }}"
           python src/publish_research_result.py diagnose_score_power_by_window diagnose_score_power_by_window.csv "run ${{ github.run_number }}"
 
@@ -97,8 +97,8 @@ jobs:
         with:
           name: v31-research-results
           path: |
-            sweep_v31_filters_summary.csv
-            walk_forward_v3_summary.csv
+            sweep_v4_filters_summary.csv
+            walk_forward_v4_summary.csv
             diagnose_score_power_summary.csv
             diagnose_score_power_by_window.csv
             diagnose_score_power_raw.csv
