@@ -42,6 +42,7 @@ os.environ.setdefault("V3_TEST_END", date.today().isoformat())
 import config as cfg  # noqa: E402
 import backtest_v4 as bt  # noqa: E402
 import paper_common as pc  # noqa: E402
+from db_retry import retry as _retry  # noqa: E402
 from supabase import create_client  # noqa: E402
 
 LOT_SIZE = bt.LOT_SIZE
@@ -89,17 +90,32 @@ def _persist_position(supabase, position_id: int, pos: dict, day_high=None, day_
         payload["day_high"] = day_high
     if day_low is not None:
         payload["day_low"] = day_low
-    supabase.table("paper_positions").update(payload).eq("id", position_id).execute()
+    # Retry-safe: every field in `payload` is an absolute snapshot of `pos`/
+    # day_high/day_low keyed by this row's own id, not a delta -- a replayed
+    # write after a lost response re-applies the same final state.
+    _retry(lambda: supabase.table("paper_positions").update(payload).eq("id", position_id).execute())
 
 
 def _close_position(supabase, run_id: int, position_id: int, pos: dict, trade_record: dict) -> None:
-    supabase.table("paper_positions").update({
+    # Retry-safe: absolute overwrite keyed by this row's own id.
+    _retry(lambda: supabase.table("paper_positions").update({
         "status": "CLOSED", "remaining_lots": pos["remaining_lots"],
         "exit_date": trade_record["exit_date"].isoformat(), "exit_price": trade_record["exit_price"],
         "exit_reason": trade_record["exit_reason"], "pnl": trade_record["pnl"], "pnl_pct": trade_record["pnl_pct"],
         "hold_days": trade_record["hold_days"],
         "exited_at": datetime.now(timezone.utc).isoformat(),
-    }).eq("id", position_id).execute()
+    }).eq("id", position_id).execute())
+    # Deliberately NOT wrapped in retry: bare INSERT with no idempotency key
+    # (no unique constraint on run_id/stock_code/exit_date etc in
+    # sql/paper_trading_schema.sql -- backtest_trades predates that file and
+    # isn't defined there at all). If the first attempt actually succeeded
+    # server-side and only the response was lost to a transient blip, a
+    # retry would silently create a second identical backtest_trades row for
+    # the same exit, double-counting this trade in win-rate/profit-factor/
+    # frontend charts -- worse than the status quo (an uncaught exception
+    # here crashes the run, run_guarded() alerts, and the next scan picks up
+    # cleanly since paper_positions is already CLOSED). Same reasoning as
+    # paper_monitor.py's identical backtest_trades.insert() call.
     supabase.table("backtest_trades").insert({
         "run_id": run_id, "stock_code": trade_record["stock_code"],
         "entry_date": trade_record["entry_date"].isoformat(), "exit_date": trade_record["exit_date"].isoformat(),
@@ -117,13 +133,13 @@ def main():
         sys.exit("Missing SUPABASE_URL / SUPABASE_KEY")
     supabase = create_client(url, key)
 
-    latest_res = supabase.table("ihsg_eod").select("trade_date").order("trade_date", desc=True).limit(1).execute()
+    latest_res = _retry(lambda: supabase.table("ihsg_eod").select("trade_date").order("trade_date", desc=True).limit(1).execute())
     if not latest_res.data:
         sys.exit("ihsg_eod is empty -- nothing to scan.")
     today = date.fromisoformat(latest_res.data[0]["trade_date"])
 
     run_id = pc.get_paper_run_id(supabase)
-    acct_res = supabase.table("paper_account").select("*").eq("run_id", run_id).limit(1).execute()
+    acct_res = _retry(lambda: supabase.table("paper_account").select("*").eq("run_id", run_id).limit(1).execute())
     if not acct_res.data:
         sys.exit(f"No paper_account row for run_id={run_id} -- run sql/paper_trading_schema.sql's seed first.")
     account = acct_res.data[0]
@@ -141,9 +157,9 @@ def main():
     regime = regime_by_date.get(today, "NEUTRAL")
     trend_strength = trend_strength_by_date.get(today, 0.0)
 
-    open_res = (
+    open_res = _retry(lambda: (
         supabase.table("paper_positions").select("*").eq("run_id", run_id).eq("status", "OPEN").execute()
-    )
+    ))
     open_positions = open_res.data
     today_bars = df[df["trade_date"] == today].set_index("stock_code")
     # Previous trading day's close per stock, for the corporate-action guard
@@ -172,19 +188,20 @@ def main():
     # never alters which ticker is chosen, at what price, or with what size
     # -- an expired order is one that was never fillable in the first place.
     # It only stops dead orders from starving live ones of slots.
-    stale_pending = (
+    stale_pending = _retry(lambda: (
         supabase.table("paper_positions").select("*").eq("run_id", run_id).eq("status", "PENDING")
-        .lt("signal_date", today.isoformat()).execute().data
-    )
+        .lt("signal_date", today.isoformat()).execute()
+    )).data
     for row in stale_pending:
         signal_day = date.fromisoformat(row["signal_date"])
         sessions_waited = pc.trading_days_elapsed(supabase, signal_day, today)
         if sessions_waited < PENDING_EXPIRY_SESSIONS:
             continue
-        supabase.table("paper_positions").update({
+        # Retry-safe: absolute overwrite keyed by this row's own id.
+        _retry(lambda: supabase.table("paper_positions").update({
             "status": "CLOSED", "exit_date": today.isoformat(), "exit_reason": "UNFILLED_EXPIRED",
             "pnl": 0, "pnl_pct": 0, "exited_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", row["id"]).execute()
+        }).eq("id", row["id"]).execute())
         # No backtest_trades row on purpose: nothing was ever bought or sold,
         # so counting it as a trade would pollute win-rate/profit-factor with
         # a phantom breakeven.
@@ -235,7 +252,9 @@ def main():
                 _close_position(supabase, run_id, row["id"], {"remaining_lots": 0}, trade_record)
                 print(f"  [EOD-RECONCILE] {row['stock_code']}: DELISTED_GAP (no print for {no_data_days}d) pnl={pnl:+,.0f}")
             else:
-                supabase.table("paper_positions").update({"no_data_days": no_data_days, "hold_days": hold_days}).eq("id", row["id"]).execute()
+                # Retry-safe: both fields are Python-computed absolute values
+                # (prior value + 1), keyed by this row's own id.
+                _retry(lambda: supabase.table("paper_positions").update({"no_data_days": no_data_days, "hold_days": hold_days}).eq("id", row["id"]).execute())
             continue
 
         bar_row = today_bars.loc[row["stock_code"]]
@@ -249,7 +268,8 @@ def main():
             print(f"  [CORP-ACTION-GUARD] {msg}")
             pc.notify(msg)
             hold_days = int(row["hold_days"]) + 1
-            supabase.table("paper_positions").update({"hold_days": hold_days}).eq("id", row["id"]).execute()
+            # Retry-safe: absolute value keyed by this row's own id.
+            _retry(lambda: supabase.table("paper_positions").update({"hold_days": hold_days}).eq("id", row["id"]).execute())
             continue
 
         pos = _position_dict_from_row(row)
@@ -263,12 +283,14 @@ def main():
             if trade_record["exit_reason"] == "TP1":
                 pos["hold_days"] += 1
                 _persist_position(supabase, row["id"], pos)
-                supabase.table("paper_positions").update({"no_data_days": 0, "last_valid_close": bar[1]}).eq("id", row["id"]).execute()
+                # Retry-safe: absolute overwrite keyed by this row's own id.
+                _retry(lambda: supabase.table("paper_positions").update({"no_data_days": 0, "last_valid_close": bar[1]}).eq("id", row["id"]).execute())
             continue
 
         pos["hold_days"] += 1
         _persist_position(supabase, row["id"], pos)
-        supabase.table("paper_positions").update({"no_data_days": 0, "last_valid_close": bar[1]}).eq("id", row["id"]).execute()
+        # Retry-safe: absolute overwrite keyed by this row's own id.
+        _retry(lambda: supabase.table("paper_positions").update({"no_data_days": 0, "last_valid_close": bar[1]}).eq("id", row["id"]).execute())
 
     # ---- New candidates for tomorrow's open ----
     train_liquid_bullish = df[
@@ -329,22 +351,25 @@ def main():
     # final label -- see daily_gate_summary_schema.sql. Written even when
     # regime_ok is False / scoreboard is empty, since "why is everything
     # WAIT today" is exactly the case this needs to answer too.
-    supabase.table("daily_gate_summary").upsert({
+    # Retry-safe: upsert on an explicit on_conflict target -- replaying the
+    # same write after a lost response re-applies the identical row.
+    _retry(lambda: supabase.table("daily_gate_summary").upsert({
         "trade_date": today.isoformat(), "regime": regime,
         "bullish_streak": int(bullish_streak_by_date.get(today, 0)),
         "trend_strength": float(trend_strength), "regime_ok": bool(regime_ok),
         "weekly_cut": float(weekly_cut), "sector_cut": float(sector_cut),
         "score_p90": float(score_p90), "atr_ratio_max": float(bt.ATR_PRICE_RATIO_MAX),
         "adtv_min": float(cfg.ADTV_MIN),
-    }, on_conflict="trade_date").execute()
+    }, on_conflict="trade_date").execute())
 
     if scoreboard:
-        supabase.table("daily_scoreboard").upsert([{
+        # Retry-safe: same reasoning -- upsert on an explicit on_conflict target.
+        _retry(lambda: supabase.table("daily_scoreboard").upsert([{
             "trade_date": today.isoformat(), "stock_code": row["stock_code"], "score": row["score"],
             "label": row["label"], "percentile": row["percentile"], "weekly_ma_spread": row["weekly_ma_spread"],
             "sector_rs_momentum": row["sector_rs_momentum"], "close_price": row["close_price"],
             "adtv_20": row["adtv_20"], "atr_14": row["atr_14"],
-        } for row in scoreboard], on_conflict="trade_date,stock_code").execute()
+        } for row in scoreboard], on_conflict="trade_date,stock_code").execute())
         print(f"[SCOREBOARD] {len(scoreboard)} tickers scored for {today}")
 
     candidates = []
@@ -368,9 +393,9 @@ def main():
         # already PENDING from a prior day's signal (not yet filled, not yet
         # expired) could still get queued a SECOND time -- SMLE was queued
         # both 2026-08-03 and 2026-08-05 simultaneously before this fix.
-        open_and_pending = supabase.table("paper_positions").select("id, stock_code").eq("run_id", run_id).in_(
+        open_and_pending = _retry(lambda: supabase.table("paper_positions").select("id, stock_code").eq("run_id", run_id).in_(
             "status", ["OPEN", "PENDING"]
-        ).execute().data
+        ).execute()).data
         open_count = len(open_and_pending)
         already_queued_codes = {p["stock_code"] for p in open_and_pending}
         slots_free = max(0, bt.MAX_POSITIONS - open_count)
@@ -384,11 +409,11 @@ def main():
                     break
                 if sig["stock_code"] in already_queued_codes:
                     continue
-                sl_res = (
+                sl_res = _retry(lambda: (
                     supabase.table("paper_positions").select("exit_date")
                     .eq("run_id", run_id).eq("stock_code", sig["stock_code"]).eq("exit_reason", "SL")
                     .order("exit_date", desc=True).limit(1).execute()
-                )
+                ))
                 if sl_res.data:
                     since = date.fromisoformat(sl_res.data[0]["exit_date"])
                     if pc.trading_days_elapsed(supabase, since, today) < cfg.COOLDOWN_DAYS:
@@ -400,6 +425,18 @@ def main():
                 # needs the actual FILL price (tomorrow's open), not today's signal close.
                 # paper_monitor.py fills this row and computes all of that at execution
                 # time. signal_close is kept only for the gap-check at fill time.
+                #
+                # Deliberately NOT wrapped in retry: bare INSERT, no unique constraint
+                # on (run_id, stock_code, signal_date) or similar in
+                # sql/paper_trading_schema.sql (paper_positions' only unique column is
+                # its own serial id). If the first attempt actually succeeded server-side
+                # and only the response was lost, a retry would silently queue a second
+                # PENDING row for the same ticker -- the already_queued_codes dedup above
+                # only guards against re-scanning the SAME candidates list this run, not
+                # against a duplicate created by retrying this exact insert, and
+                # paper_monitor.py has no dedup of its own at fill time, so it would
+                # double-fill (double real capital deployed to one ticker on one signal).
+                # Same insert-safety reasoning as backtest_trades.insert() above.
                 supabase.table("paper_positions").insert({
                     "run_id": run_id, "stock_code": sig["stock_code"], "status": "PENDING",
                     "signal_date": today.isoformat(), "trigger": sig["trigger"], "score": sig["score"],
@@ -411,11 +448,12 @@ def main():
                 new_candidates_notes.append(f"{sig['stock_code']} (score {sig['score']:.2f})")
 
     # ---- EOD equity snapshot + backtest_runs summary ----
-    still_open = supabase.table("paper_positions").select("*").eq("run_id", run_id).eq("status", "OPEN").execute().data
+    still_open = _retry(lambda: supabase.table("paper_positions").select("*").eq("run_id", run_id).eq("status", "OPEN").execute()).data
     # Reset day_high/day_low so paper_monitor.py starts fresh tracking tomorrow's
     # intraday range from scratch (see that script's docstring).
     for row in still_open:
-        supabase.table("paper_positions").update({"day_high": None, "day_low": None}).eq("id", row["id"]).execute()
+        # Retry-safe: absolute overwrite keyed by this row's own id.
+        _retry(lambda: supabase.table("paper_positions").update({"day_high": None, "day_low": None}).eq("id", row["id"]).execute())
     market_value = 0.0
     for row in still_open:
         if row["stock_code"] in today_bars.index:
@@ -428,37 +466,50 @@ def main():
     idx_today = idx_df[idx_df["trade_date"] == today]
     bench_close = float(idx_today.iloc[0]["close"]) if not idx_today.empty else None
 
-    all_trades = supabase.table("backtest_trades").select("pnl").eq("run_id", run_id).execute().data
+    all_trades = _retry(lambda: supabase.table("backtest_trades").select("pnl").eq("run_id", run_id).execute()).data
     wins = sum(1 for t in all_trades if t["pnl"] > 0)
     total_trades = len(all_trades)
     win_rate = 100 * wins / total_trades if total_trades else 0.0
     gross_win = sum(t["pnl"] for t in all_trades if t["pnl"] > 0)
     gross_loss = -sum(t["pnl"] for t in all_trades if t["pnl"] < 0)
     profit_factor = (gross_win / gross_loss) if gross_loss > 0 else None
-    run_res = supabase.table("backtest_runs").select("initial_capital, period_start").eq("id", run_id).limit(1).execute()
+    run_res = _retry(lambda: supabase.table("backtest_runs").select("initial_capital, period_start").eq("id", run_id).limit(1).execute())
     initial_capital = float(run_res.data[0]["initial_capital"])
     net_profit_pct = (total_equity / initial_capital - 1) * 100
 
-    prior_equity_res = supabase.table("backtest_equity").select("portfolio_value").eq("run_id", run_id).order("date").execute()
+    prior_equity_res = _retry(lambda: supabase.table("backtest_equity").select("portfolio_value").eq("run_id", run_id).order("date").execute())
     prior_equity = [float(row["portfolio_value"]) for row in prior_equity_res.data]
     drawdown_pct, cvar_95 = pc.compute_drawdown_and_cvar(prior_equity, total_equity)
-    prior_max_dd_res = supabase.table("backtest_runs").select("max_drawdown").eq("id", run_id).limit(1).execute()
+    prior_max_dd_res = _retry(lambda: supabase.table("backtest_runs").select("max_drawdown").eq("id", run_id).limit(1).execute())
     prior_max_dd = float(prior_max_dd_res.data[0]["max_drawdown"] or 0.0)
     running_max_dd = min(prior_max_dd, drawdown_pct)
 
+    # Deliberately NOT wrapped in retry: bare INSERT, no unique constraint on
+    # (run_id, date) visible in this repo (backtest_equity predates
+    # sql/paper_trading_schema.sql and isn't defined there at all). The
+    # last_signal_date == today guard at the top of main() prevents a whole
+    # second RUN of this script from re-inserting today's snapshot, but does
+    # not make retrying this specific insert call safe -- if the first
+    # attempt actually succeeded server-side and only the response was lost,
+    # a retry here would silently create a second equity row for the same
+    # date, corrupting the equity curve/drawdown history this same function
+    # reads on every subsequent run. Same insert-safety reasoning as
+    # backtest_trades.insert() in _close_position() above.
     supabase.table("backtest_equity").insert({
         "run_id": run_id, "date": today.isoformat(), "portfolio_value": total_equity,
         "drawdown_pct": drawdown_pct, "regime": regime,
     }).execute()
-    supabase.table("backtest_runs").update({
+    # Retry-safe: absolute overwrite keyed by this run's own id.
+    _retry(lambda: supabase.table("backtest_runs").update({
         "period_end": today.isoformat(), "final_capital": total_equity, "net_profit_pct": net_profit_pct,
         "total_trades": total_trades, "win_rate": win_rate, "profit_factor": profit_factor,
         "max_drawdown": running_max_dd, "cvar_95": cvar_95,
-    }).eq("id", run_id).execute()
-    supabase.table("paper_account").update({
+    }).eq("id", run_id).execute())
+    # Retry-safe: absolute overwrite keyed by this run's own id.
+    _retry(lambda: supabase.table("paper_account").update({
         "cash": cash, "last_signal_date": today.isoformat(), "log_adtv_p90": float(log_adtv_p90),
         "concentration_p90": float(concentration_p90),
-    }).eq("run_id", run_id).execute()
+    }).eq("run_id", run_id).execute())
 
     print(f"[EOD] equity=Rp{total_equity:,.0f} ({net_profit_pct:+.2f}%) cash=Rp{cash:,.0f} open={len(still_open)}")
 
