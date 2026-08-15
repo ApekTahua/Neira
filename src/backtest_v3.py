@@ -647,6 +647,28 @@ def _accdist_aggregate(broker_net: pd.DataFrame, movers: pd.DataFrame) -> pd.Dat
             .sum().reset_index(name="accdist_score"))
 
 
+def _accdist_score_p90(train_accdist: pd.Series) -> float:
+    """Train-derived upper-tail reference scale for ACCDIST_SIZING_ENABLED's
+    accdist_mult (see simulate_window). `accdist_score` is exactly 0 on the
+    ~92% of stock-days with no qualifying candidate-mover event -- a plain
+    quantile(0.90) over the full (mostly-zero) population lands at exactly
+    0.0 in every walk-forward window, silently tripping the degenerate <=0
+    fallback 100% of the time instead of rarely (see
+    docs/BANDARMOLOGY_DESIGN.md's 2026-08-15 correction -- this made the
+    prior "isolated walk-forward" result an accidental binary 0.5x/2.0x
+    switch, not the intended continuous magnitude-weighted design). Fix:
+    restrict to days an event actually occurred (nonzero) and use the
+    magnitude (abs) so the reference scale is always positive regardless of
+    the accumulation/distribution mix in the train window. Split out here
+    so it's directly unit-testable (see src/test_accdist_signal.py)."""
+    nonzero = train_accdist.dropna()
+    nonzero = nonzero[nonzero != 0]
+    p90 = nonzero.abs().quantile(0.90) if len(nonzero) > 0 else 1.0
+    if not np.isfinite(p90) or p90 <= 0:
+        p90 = 1.0
+    return p90
+
+
 def attach_accdist_signal(df: pd.DataFrame) -> pd.DataFrame:
     """Merges `accdist_score` in -- reuses attach_mover_signal()'s exact
     candidate-mover detection (per_broker_daily/candidate_movers/
@@ -1260,16 +1282,11 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
         mover_score_p90 = 1.0
 
     # Train-derived reference for accdist-score-weighted sizing
-    # (ACCDIST_SIZING_ENABLED below). accdist_score is SIGNED (Rupiah-
-    # magnitude net Accumulation-minus-Distribution activity among flagged
-    # movers), unlike concentration/mover_score (both >=0) -- p90 is still
-    # the upper-tail reference (a day of strong Accumulation-predicting
-    # activity), same <=0 fallback as the other two references for
-    # robustness if the train population is thin/degenerate.
-    train_accdist = train_liquid_bullish["accdist_score"].dropna()
-    accdist_score_p90 = train_accdist.quantile(0.90) if len(train_accdist) > 0 else 1.0
-    if not np.isfinite(accdist_score_p90) or accdist_score_p90 <= 0:
-        accdist_score_p90 = 1.0
+    # (ACCDIST_SIZING_ENABLED below). See _accdist_score_p90's docstring --
+    # accdist_score is sparse (0 on ~92% of stock-days), so this is NOT the
+    # same plain quantile(0.90)-of-the-full-population pattern
+    # concentration_p90/mover_score_p90 above use.
+    accdist_score_p90 = _accdist_score_p90(train_liquid_bullish["accdist_score"])
 
     trading_days = sorted(d for d in df["trade_date"].unique() if test_start <= d <= test_end)
     if not trading_days:

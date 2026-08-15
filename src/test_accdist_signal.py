@@ -1,9 +1,9 @@
-"""Dry-run self-check for backtest_v3._accdist_aggregate() -- the core
-aggregation step behind ACCDIST_SIZING_ENABLED (see attach_accdist_signal's
-docstring and docs/BANDARMOLOGY_DESIGN.md, "Directional Big/Small
+"""Dry-run self-check for backtest_v3._accdist_aggregate() and
+_accdist_score_p90() -- the aggregation step and the train-derived scaling
+step behind ACCDIST_SIZING_ENABLED (see attach_accdist_signal's docstring
+and docs/BANDARMOLOGY_DESIGN.md, "Directional Big/Small
 Accumulation/Distribution classifier"). No Supabase or local Parquet
-backfill needed -- tests the signed, magnitude-weighted aggregation
-directly against small synthetic broker_net/movers frames.
+backfill needed -- tests both directly against small synthetic frames.
 
 Usage: python src/test_accdist_signal.py
 """
@@ -15,7 +15,7 @@ os.environ.setdefault("V3_TEST_END", "2026-06-30")
 
 import pandas as pd  # noqa: E402
 
-from backtest_v3 import _accdist_aggregate  # noqa: E402
+from backtest_v3 import _accdist_aggregate, _accdist_score_p90  # noqa: E402
 
 D1, D2 = date(2026, 1, 5), date(2026, 1, 6)
 
@@ -66,4 +66,31 @@ assert len(out) == 2, f"expected exactly 2 (stock_code, trade_date) groups, got 
 print("[PASS] signed magnitude-weighted aggregation matches expected sums")
 print("[PASS] non-qualifying (sign-mismatched) events excluded, not flipped")
 print("[PASS] stocks/days with no qualifying events produce no row")
-print("\nAll backtest_v3._accdist_aggregate checks passed.")
+
+# _accdist_score_p90: reproduces the real bug (mostly-zero population ->
+# plain quantile(0.90) lands at 0.0 -> degenerate <=0 fallback trips every
+# time) and confirms the fix (restrict to nonzero, take abs magnitude).
+mostly_zero = pd.Series([0.0] * 92 + [2_000_000_000.0, -1_500_000_000.0,
+                                       3_000_000_000.0, -800_000_000.0,
+                                       1_200_000_000.0, 900_000_000.0,
+                                       700_000_000.0, 4_000_000_000.0])
+# The bug this replaces: a plain quantile(0.90) over this same population
+# lands at exactly 0.0 (92%+ of the mass is zero).
+assert mostly_zero.quantile(0.90) == 0.0, "fixture no longer reproduces the original bug"
+p90 = _accdist_score_p90(mostly_zero)
+assert p90 > 0, f"fixed p90 must be a positive Rupiah-scale reference, got {p90}"
+expected = mostly_zero[mostly_zero != 0].abs().quantile(0.90)
+assert p90 == expected, (p90, expected)
+
+# All-zero train population (genuine edge case: zero nonzero days) -> the
+# degenerate fallback should still trip, same as before the fix.
+assert _accdist_score_p90(pd.Series([0.0, 0.0, 0.0])) == 1.0
+# Empty series -> same fallback.
+assert _accdist_score_p90(pd.Series([], dtype=float)) == 1.0
+
+print("[PASS] _accdist_score_p90 is no longer dominated by the zero-mass "
+      f"(mostly-zero fixture: broken quantile=0.0, fixed p90={p90:,.0f})")
+print("[PASS] _accdist_score_p90 still falls back to 1.0 for a genuinely "
+      "all-zero/empty train population")
+
+print("\nAll backtest_v3._accdist_aggregate / _accdist_score_p90 checks passed.")
