@@ -255,9 +255,16 @@ TREND_SIZING_MAX = float(os.environ.get("V3_TREND_SIZING_MAX", "1.5"))
 # candidate features tested (net_flow_norm was fragile to winsorizing,
 # not wired in here). Same bounds as SCORE_SIZING (a secondary signal,
 # not V3's own score, gets the same conservative range rather than a
-# wider one). Off by default until validated across the full walk-forward
-# battery -- same discipline as every other multiplier here.
-BANDAR_SIZING_ENABLED = os.environ.get("V3_BANDAR_SIZING", "0") == "1"
+# wider one). PROMOTED to default-ON 2026-08-15 (docs/BANDARMOLOGY_DESIGN.md
+# "BANDAR_SIZING_ENABLED promoted to default ON"): 9-window walk-forward
+# confirmed byte-identical to the 2026-08-12 validation record (6/9 beat
+# bench both, win rate>50% 4/9 both, mean alpha +21.71%->+24.09%, mean
+# profit factor 1.58->1.88, mean max DD -16.08%->-15.03%, worst max DD
+# -21.61%->-21.84%). Env var override kept so it can still be disabled;
+# V3_PAPER's own live workflows now pin V3_BANDAR_SIZING=0 explicitly so
+# this default flip does not silently change V3_PAPER's frozen config --
+# see that doc entry for why the pin was needed.
+BANDAR_SIZING_ENABLED = os.environ.get("V3_BANDAR_SIZING", "1") == "1"
 BANDAR_SIZING_MIN = float(os.environ.get("V3_BANDAR_SIZING_MIN", "0.5"))
 BANDAR_SIZING_MAX = float(os.environ.get("V3_BANDAR_SIZING_MAX", "2.0"))
 # Second, independent Bandarmology multiplier -- mover_pairs, not

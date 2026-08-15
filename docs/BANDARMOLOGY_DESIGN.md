@@ -1117,6 +1117,103 @@ end of the accdist section above (a trailing N-day sum instead of
 same-day-only) would very plausibly help this feature too, for the same
 reason -- not attempted this round.
 
+### BANDAR_SIZING_ENABLED promoted to default ON (2026-08-15)
+
+Three follow-on candidates (`MOVER_SIZING_ENABLED`, `ACCDIST_SIZING_ENABLED`,
+`ROTATION_SIZING_ENABLED`) all failed to clear this doc's promotion bar for
+the same structural reason: same-day, same-stock candidate-mover/rotation
+events rarely coincide with this screener's own entry day, so the
+multiplier degenerates toward a near-constant floor at real fills.
+`concentration` doesn't share that sparsity problem -- it's computed for
+every actively-traded stock-day, which is exactly why it was the one
+candidate that cleared the bar back on 2026-08-12 (see that section
+above). User explicitly asked to revisit promotion now that the
+alternatives are exhausted.
+
+**Change**: `BANDAR_SIZING_ENABLED`'s default flipped from
+`os.environ.get("V3_BANDAR_SIZING", "0") == "1"` to `"1"` (`backtest_v3.py`)
+-- env var override kept intact in both directions, only the default
+changed.
+
+**Final confirm walk-forward** (same 9-window schedule/cache as the
+2026-08-12 validation, rerun after this session's three new sizing flags
+landed -- MOVER/ACCDIST/ROTATION all still default OFF, so this isolates
+BANDAR_SIZING's own effect exactly as before):
+
+| metric | off (baseline) | on |
+|---|---|---|
+| Windows beating bench | 6/9 | 6/9 |
+| Win rate >50% | 4/9 | 4/9 |
+| Mean alpha | +21.71% | +24.09% |
+| Median alpha | +12.60% | +19.09% |
+| Mean profit factor | 1.58 | 1.88 |
+| Mean max drawdown | -16.08% | -15.03% (better) |
+| Worst max drawdown | -21.61% | -21.84% (slightly worse) |
+
+**Byte-identical to the 2026-08-12 record in every cell.** Windows 1-2
+(pre-Bandarmology-data 2022) still byte-identical off/on, confirming the
+NaN-fallback path is unaffected by anything that changed this session.
+No discrepancy to explain -- the three new flags' own code paths are
+fully inert when their own env vars are unset.
+
+**Live-wiring status: already fully wired, nothing new to build.**
+Traced the entire live path end to end before touching anything:
+- `paper_signal_scan.py` calls `bt.build_full_dataset()`, which already
+  calls `attach_bandarmology()` unconditionally (not gated behind the
+  flag) -- local Parquet first, DB2's `bandarmology_flow_daily` fallback
+  second via `_fetch_concentration_from_db2()` (confirmed the `concentration`
+  column exists there, `sql/bandarmology_flow_daily_schema.sql` line 28).
+  GitHub Actions runners have no local Parquet, so this fallback is what
+  actually executes live -- it was built and working since the 2026-08-12
+  session, just never previously exercised because the flag was off.
+- `score_candidates()` already returns `concentration` in every signal
+  dict (`backtest_v3.py:1081`); `paper_signal_scan.py` already persists it
+  onto the `PENDING` `paper_positions` row (line 408) and already persists
+  `concentration_p90` onto `paper_account` (line 460).
+- `paper_monitor.py` already reads `concentration_p90` back off
+  `paper_account` and `concentration` off the `PENDING` row, and already
+  calls `compute_entry_fill(..., concentration_p90=concentration_p90)`
+  (lines 142, 189, 193) -- which already branches on the module-level
+  `BANDAR_SIZING_ENABLED` constant.
+- V4_PAPER's own trigger workflow (`paper_signal_scan_v4_trigger.yml` /
+  `paper_monitor_v4_trigger.yml`, on `main`) has set `V3_BANDAR_SIZING: '1'`
+  explicitly since 2026-08-12 -- V4_PAPER has been trading with
+  Bandarmology sizing live the whole time. The default flip changes
+  nothing observable for V4_PAPER; it was already effectively on.
+
+**Real consequence of the default flip, caught before shipping: it would
+have silently changed V3_PAPER too.** `BANDAR_SIZING_ENABLED` is a shared
+module-level constant with no per-run override outside the env var.
+V3_PAPER's own live workflows (`paper_signal_scan_trigger.yml`,
+`paper_monitor_trigger.yml`, on `main`) never set `V3_BANDAR_SIZING` --
+they rely entirely on the module default, precisely because V4_PAPER was
+split off as an isolated attribution run so V3_PAPER could stay untouched
+("V3 = V3_PAPER's EXACT frozen config plus exactly ONE change", see the
+2026-08-12 section). Flipping the shared default without also pinning
+V3_PAPER's own workflows would have been exactly the kind of silent
+frozen-config mutation this project's own governance rule forbids -- new
+capital allocation logic changing under a run that never opted in.
+**Fix**: pinned `V3_BANDAR_SIZING: '0'` explicitly in both of V3_PAPER's
+`main`-branch trigger workflows, so V3_PAPER's entry-fill sizing stays
+byte-identical going forward. V3.1_PAPER's workflows were left unpinned
+on purpose -- it stopped opening new positions entirely on 2026-08-14
+(see that section above), so `BANDAR_SIZING_ENABLED`'s value is
+categorically unreachable for it: `paper_signal_scan.py`'s
+`stop_new_entries` check skips the whole candidate-generation block
+before `compute_entry_fill` is ever called for that run. Confirmed by
+inspection, not just assumed.
+
+Added `src/test_bandar_sizing_default.py`: confirms the default is ON
+with the env var unset, confirms explicit `'0'`/`'1'` still override in
+both directions (via a real subprocess re-import, not just re-reading the
+same cached module), and confirms `compute_entry_fill()` actually sizes a
+high-concentration signal up when the flag is on vs off -- not just that
+the flag flips, but that the flip reaches the sizing math.
+
+Not touched, per explicit instruction: `MOVER_SIZING_ENABLED`,
+`ACCDIST_SIZING_ENABLED`, `ROTATION_SIZING_ENABLED` all remain default
+OFF, unpromoted.
+
 ## Open questions (resolve once real data exists, not before)
 
 - Exact rolling window length (10d vs 20d vs adaptive) -- tune against
