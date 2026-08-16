@@ -2554,3 +2554,56 @@ approach all 4 prior attempts took. Shrink exposure in a detected weak/thin-tren
 than excluding entries outright -- philosophically distinct (softer intervention, not a
 recombination of concentration/duration/participation), cheaper to test, cheaper to fail. Not
 attempted this session -- flagged as the one live idea if Window 3 work ever resumes.
+
+## Extracted the isolated-feature-test scaffolding into src/feature_test_harness.py -- pure
+## refactor, no new finding (2026-08-16)
+
+Not a new signal or result -- process housekeeping flagged by the LLM-council pressure-test
+above ("not the decay-monitoring, just the scaffolding... that's a today task, and it pays back
+on attempt #7"). Six feature tests this session and last (concentration, mover_score,
+accdist_score, rotation_pairs, trend-duration, market-participation) each manually rebuilt the
+same ~30-line block from scratch: set an isolated flag, run `walk_forward_v4.py`'s 9-window
+schedule off then on, hand-format the same "windows beating bench / win-rate>50% / mean-median
+alpha,profit,PF / mean-worst maxDD" table into this log or `BANDARMOLOGY_DESIGN.md`.
+
+`src/feature_test_harness.py`'s `run_isolated_feature_test(label, set_flag)` runs that pattern
+once: loads the shared `.cache/walk_forward_data_*.pkl` dataset via a small extraction from
+`walk_forward_v4.py` (`load_dataset()`/`run_schedule()`, pulled out of `main()` with zero output
+change -- confirmed by re-running `main()` itself unchanged), then calls the schedule with
+`set_flag(False)`, then `set_flag(True)`, and prints/returns the same table shape by hand-typed
+convention above. `set_flag` mutates the already-imported `backtest_v4` module's attribute
+directly (env vars are read once at import time, so re-setting them mid-process is a no-op --
+this is why every existing sweep script, e.g. the one behind
+`.cache/participation_sweep_results.csv`'s "config" column, already did it this way, just
+without a shared name for the pattern).
+
+**Correctness check (not a new experiment): re-ran `V3_PARTICIPATION_GATE` through the new
+harness and compared against commit `f9cd458`'s already-published table.** First attempt (no
+env override) reproduced a DIFFERENT already-published baseline instead -- `BANDAR_SIZING_ENABLED`
+defaults ON in `backtest_v4.py`, and `f9cd458`'s own run had explicitly pinned
+`V3_BANDAR_SIZING=0` ("matching the reproducible baseline noted in the section above"), while
+the harness's first run left it at its current default. Numbers matched `510f67e`'s
+"own current default" baseline exactly instead (+24.09%/1.88/-15.03%/-21.84% mean alpha/PF/
+mean-worst DD) -- a real reminder that "the flag under test" isn't the only environment state a
+published table depends on. Re-ran with `V3_BANDAR_SIZING=0` set and got an exact match to
+`f9cd458`:
+
+| Metric | OFF (harness) | f9cd458 (published) | ON_0.95 (harness) | f9cd458 (published) |
+|---|---|---|---|---|
+| Beat bench | 6/9 | 6/9 | 6/9 | 6/9 |
+| Win>50% | 4/9 | 4/9 | 5/9 | 5/9 |
+| Alpha mean/median | +21.71%/+12.60% | +21.71%/+12.60% | +16.01%/+15.76% | +16.01%/+15.76% |
+| Profit mean/median | +20.84%/+2.96% | +20.84%/+2.96% | +15.15%/+2.62% | +15.15%/+2.62% |
+| PF mean/median | 1.58/1.12 | 1.58/1.12 | 2.38/1.33 | 2.38/1.33 |
+| Max DD mean/worst | -16.08%/-21.61% | -16.08%/-21.61% | -12.78%/-21.61% | -12.78%/-21.61% |
+
+Byte-for-byte on every number in the published table. `src/test_feature_test_harness.py` covers
+the two things a broken extraction could get wrong mechanically: the aggregation/table-formatting
+math (fast, synthetic DataFrame, no real backtest), and that `run_isolated_feature_test` always
+calls `set_flag(False)` last -- including if the ON run raises -- so a harness run can't leave a
+shared module in an ON state for whatever runs next in the same process.
+
+No feature flags' behavior or defaults changed. `walk_forward_v4.py main()`'s own output is
+unchanged (`load_dataset()`/`run_schedule()` are the same code, just named and callable
+separately). Template for the next candidate (attempt #7+) is in
+`feature_test_harness.py`'s own module docstring.

@@ -64,20 +64,14 @@ def build_schedule(first_test_start: date, final_test_end: date, test_months: in
     return schedule
 
 
-def main():
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    if not url or not key:
-        sys.exit("Missing SUPABASE_URL / SUPABASE_KEY")
-    supabase = create_client(url, key)
+def load_dataset(supabase=None):
+    """Returns (df, idx_df) for bt.FETCH_START..bt.TEST_END -- local
+    .cache pickle if present (see cache comment below), else fetches via
+    `supabase` (required in that case) and caches for next time.
 
-    schedule = build_schedule(date(2022, 1, 1), bt.TEST_END)
-    print("=" * 100)
-    print(f"WALK-FORWARD V3 -- {len(schedule)} rolling windows, {schedule[0][1]} .. {schedule[-1][2]}")
-    print("=" * 100)
-    for i, (tr_end, te_start, te_end) in enumerate(schedule, 1):
-        print(f"  W{i}: train<= {tr_end}  test {te_start}..{te_end}")
-
+    Extracted from main() so other callers (src/feature_test_harness.py)
+    can get the exact same fetch-once/cache-reuse dataset without
+    duplicating this logic or re-fetching per call."""
     # Local cache: every sweep run tonight (TP1_MULT, TRAILING_PCT,
     # QUANTILE_CUT, PYRAMID*) used the exact same FETCH_START/TEST_END,
     # meaning identical data was re-downloaded from Supabase ~10+ times in
@@ -91,14 +85,28 @@ def main():
         print(f"\n[FETCH] Using local cache ({cache_path}) -- no Supabase query. "
               f"Set V3_FORCE_REFETCH=1 to force a fresh pull.")
         with open(cache_path, "rb") as f:
-            df, idx_df = pickle.load(f)
-    else:
-        print("\n[FETCH] One fetch for the whole schedule (this is the slow part) ...")
-        df, idx_df = bt.build_full_dataset(supabase)
-        with open(cache_path, "wb") as f:
-            pickle.dump((df, idx_df), f)
-        print(f"[OK] Cached to {cache_path} for reuse by future sweep runs.")
+            return pickle.load(f)
+    if supabase is None:
+        sys.exit(f"No local cache at {cache_path} and no Supabase client given -- "
+                  f"need SUPABASE_URL/SUPABASE_KEY to fetch.")
+    print("\n[FETCH] One fetch for the whole schedule (this is the slow part) ...")
+    df, idx_df = bt.build_full_dataset(supabase)
+    with open(cache_path, "wb") as f:
+        pickle.dump((df, idx_df), f)
+    print(f"[OK] Cached to {cache_path} for reuse by future sweep runs.")
+    return df, idx_df
 
+
+def run_schedule(df, idx_df, schedule):
+    """Runs bt.simulate_window() once per (train_end, test_start, test_end)
+    in `schedule` against the given already-loaded df/idx_df, and returns
+    one results row per window (pandas DataFrame) -- same per-window
+    metrics main() has always computed.
+
+    Extracted from main() so a caller can run the SAME schedule against the
+    SAME loaded dataset more than once (e.g. a feature flag off, then on --
+    see src/feature_test_harness.py) without re-fetching or re-deriving
+    this per-window computation by hand each time."""
     results = []
     for i, (tr_end, te_start, te_end) in enumerate(schedule, 1):
         print(f"\n{'-'*100}\nWindow {i}/{len(schedule)}\n{'-'*100}")
@@ -118,9 +126,26 @@ def main():
             "cvar_95": metrics["cvar_95"],
             "concentration_pct": conc_pct,
         })
-
     import pandas as pd
-    res_df = pd.DataFrame(results)
+    return pd.DataFrame(results)
+
+
+def main():
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        sys.exit("Missing SUPABASE_URL / SUPABASE_KEY")
+    supabase = create_client(url, key)
+
+    schedule = build_schedule(date(2022, 1, 1), bt.TEST_END)
+    print("=" * 100)
+    print(f"WALK-FORWARD V3 -- {len(schedule)} rolling windows, {schedule[0][1]} .. {schedule[-1][2]}")
+    print("=" * 100)
+    for i, (tr_end, te_start, te_end) in enumerate(schedule, 1):
+        print(f"  W{i}: train<= {tr_end}  test {te_start}..{te_end}")
+
+    df, idx_df = load_dataset(supabase)
+    res_df = run_schedule(df, idx_df, schedule)
     print("\n" + "=" * 100)
     print("WALK-FORWARD SUMMARY -- one row per rolling window")
     print("=" * 100)
