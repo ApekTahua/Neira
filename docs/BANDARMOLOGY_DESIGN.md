@@ -1214,6 +1214,92 @@ Not touched, per explicit instruction: `MOVER_SIZING_ENABLED`,
 `ACCDIST_SIZING_ENABLED`, `ROTATION_SIZING_ENABLED` all remain default
 OFF, unpromoted.
 
+### `broker_summary_history` designed + prepared, DDL blocked (2026-08-16)
+
+User pushed back on the frontend's "no history, single-day-only" framing
+of the Broker Summary table (`ca11dfc`, 2026-08-15) -- believed 90 days
+were already stored. True for `bandarmology_broker_flow_daily`, false for
+`broker_summary` itself: reconfirmed directly, `select count(distinct
+trade_date) from broker_summary` = 1 (2026-08-14, 15,113 rows). Unlike the
+abandoned 2026-08-12 `broker_summary_history` attempt (dropped that day,
+sized wrong the first time), this round has a real precedent to copy:
+`bandarmology_broker_flow_daily`'s already-live sync-function + pg_cron
+pattern (see `newscraper.ai/docs/ROADMAP.md`, "per-broker daily flow" --
+that table's own SQL was never checked into this repo either, applied
+directly via migration).
+
+**Designed and checked in, not yet applied**: `sql/broker_summary_history_schema.sql`
+(table, same raw per-broker/per-side granularity as `broker_summary`,
+composite PK doubles as the lookup index, one extra `trade_date` index for
+the daily prune -- narrower than the abandoned attempt per its own "one
+fewer index" lesson) + `sql/sync_broker_summary_history_fn.sql`
+(`sync_broker_summary_history()`, a straight copy-then-prune, simpler than
+`sync_broker_flow_daily()` since this table doesn't aggregate/net --
+registers `sync-broker-summary-history` at `35 11 * * *`, 5 min after the
+sibling job so it doesn't race `broker_summary`'s own n8n write window).
+
+**Size re-derived from real data, not the earlier session's guess**: dry-ran
+`src/broker_summary_history_backfill.py`'s own file-selection logic against
+the real local Parquet archive -- the exact 90-calendar-day window ending
+2026-08-11 is 57 trading days / 874,627 rows (~15,344 rows/day, closely
+matching `broker_summary`'s live 15,113/day and cross-validating both
+numbers). A full window floats ~60-65 trading days depending on the
+holiday calendar, ~920K-1.0M rows -- notably less than a naive
+90-calendar-days-as-if-every-day-trades estimate (1.36M). At the abandoned
+2026-08-12 attempt's own measured bytes/row for this exact granularity
+(~109-126 bytes/row, trimmed schema, real backfilled data), that's
+~100-126MB. DB2 was ~108MB/500MB as of 2026-08-14 (dominated by
+`bandarmology_broker_flow_daily`'s live 90-day window, ~70MB/618K rows,
+reconfirmed via count this round) -- landing around ~210-235MB/500MB
+total, comfortable. 90 days kept, not widened.
+
+**Backfill feasible from local Parquet, not just seed-forward**: the
+archive's schema (`stock_code, broker_code, side, lot, val_rupiah,
+avg_price, trade_date`) maps exactly to what `broker_summary_history`
+needs -- confirmed against the real archive (1,489 files,
+2020-06-02..2026-08-11, three trading days behind `broker_summary`'s own
+live 2026-08-14, an ordinary freshness lag not a gap).
+`src/broker_summary_history_backfill.py` selects the last 90 calendar days
+of files, batches a `Prefer: resolution=merge-duplicates` upsert via
+`requests` + the service-role key, same shape as
+`bandarmology_push_daily.py`. Self-check (`--self-check`, no network) and
+a dry run against the real archive both pass -- the script is ready to
+run the moment the table exists, not run yet.
+
+**Genuinely blocked, not shipped**: the DDL itself could not be applied
+this round. The dispatched session had no MCP Supabase tool access
+despite the task's premise that it would (5 distinct tool-name attempts
+across both DB2 and DB1 projects all returned "no such tool," a stable
+not-registered error, not an auth failure) -- had the DB2 service-role key
+(sufficient for REST-level reads/writes on *existing* tables, which is
+how the row-count/Parquet verification above happened), but PostgREST has
+no DDL endpoint by design, and there was no Postgres connection string or
+Supabase Management API token available to reach one another way.
+Checked whether an existing RPC could substitute (introspected the
+OpenAPI spec with the service-role key): only `refresh_bandarmology_flow_daily`
+and `sync_broker_flow_daily` are callable, no generic SQL executor exists.
+**Next step, ~5 minutes once DDL access exists**: apply the two SQL files
+above (MCP `apply_migration` or the dashboard SQL editor), run the
+backfill script once, then verify the frontend end-to-end against a real
+non-latest day.
+
+Frontend (`newscraper.ai/components/bandarmology/broker-summary-table.tsx`)
+was rebuilt regardless and IS safe to ship on its own: queries
+`broker_summary_history` for a per-ticker horizon and shows a single-day
+Popover+Calendar picker when history exists, but falls back cleanly to
+the original single-latest-day `broker_summary` view (no picker, no
+error) when the history table has nothing for a ticker -- verified via
+Playwright against a real dev server (BBCA) to render identically to the
+pre-existing card with zero new console errors, both before this table
+exists. `npx tsc --noEmit` and `npm run build` both clean. Also found +
+fixed a real, live bug while reusing `BrokerFlowChart`'s date-picker
+pattern for this: its `toDateStr()` round-tripped a picked Date through
+`.toISOString()` (UTC), which for Jakarta (UTC+7) silently shifted every
+custom-picked date back one day in the query actually sent to Supabase --
+the button label (formatted straight from the Date, no round-trip) showed
+the correct date the whole time, so this was invisible in normal use.
+Fixed in both files.
+
 ## Open questions (resolve once real data exists, not before)
 
 - Exact rolling window length (10d vs 20d vs adaptive) -- tune against
