@@ -2276,3 +2276,49 @@ strongest, least-fragile finding of the whole session. Needs a deliberate adopti
 before it touches the live V3_PAPER config (frozen by design, see
 `project_paper_trading_pipeline_status` memory) -- a real config change ships as a new
 versioned run (V3.1_PAPER), never a silent edit.
+
+## Window 3's remaining -5.44%: trade-level diagnosis, skfolio ruled out (2026-08-15)
+
+An LLM-council pressure-test session (5 differently-angled advisors + anonymized peer
+review, `~/.claude/skills/llm-council`) on "what to build next for Window 3" converged on
+"skfolio-based HRP/CVaR portfolio sizing" -- but peer review caught that all 5 advisors were
+reasoning from the ORIGINAL failure mode (6 correlated positions clustering and stopping out
+together), which the entry-cap + regime-confirm-days fixes already resolved (-22.10% ->
+-12.28%, see above). The council's own recommended next step: check the REMAINING losing
+trades directly before building anything, rather than re-reasoning from a stale writeup.
+
+Reproduced the exact -5.44% run (had to disable `BANDAR_SIZING_ENABLED` -- its default
+flipped 0->1 in commit `71b4a1c`, AFTER this number was logged, so Window 3's number under
+current HEAD defaults is actually -6.07%/19 rows now, a different run than the one this
+section analyzes; flagging so a future session doesn't compare apples to oranges). Full
+trade-level picture, 12 rows / 9 unique positions, the ENTIRE window's activity:
+
+- **All 9 entries fall in one 12-calendar-day span: 2023-02-08 to 2023-02-20.** Zero trades
+  anywhere else in the 6-month window. The per-day cap (MAX_NEW_ENTRIES_PER_DAY=2) is hit on
+  4 of 5 entry days, never exceeded -- confirms the entry-cap fix IS working as designed.
+- Position-level P&L: 6 losers (GOTO -1.49M, WIRG -2.17M, BIRD -1.31M, GGRM -1.25M, MIDI
+  -0.25M, ELPI -1.13M), 3 winners (ASSA +1.54M, TMAS +0.57M, TRJA net +0.03M).
+- **All 6 losers exit via hard SL** -- zero trailing-stop or time-exit losers. A sharp
+  signature (a bad regime call, not a slow bleed).
+- **Every losing position's `trend_strength` at entry sits at 0.7%-1.9%**, barely above the
+  `TREND_STRENGTH_MIN=1%` gate -- nowhere near window 1's 5.49% average. Directly confirms
+  the earlier "5.49%/2.18%/1.13% across windows 1/2/3" trend-strength diagnostic, this time
+  at individual-trade resolution instead of window-average resolution.
+
+**Verdict: neither the council's original framing nor a clean "weak-trend-only" story is
+complete on its own.** The entry cap prevented a 6-way pileup (confirmed fixed), but it did
+NOT prevent 2-way co-failure within one short, thin-regime episode -- both capped same-day
+pairs (Feb 8, Feb 16) failed together anyway. The loss isn't spread across 6 months of weak
+trend, it's concentrated in one 12-day false-start rally that barely cleared the
+trend-strength gate and then reversed.
+
+**skfolio HRP/CVaR ruled out as the next build**: n is too small for correlation-aware
+sizing to have anything to diversify across -- max 2 concurrent new entries/day, 9 positions
+total in the whole window. There's no meaningful cross-sectional correlation structure to
+risk-budget over at this scale.
+
+**Recommendation, not yet built**: a regime-quality/episode-duration gate -- skip short,
+barely-qualifying rallies like this one, not just weak ones on average. Direct extension of
+the existing `TREND_STRENGTH_MIN` work (a duration/persistence requirement on top of the
+existing magnitude requirement), swept across all 9 `walk_forward_v4.py` windows before any
+promotion, same discipline as everything else in this log. Not started.
