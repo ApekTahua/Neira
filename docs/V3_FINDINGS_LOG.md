@@ -2322,3 +2322,86 @@ barely-qualifying rallies like this one, not just weak ones on average. Direct e
 the existing `TREND_STRENGTH_MIN` work (a duration/persistence requirement on top of the
 existing magnitude requirement), swept across all 9 `walk_forward_v4.py` windows before any
 promotion, same discipline as everything else in this log. Not started.
+
+## Trend-duration/episode-quality gate: built and swept, REJECTED -- fixes Window 3, breaks Window 5 every time (2026-08-16)
+
+Built the recommendation above. **Mechanism**: `compute_trend_duration_streak()` walks
+`trend_strength_by_date` (already computed by `compute_regime_with_hysteresis`) and counts
+consecutive trading days trend_strength has read `>= TREND_STRENGTH_MIN`, resetting to 0 on
+any dip below it -- distinct from `bullish_streak_by_date` (how long the regime *state* has
+read BULLISH, unaffected by trend_strength dipping within that state) and from
+`TREND_STRENGTH_MIN` itself (a point-in-time check on the signal day only, no memory of the
+days before it). New entry requires this streak `>= TREND_DURATION_MIN_DAYS`, gated by
+`V3_TREND_DURATION_GATE` (default `"0"`, off) with `V3_TREND_DURATION_MIN_DAYS` (default
+`3`) -- applied at both the same two sites `TREND_STRENGTH_MIN`/`REGIME_CONFIRM_DAYS` are
+(the TRAIN threshold-learning mask and the live day-by-day entry check), same pattern.
+Neither `TREND_STRENGTH_MIN`'s nor `REGIME_CONFIRM_DAYS`'s own defaults were touched; a
+cold-process import (`test_trend_duration_gate.py`) confirms both still read
+`0.01`/`3` regardless of the new flag's state.
+
+**Concretely, against the Feb 2023 episode** (pulled `trend_strength_by_date` directly for
+2023-01-01..2023-03-15): the regime flips BULLISH 2023-02-03, clears `REGIME_CONFIRM_DAYS=3`
+on 2023-02-07 (trend_strength 1.63%) -- but trend_strength itself never separates cleanly,
+it oscillates around the 1% line for two weeks: 2023-02-06 dips to 0.71% (below the gate, so
+02-07's clearing is a fresh streak=1, not a continuation), 02-10 dips to 0.95% (streak reset
+to 0 again), then 02-13 re-crosses (streak=1 again). Every one of the 9 signal days that fed
+the losing episode (02-07/08/09/13/14/15/16/17/20) cleared `TREND_STRENGTH_MIN` on its own
+day, but `compute_trend_duration_streak` never exceeds 6 anywhere in the whole episode, and
+sits at 1 on four separate days -- confirms the "isolated barely-qualifying day" diagnosis at
+the mechanism level, not just eyeballing the trade list. Concrete effect on entries: at
+`TREND_DURATION_MIN_DAYS=3`, the 02-07 and 02-13 signal days (fresh streak=1) get dropped,
+delaying the window's first entries by 2-3 trading days and cutting total window-3 trades
+from 19 to 14.
+
+**Full 9-window walk-forward** (`walk_forward_v4.py`, same cache, `V3_BANDAR_SIZING` at its
+own current default throughout -- gate=OFF reproduces the promoted BANDAR_SIZING record
+byte-for-byte: mean alpha +24.09%, mean PF 1.88, mean max DD -15.03%, worst -21.84%, confirming
+the harness and the "off by default" no-op both hold):
+
+| Config      | W3 trades | W3 profit | W3 alpha | Beat bench | Win>50% | Mean/median alpha | Mean/median profit | Mean/median PF | Mean/worst maxDD |
+|-------------|-----------|-----------|----------|------------|---------|--------------------|---------------------|-----------------|-------------------|
+| OFF (base)  | 19        | -5.57%    | -2.81%   | 6/9        | 4/9     | +24.09% / +19.09%  | +23.23% / +6.66%    | 1.88 / 1.24     | -15.03% / -21.84% |
+| N=2         | 15        | -1.99%    | +0.77%   | 5/9        | 3/9     | +12.65% / +0.77%   | +11.79% / -1.26%    | 1.65 / 0.94     | -14.76% / -22.35% |
+| N=3         | 14        | +0.20%    | +2.96%   | 5/9        | 5/9     | +9.75% / +2.96%    | +8.89% / -0.05%     | 1.49 / 1.00     | -15.55% / -21.30% |
+| N=5         | 6         | -2.17%    | +0.59%   | 7/9        | 5/9     | +19.27% / +13.11%  | +18.41% / +10.49%   | 1.76 / 1.77     | -12.44% / -18.70% |
+
+**Window 3 improves at every N tested** -- the gate does what it was built for: alpha goes
+from -2.81% (losing to bench) to +0.59%/+0.77%/+2.96% (roughly matching or beating bench) at
+every duration tested, a real and consistent effect, not a lucky point.
+
+**But it is not a clean win, and does not clear the promotion bar.** Two separate problems,
+both real:
+
+1. **Window 5 (2024-01-01..2024-06-30) regresses at every single N tested** -- +15.54%
+   baseline down to -11.70% (N=2), -18.86% (N=3), -10.17% (N=5). This is the same kind of
+   "brief dip in trend_strength during a genuine early-stage run" pattern the gate is
+   designed to filter in window 3, except in window 5 those early entries were actually
+   good ones -- the duration requirement can't tell "false start" from "real rally that
+   happened to wobble near the threshold on day one" from the trend_strength series alone.
+   Consistent across all three N values, not noise.
+2. **The rest of the walk-forward is non-monotonic in N, the same failure shape the
+   hysteresis-band sweep already taught this log to distrust a single value for.** N=3 in
+   particular is badly damaging to Window 4 (+45.02% -> -0.05%, alpha +36.42% -> -8.65%,
+   previously one of the two strongest windows in the whole schedule) while N=2 and N=5
+   barely touch it (+44.10%, +21.71%). Mean alpha falls at every N relative to baseline
+   (+24.09% -> +12.65% / +9.75% / +19.27%); mean profit factor falls at every N (1.88 ->
+   1.65 / 1.49 / 1.76). N=5 is the closest to breakeven-or-better on aggregate (7/9 beat
+   bench vs baseline's 6/9, better mean/worst max DD: -12.44%/-18.70% vs -15.03%/-21.84%)
+   but even there, mean/median alpha and profit are both below baseline -- the least-bad
+   point in a landscape that never recovers to a genuine net improvement, not a validated
+   optimum bracketed by comparable neighbors.
+
+**Verdict: REJECTED, kept off by default (`V3_TREND_DURATION_GATE=0`).** The direction of
+the specific, targeted fix holds (Window 3's false-start episode is a real diagnosis and the
+duration streak mechanism measurably suppresses it, at every N tried) -- but "fixes the one
+window it was built for, breaks another every time, and swings unpredictably across the rest
+depending on the exact threshold" is the same failure signature this log has rejected before
+(`ENTRY_CLUSTER_WINDOW_DAYS`/`MAX_ENTRIES_PER_CLUSTER_WINDOW` above: "helped the window that
+needed it least, hurt the other two"). Window 3's remaining -5.57%/31.6% win stands as an
+open, real, small loss -- a magnitude-only threshold on a single index-level series
+(trend_strength) can't distinguish "false start" from "genuine early rally with one noisy
+day" without also catching real trades in other windows built the same way. Code kept
+(inert, off by default, `compute_trend_duration_streak()` + `test_trend_duration_gate.py`)
+in case a future session finds a way to make the duration check stock-specific or
+volatility-relative (paralleling the `VOL_BAND_MULT` redesign of the hysteresis band above)
+rather than a flat day-count on one index series -- not attempted this session.

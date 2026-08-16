@@ -131,6 +131,36 @@ def compute_regime_with_hysteresis(idx_df: pd.DataFrame):
         trend_strength_by_date[row.trade_date] = (row.close - row.ma50) / row.ma50
     return regime_by_date, bullish_streak_by_date, trend_strength_by_date
 
+
+def compute_trend_duration_streak(trend_strength_by_date: dict, threshold: float) -> dict:
+    """Consecutive trading days (ending at that date) trend_strength_by_date
+    has read >= threshold -- a PERSISTENCE check on the magnitude gate
+    itself, distinct from bullish_streak_by_date (how long the regime
+    STATE has read BULLISH) and from TREND_STRENGTH_MIN (a point-in-time
+    check on entry day only, no memory of the days before it).
+
+    Diagnosed against the Window 3 (2023-01..2023-06) false-start rally
+    (docs/V3_FINDINGS_LOG.md, "Window 3's remaining -5.44%"): IHSG's
+    trend_strength oscillated around the 1% line for two weeks
+    (2023-02-03..02-20) rather than separating cleanly -- e.g. 2023-02-07
+    read 1.63% one day after 2023-02-06 read 0.71% (a fresh, unconfirmed
+    re-crossing, streak=1 under this function), and 2023-02-10 dipped back
+    to 0.95% (resetting the streak to 0) before 2023-02-13 re-crossed again
+    (another streak=1). Every qualifying signal day in that episode cleared
+    TREND_STRENGTH_MIN on its own, but only ever 1-3 days at a stretch
+    before a reset -- unlike window 1, where trend_strength cleared the bar
+    for long unbroken runs. See V3_TREND_DURATION_GATE below for how this
+    dict is used as an additional entry condition, gated separately from
+    TREND_STRENGTH_MIN and REGIME_CONFIRM_DAYS so it can be swept/disabled
+    on its own."""
+    streak_by_date = {}
+    streak = 0
+    for d, v in trend_strength_by_date.items():
+        streak = streak + 1 if v >= threshold else 0
+        streak_by_date[d] = streak
+    return streak_by_date
+
+
 FETCH_START = date.fromisoformat(os.environ.get("V3_FETCH_START", "2021-01-01"))
 TRAIN_END = date.fromisoformat(os.environ.get("V3_TRAIN_END", "2024-06-30"))
 TEST_START = date.fromisoformat(os.environ.get("V3_TEST_START", "2024-07-31"))
@@ -187,6 +217,24 @@ REGIME_CONFIRM_DAYS = int(os.environ.get("V3_REGIME_CONFIRM_DAYS", "3"))
 # benchmark instead of badly missing it). Win rate clears 50% in ALL
 # THREE windows simultaneously for the first time all session.
 TREND_STRENGTH_MIN = float(os.environ.get("V3_TREND_STRENGTH_MIN", "0.01"))
+# Direct follow-up to the diagnosis above ("Window 3's remaining -5.44%:
+# trade-level diagnosis", V3_FINDINGS_LOG.md): all 6 losers in window 3's
+# one losing episode (2023-02-08..02-20) had trend_strength barely above
+# TREND_STRENGTH_MIN on entry, and compute_trend_duration_streak() shows
+# why -- trend_strength oscillated around the 1% line for two weeks
+# rather than separating cleanly, so isolated signal days cleared the
+# MAGNITUDE gate with zero DURATION behind them. This requires
+# trend_strength to have read >= TREND_STRENGTH_MIN for
+# TREND_DURATION_MIN_DAYS running, not just on the signal day itself --
+# same "magnitude alone isn't enough, require persistence" logic
+# REGIME_CONFIRM_DAYS already applies to the regime STATE, applied here
+# to the trend_strength MAGNITUDE instead (the two are independent: a
+# regime can hold BULLISH for a long streak while trend_strength itself
+# oscillates near the threshold within that streak, which is exactly
+# what happened in Feb 2023). Off by default, unvalidated until its own
+# walk-forward runs -- see V3_FINDINGS_LOG.md for the sweep.
+TREND_DURATION_GATE_ENABLED = os.environ.get("V3_TREND_DURATION_GATE", "0") == "1"
+TREND_DURATION_MIN_DAYS = int(os.environ.get("V3_TREND_DURATION_MIN_DAYS", "3"))
 # TESTED, NET NEGATIVE -- kept available (like ADAPTIVE_HOLDTIME below),
 # inert by default. Hypothesis was that window 3's six same-thesis
 # positions (GOTO/BUKA/EMTK/WIRG/ASSA/DMMX, all legit large-caps) needed a
@@ -1410,10 +1458,17 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     prefix = f"[{label}] " if label else ""
     print(f"{prefix}[REGIME] Precomputing regime per unique trading day ...")
     regime_by_date, bullish_streak_by_date, trend_strength_by_date = compute_regime_with_hysteresis(idx_df)
+    # Cheap (one pass over unique index trading days) -- computed unconditionally so its
+    # use at the two gate sites below can be a plain flag check, not a re-derivation.
+    trend_duration_streak_by_date = compute_trend_duration_streak(trend_strength_by_date, TREND_STRENGTH_MIN)
     df = df.copy()
     df["_regime"] = df["trade_date"].map(regime_by_date).fillna("NEUTRAL")
     df["_streak"] = df["trade_date"].map(bullish_streak_by_date).fillna(0)
     df["_trend_strength"] = df["trade_date"].map(trend_strength_by_date).fillna(0.0)
+    df["_trend_duration_ok"] = (
+        (df["trade_date"].map(trend_duration_streak_by_date).fillna(0) >= TREND_DURATION_MIN_DAYS)
+        if TREND_DURATION_GATE_ENABLED else True
+    )
 
     # ---- Thresholds learned on TRAIN split only (never touches test data) ----
     train_liquid_bullish = df[
@@ -1422,6 +1477,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
         & df["weekly_ma_spread"].notna() & df["sector_rs_momentum"].notna()
         & (df["_regime"] == "BULLISH") & (df["_streak"] >= REGIME_CONFIRM_DAYS)
         & (df["_trend_strength"] >= TREND_STRENGTH_MIN)
+        & df["_trend_duration_ok"]
         & df["atr_14"].notna() & (df["atr_14"] > 0)
         & ((df["atr_14"] / df["close_price"]) <= ATR_PRICE_RATIO_MAX)
     ]
@@ -1686,9 +1742,14 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
         # running, not just today -- don't deploy capital on day 1 of a
         # flip that might be a false start -- AND on IHSG having actually
         # separated from ma50 by TREND_STRENGTH_MIN, not just barely
-        # crossed it (see TREND_STRENGTH_MIN comment above).
+        # crossed it (see TREND_STRENGTH_MIN comment above) -- AND
+        # (TREND_DURATION_GATE_ENABLED only) on that separation having
+        # PERSISTED for TREND_DURATION_MIN_DAYS running, not just today
+        # (see compute_trend_duration_streak's docstring).
         if (regime == "BULLISH" and bullish_streak_by_date.get(trade_date, 0) >= REGIME_CONFIRM_DAYS
-                and trend_strength_by_date.get(trade_date, 0.0) >= TREND_STRENGTH_MIN):
+                and trend_strength_by_date.get(trade_date, 0.0) >= TREND_STRENGTH_MIN
+                and (not TREND_DURATION_GATE_ENABLED
+                     or trend_duration_streak_by_date.get(trade_date, 0) >= TREND_DURATION_MIN_DAYS)):
             # Candidate filtering/scoring extracted to score_candidates() so the live
             # paper-trading signal scan (src/paper_signal_scan.py) uses the exact same
             # candidate logic as this backtest -- see that function's docstring.
