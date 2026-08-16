@@ -2521,3 +2521,36 @@ the six axes that failed the outlier check are recorded above so a future sessio
 re-spend the same effort re-deriving that trend-strength-shape and per-stock-confirmation
 variants don't distinguish this specific episode. Window 3's residual weakness remains
 diagnosed but unresolved without a net-positive fix.
+
+## Window 3: accepted as a bounded, understood cost -- stop re-fitting the same 3 windows (2026-08-16)
+
+A second LLM-council pressure-test (`~/.claude/skills/llm-council`) on "what's the next system
+priority" converged 4/5 independently on the same statistical point, sharpened further in peer
+review: three Window-3 fix attempts (skfolio, trend-duration, participation-turnover) were all
+validated against the SAME three total backtest windows this project has. That isn't three
+independent tests rejecting three independent hypotheses -- it's three rounds of curve-fitting
+a sample of three, with researcher judgment as the search algorithm. A fourth attempt (combining
+two already-rejected gates) adds parameters without adding real information. Window 3 itself is
+no longer a defect: its loss already shrank from -22.10% to -5.44% through earlier STRUCTURAL
+fixes (entry cap, regime-confirm-days, trend-strength gate) -- not window-3-specific patches --
+and it clears >50% win rate with alpha tracking benchmark. **Decision: stop trying to fix Window
+3 specifically. -5% to -6% in a short, thin false-start-rally regime is the accepted, understood,
+bounded cost of this entry rule, confirmed by 4 rigorous walk-forward-validated attempts (1
+promoted, 3 honest rejections) across two sessions.** Re-open only if a genuinely new mechanism
+appears (not a recombination/re-threshold of concentration/mover/accdist/rotation/participation/
+trend-duration -- all six already tried).
+
+**Real blind spot the peer review caught, not in any of the 5 original advisor responses**:
+this project already runs V4_PAPER, live forward paper trading -- real, growing out-of-sample
+data that is the actual antidote to the "only 3 backtest windows exist" problem, and nobody
+had been treating it that way. Going forward, V4_PAPER's live track record (not another fixed
+backtest window) is the primary source of NEW validation evidence for whatever gets tried next
+-- give it real runway before drawing conclusions from it, same standing note as
+`newscraper.ai/docs/ROADMAP.md`'s "V4_PAPER needs runway" entry.
+
+**A genuinely new, not-yet-tried mechanism was also surfaced** (2 of 5 peer reviewers,
+independently): a reduced-SIZING gate for weak-trend regimes, instead of the ENTRY-FILTERING
+approach all 4 prior attempts took. Shrink exposure in a detected weak/thin-trend regime rather
+than excluding entries outright -- philosophically distinct (softer intervention, not a
+recombination of concentration/duration/participation), cheaper to test, cheaper to fail. Not
+attempted this session -- flagged as the one live idea if Window 3 work ever resumes.
