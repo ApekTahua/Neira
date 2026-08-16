@@ -68,6 +68,22 @@ def test_compute_entry_fill_basic():
     print(f"[OK] test_compute_entry_fill_basic (lots={fill['lots']}, cost_basis={fill['cost_basis']:,.0f})")
 
 
+def test_round_to_tick():
+    # TEBE's real 2026-08-14 case: entry 1375, atr 75 -> raw tp1/sl land
+    # mid-tick (tick size 5 in the 500-<2000 band) -- must round to a real
+    # tradeable price, TP up, SL down (more room, never less).
+    approx(bt.round_to_tick(1487.50, "up"), 1490.0, tol=1e-9)
+    approx(bt.round_to_tick(1262.50, "down"), 1260.0, tol=1e-9)
+    # Already-aligned price: round-trips unchanged in either direction.
+    approx(bt.round_to_tick(1030.0, "up"), 1030.0, tol=1e-9)
+    approx(bt.round_to_tick(970.0, "down"), 970.0, tol=1e-9)
+    # Tick size changes with price band (tick=1 below 200, tick=25 at/above 5000).
+    approx(bt.round_to_tick(82.75, "up"), 83.0, tol=1e-9)
+    approx(bt.round_to_tick(14938.39, "up"), 14950.0, tol=1e-9)
+    approx(bt.round_to_tick(13861.61, "down"), 13850.0, tol=1e-9)
+    print("[OK] test_round_to_tick")
+
+
 def test_compute_entry_fill_below_min_lots():
     # Tiny allocation (cash floor) should return None once it can't clear ALLOC_MIN_LOTS.
     sig = {"atr": 20.0, "tp_target": 1200.0, "score": 1.0, "adtv_20": 5_000_000_000.0, "avg_vol_20": 100_000_000.0}
@@ -318,6 +334,7 @@ def test_looks_like_unadjusted_corporate_action():
 
 if __name__ == "__main__":
     test_total_buy_fee()
+    test_round_to_tick()
     test_compute_entry_fill_basic()
     test_compute_entry_fill_below_min_lots()
     test_evaluate_position_exit_sl()

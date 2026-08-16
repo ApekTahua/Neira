@@ -31,6 +31,7 @@ Usage:
     SUPABASE_URL=... SUPABASE_KEY=... python src/backtest_v4.py
 """
 
+import math
 import os
 import sys
 from datetime import date
@@ -1268,6 +1269,25 @@ def score_full_universe(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: 
     } for _, sig in liquid.iterrows()]
 
 
+def round_to_tick(price: float, direction: str) -> float:
+    """Rounds a computed (not actually-traded) price to the nearest valid IDX
+    tick -- same breakpoints as _gap_ok() in paper_monitor.py and the inline
+    gap-limit check in simulate_window() below (IDX fraksi harga steps at
+    200/500/2000/5000). Raw ATR-multiple math (entry +/- atr*mult) almost
+    never lands on a real tradeable price otherwise -- e.g. TEBE's computed
+    TP1 1487.50 isn't a valid price, only 1485/1490 are.
+
+    direction="up": rounds UP (ceil) -- for TP targets, so the level is
+    never displayed/triggered as reachable before it actually would be.
+    direction="down": rounds DOWN (floor) -- for SL, so the stop gets
+    slightly MORE room, never less, than the raw math implied.
+    """
+    tick = 1 if price < 200 else 2 if price < 500 else 5 if price < 2000 else 10 if price < 5000 else 25
+    if direction == "up":
+        return math.ceil(price / tick) * tick
+    return math.floor(price / tick) * tick
+
+
 def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: float,
                         log_adtv_p90: float, score_p90: float = 1.0, trend_strength: float = 0.0,
                         trend_strength_p90: float = 1.0, concentration_p90: float = 1.0,
@@ -1294,6 +1314,14 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
         tp1_price = max(tp1_price, entry_price * 1.01)
         sl_price = min(sl_price, entry_price * 0.99)
         expected_hold_days = abs(sig["tp_target"] - entry_price) / atr_val
+
+    # Tick-align AFTER the floor/ceiling clamps above -- rounding up/down
+    # only ever widens the margin those clamps guarantee (TP1 >= entry*1.01,
+    # SL <= entry*0.99), never violates it. Applies to both branches (ATR
+    # and no-ATR fallback): entry_price*1.02/*0.98-style multiples land on a
+    # real tick about as rarely as the ATR math does.
+    tp1_price = round_to_tick(tp1_price, "up")
+    sl_price = round_to_tick(sl_price, "down")
 
     size_mult = min(2.0, max(0.5, sig.get("score", score_p90) / score_p90)) if SCORE_SIZING_ENABLED else 1.0
     liq_mult = min(LIQ_SIZING_MAX, max(LIQ_SIZING_MIN, np.log(max(sig.get("adtv_20", 1.0), 1.0)) / log_adtv_p90)) if LIQ_SIZING_ENABLED else 1.0
