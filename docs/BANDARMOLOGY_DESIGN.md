@@ -1300,6 +1300,21 @@ the button label (formatted straight from the Date, no round-trip) showed
 the correct date the whole time, so this was invisible in normal use.
 Fixed in both files.
 
+**UPDATE 2026-08-16, unblocked and shipped end-to-end.** The DDL block above
+was environment-specific to the dispatched sub-session -- the orchestrating
+session had real DB2 `apply_migration`/`execute_sql` MCP access the whole
+time. Applied both SQL files directly (verbatim, no changes needed), ran
+the backfill script for real: **889,740 rows, 58 distinct trading days,
+2026-05-18 through 2026-08-14** -- matches the pre-computed estimate almost
+exactly (58 vs the predicted 57-58). Verified via a direct anon-key curl
+(not just the admin/service-role session) that a real non-latest date
+(2026-06-10, BBCA) reads back correctly -- the frontend's date picker now
+has real history to show, not just the single-day fallback. `sync-broker-
+summary-history` pg_cron job confirmed registered and already ran once
+successfully (idempotent guard tested: re-running `sync_broker_summary_
+history()` by hand no-ops correctly since today's date was already synced).
+Broker Summary table's date-range gap, closed.
+
 ## Open questions (resolve once real data exists, not before)
 
 - Exact rolling window length (10d vs 20d vs adaptive) -- tune against
