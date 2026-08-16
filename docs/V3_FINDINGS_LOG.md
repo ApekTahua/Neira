@@ -2607,3 +2607,82 @@ No feature flags' behavior or defaults changed. `walk_forward_v4.py main()`'s ow
 unchanged (`load_dataset()`/`run_schedule()` are the same code, just named and callable
 separately). Template for the next candidate (attempt #7+) is in
 `feature_test_harness.py`'s own module docstring.
+
+## 2026-08-16: tick-size bug found + fixed (backtest only, NOT deployed live) + TEBE gorengan base-rate research
+
+User flagged a real signal on the frontend (TEBE, STRONG_BUY 2026-08-14, score 10.61/percentile
+97.4 on a +25% day with 28.2M shares volume vs a trailing ~0.4-5.4M/day) whose displayed TP
+target (1488) isn't a valid IDX tick at that price (500-<2000 band, tick=5; nearest real prices
+are 1485/1490). Two separate findings came out of investigating it.
+
+**Tick-size bug: confirmed real, fixed in `compute_entry_fill()`.** Checked all 16 STRONG_BUY
+candidates from 2026-08-14's `daily_scoreboard` -- every single one has a tp1/sl misalignment;
+raw ATR math essentially never lands on a valid tick. The codebase already had a tick-size table
+(`_gap_ok()` in `paper_monitor.py`, used only for gap-limit checking), just never applied to the
+computed price levels themselves. Added `round_to_tick(price, direction)` using the same
+breakpoints, applied to `compute_entry_fill()`'s `tp1_price`/`sl_price` after the existing
+floor/ceiling clamps (rounding widens those guarantees, never violates them) -- TP rounds up,
+SL rounds down. Frontend mirror (`newscraper.ai/lib/estimate-pending-levels.ts`) fixed
+identically. Test: `test_round_to_tick()` in `test_paper_trading_math.py`.
+
+**9-window walk-forward delta is misleading taken at face value**: mean alpha +21.71%→+15.88%,
+mean profit +20.84%→+15.02%, mean PF 1.58→1.46, win-rate>50% windows 4/9→5/9
+(`V3_BANDAR_SIZING=0`, matching the reproducible baseline). But 7 of 9 windows move <3pp either
+way -- the small, uniform effect a half-tick correction should produce. Window 8 (2025 H2) alone
+accounts for ~85% of the aggregate delta. Traced to portfolio-slot path dependence, not a
+mechanical rounding cost: one ticker's entry date shifted by 9 calendar days between runs, which
+`round_to_tick` cannot cause directly (zero role in entry-signal generation) -- the only path is
+a different position's exit timing shifting by sub-tick amounts, freeing/blocking one of only 6
+`MAX_POSITIONS` slots differently given the 10-day SL cooldown, cascading into a different
+subsequent trade sequence. Same "small perturbation -> large single-window swing" fragility
+already documented in the hysteresis-band sensitivity sweep. **Do not update any published
+baseline table off this one run** -- if a clean before/after number is ever needed, it needs a
+run designed to separate "the fix's effect" from "which trade won a scarce slot" (wider
+`MAX_POSITIONS`, or a queue-priority tiebreak), not a straight diff.
+
+**Governance flag, decision not yet made**: `paper_monitor.py` imports `compute_entry_fill`
+directly from `backtest_v4.py` -- no separate copy. This fix is currently ONLY on the worktree
+branch, not deployed, so V4_PAPER's live fills are unaffected today. But if/when this branch's
+`backtest_v4.py` changes ever get promoted, this fix would silently start applying to *new* live
+fills under the already-running frozen V4_PAPER config, without a version bump -- exactly the
+kind of mid-flight change the frozen-run rule exists to prevent. Confirmed the live account
+(`paper_positions`, run_id=36) already holds non-tick-aligned tp1/sl on both its open positions
+(WMPP, BEEF) from before this fix existed. Confirmed mathematically + against the real code path
+that this is a **display/precision issue, not a trigger-correctness issue** for the live
+monitor: for a real, tick-aligned market price, crossing the raw threshold and crossing the
+tick-rounded threshold happen at the same real tick whenever both fall in the same tick band (no
+valid tick sits strictly between them). One real precision bug found beyond what was asked,
+not touched, reported only: `evaluate_position_exit()`'s recorded `exit_price` for TP1/SL exits
+that don't gap past the threshold uses the raw unrounded value itself as the booked fill price
+(e.g. `1487.5`) -- a small, real error in booked PnL, independent of the trigger-timing question.
+
+**TEBE liquidity check: not a filter gap.** `adtv_20` (20-day rolling value average, `strategy.py`)
+including the spike day = Rp4.04B (4x the Rp1B floor); excluding it (prior 19 days) = Rp2.21B
+(2.2x the floor) -- TEBE already cleared the liquidity floor comfortably before the spike day
+counted at all. Also clears the hypervolatile-penny filter (ATR/price = 5.45%, under the 10%
+cap). Correction to the "long dead-silent base" framing: TEBE had an elevated-volume mini-rally
+in late July (1005→1110, Rp5.4B/Rp9.2B value days) before the 08-14 spike to 1375 -- the spike
+day is a real step-change, but it wasn't emerging from total silence. TEBE's own spike is outside
+the cached backtest window (through 2026-06-30 only), so it couldn't be tested against the
+system's own historical trades directly.
+
+**Base-rate check on the pattern itself** (932 historical episodes matching TEBE's profile:
+single-day volume >=10x trailing average, single-day price move >=20%, clears ADTV_MIN, ATR/price
+<=10%; concentrated in 2020 COVID-recovery and 2025's bull run, not independent across
+time/tickers -- directional evidence, not a clean sample): forward returns from the spike-day
+close are a classic post-blowoff fade -- +5d mean +0.72%/median -6.12%/win 35.8%; +10d mean
++1.48%/median -8.09%/win 35.8%; +20d mean +2.87%/median -9.18%/win 37.2%. Positive mean only from
+real right-skew (best cases up to +453% at 20d -- consistent with the multi-bagger appetite the
+user described wanting). Restricting to episodes with a genuinely flat pre-trend
+(`|weekly_ma_spread|<=3%`, n=218) doesn't rescue the win rate. This is a diagnostic on the
+*pattern*, not a backtest of what V3/V4's actual entry rule would do with these names (different
+entry timing, real SL/TP1/trailing exits, not a fixed-N-day hold) -- directionally suggestive,
+not a validated number.
+
+**Recommendation, not implemented**: a dedicated future research pass shaped as a pre-spike
+confirmation-delay gate (buy on pullback/confirmation after the breakout day, not the breakout
+day itself) rather than a liquidity exclusion -- TEBE already clears the existing liquidity bar,
+so excluding by liquidity wouldn't have caught it anyway. Test the same way the trend-duration
+and participation gates were tested this session (9-window walk-forward, both-direction
+sensitivity, explicit rejection if it trades away performance in unrelated windows), not a
+same-session edit.
