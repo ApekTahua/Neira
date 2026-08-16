@@ -2405,3 +2405,119 @@ day" without also catching real trades in other windows built the same way. Code
 in case a future session finds a way to make the duration check stock-specific or
 volatility-relative (paralleling the `VOL_BAND_MULT` redesign of the hysteresis band above)
 rather than a flat day-count on one index series -- not attempted this session.
+
+## Market-wide participation gate: a genuinely different axis, still REJECTED -- same
+## failure signature as the duration gate, different collateral-damage windows (2026-08-16)
+
+Third attempt at Window 3's Feb 2023 false start, explicitly required to be a mechanism
+that does NOT re-threshold `trend_strength` (the axis both the rejected duration gate and
+`TREND_STRENGTH_MIN` itself already use). Before building anything, ran an exploratory
+correlation check (not a backtest) against several genuinely different candidate axes,
+computed directly from the cached walk-forward dataset across all 9 `walk_forward_v4.py`
+windows' gate-open days -- looking for one where Window 3 is a real outlier relative to the
+other 8, not just relative to Window 1 or Window 5 in isolation (the trap that burned the
+duration gate: "helps the window it was built for, breaks whichever window wasn't checked"):
+
+- **Index-level trend_strength shape variants** (different from a duration count): 5-day
+  trailing slope, 10-day rolling std ("choppiness"), and a rolling-K-day-high breakout
+  requirement. None separated W3 from the other 8 -- W1's own early entries in Jan 2022
+  oscillate near a low trend_strength level in a shape similar to Feb 2023's, and W5's Jan
+  2024 entries occur during a *declining* trend_strength trajectory despite being good
+  trades, so a shape/acceleration read on this one series doesn't cleanly discriminate
+  either, same root problem as the duration gate just reframed.
+- **Per-stock "confirmation" variants**: each entered stock's own volume/avg_vol_20 ratio at
+  entry, ADX/+DI-DI trend quality, and score margin above the qualifying weekly/sector cut
+  (`w_comp + s_comp`). None showed a consistent direction across windows -- W3's own winners
+  vs losers split the WRONG way on volume ratio (losers had *higher* mean vol_ratio than
+  winners, 1.39 vs 0.88) while W1/W5 split the expected way, and W3's mean per-stock score
+  margin (29.1) was actually *higher* than W1's (22.2), not lower as the "riding in on a weak
+  setup" hypothesis predicted.
+- **Breadth variants restricted to the candidate pool**: fraction of the liquid universe with
+  `weekly_ma_spread > 0`, size of the qualifying candidate pool before top-15 truncation, and
+  count of distinct sectors represented in that pool. All three go the WRONG direction for
+  W3 -- W3's qualifying pool (mean 54.1 candidates/day, 5.1 sectors) was *broader* than W1's
+  (39.7 candidates, 4.3 sectors), the opposite of "a narrow rally dragged up by a few names."
+- **Market-wide turnover ratio** (total `close_price * volume` summed across the WHOLE
+  fetched universe -- not just the liquid/qualifying subset -- vs its own trailing 20-day
+  average): the one axis where W3 is a genuine outlier across the full 9-window schedule.
+  Mean turnover_ratio on W3's gate-open days: 0.959, the lowest of all 9 windows (next-worst
+  1.019); fraction of gate-open days reading below-average: 80%, also the highest by far
+  (next-highest 56%, most windows 35-49%). A day-level hand-trace of W3's actual trades
+  showed why this could work mechanically: at a 0.95 cutoff, every one of the 6 pure-loser
+  entry days (GOTO/WIRG 02-08, BUKA/DMMX 02-09, TMAS/BIRD 02-14, GGRM 02-16, ELPI 02-21) has
+  turnover_ratio < 0.95 and gets filtered, while the 3 mixed win/loss days (ASSA+TRJA 02-10,
+  TRUK+MMIX 02-15, KING+HOMI 05-02) sit above 0.95 and survive untouched.
+
+**Mechanism built**: `compute_market_participation()` (`src/backtest_v4.py`) -- total Rupiah
+turnover across every `stock_code` in the fetched dataset (not the liquid/qualifying subset
+`score_candidates` filters to) that day, divided by its own trailing 20-day average; first 19
+days default to a neutral 1.0 rather than NaN or 0. New entries additionally require this
+ratio `>= V3_PARTICIPATION_MIN` (default 0.95), gated by `V3_PARTICIPATION_GATE` (default
+`"0"`, off) -- a new, isolated flag; `V3_TREND_DURATION_GATE`'s own default/behavior
+untouched, confirmed by `test_participation_gate.py`. Applied ONLY at the live day-by-day
+entry check, deliberately NOT folded into the TRAIN threshold-learning mask the way
+`TREND_STRENGTH_MIN`/`REGIME_CONFIRM_DAYS`/`TREND_DURATION_GATE_ENABLED` all are -- reasoning:
+the rejected duration gate's own N=3 run took down Window 4 (a window it wasn't targeting,
++45.02%->-0.05%) hard enough to suspect the TRAIN-mask ripple (changing what population
+`weekly_cut`/`sector_cut` get learned from) did more damage than live-side filtering itself;
+keeping this gate out of the TRAIN mask avoids that specific failure mode by construction.
+
+**Full 9-window walk-forward** (`V3_BANDAR_SIZING=0` throughout, matching the reproducible
+baseline noted in the section above; OFF reproduces that -6.07%/19-trade W3 number
+byte-for-byte, confirming the harness and the off-by-default no-op both hold):
+
+| Config   | W3 trades | W3 profit | W3 alpha | W1 alpha | W4 alpha | Beat bench | Win>50% | Mean/median alpha | Mean/median profit | Mean/median PF | Mean/worst maxDD |
+|----------|-----------|-----------|----------|----------|----------|------------|---------|--------------------|---------------------|-----------------|-------------------|
+| OFF      | 19        | -6.07%    | -3.31%   | -5.18%   | +41.89%  | 6/9        | 4/9     | +21.71% / +12.60%  | +20.84% / +2.96%    | 1.58 / 1.12     | -16.08% / -21.61% |
+| ON_0.85  | 18        | -6.99%    | -4.23%   | -9.74%   | +13.95%  | 5/9        | 4/9     | +13.74% / +13.49%  | +12.87% / -6.05%    | 1.39 / 0.83     | -15.30% / -21.61% |
+| ON_0.90  | 16        | -5.47%    | -2.71%   | -11.78%  | +13.95%  | 6/9        | 3/9     | +13.42% / +13.95%  | +12.55% / -1.64%    | 1.37 / 0.91     | -15.34% / -21.61% |
+| ON_0.95* | 9         | +2.31%    | +5.07%   | -11.78%  | -5.98%   | 6/9        | 5/9     | +16.01% / +15.76%  | +15.15% / +2.62%    | 2.38 / 1.33     | -12.78% / -21.61% |
+| ON_1.00  | 6         | +3.63%    | +6.39%   | +0.88%   | +13.04%  | 8/9        | 5/9     | +19.13% / +13.04%  | +18.27% / +6.42%    | 2.64 / 1.59     | -13.17% / -21.61% |
+
+(*`V3_PARTICIPATION_MIN`'s actual default.)
+
+**Window 3 improves monotonically as the threshold tightens, and cleanly** -- alpha goes from
+-3.31% (losing to bench, 42.1% win) to +5.07%/+6.39% at 0.95/1.00 (55.6%/50.0% win, profit
+factor 1.33/1.65), the exact mechanism traced above: the pure-loser days get filtered, the
+mixed days survive. This part of the diagnosis and fix is real and reproducible.
+
+**But it does not clear the promotion bar, for the same reason the duration gate didn't.**
+Two windows absorb the collateral damage instead of one, and the pattern is non-monotonic
+across every metric that matters in aggregate:
+
+1. **Window 1 (already a working window) is hurt at every threshold except the most
+   extreme.** Alpha -5.18% -> -9.74%/-11.78%/-11.78% at 0.85/0.90/0.95 -- only flips back to
+   roughly neutral (+0.88%) at 1.00, where the gate is filtering nearly a third of the
+   window's would-be trades (55 -> 46). Window 4 shows the mirror image: -41.89pp of alpha
+   damage specifically at 0.95 (the actual default), the single worst point in the whole
+   sweep for that window, then partially recovers at 1.00. Neither window's damage curve is
+   monotonic in the threshold -- 0.90 and 0.95 are the WORST points for Window 1, while 0.95
+   is the worst point for Window 4, a "worst-in-the-middle" shape this log has already
+   learned not to trust from the fixed-percentage hysteresis-band sweep.
+2. **Mean alpha and mean/median profit are below the OFF baseline at every single threshold
+   tested** (+21.71% -> +13.74%/+13.42%/+16.01%/+19.13%; profit +20.84% -> +12.87%/
+   +12.55%/+15.15%/+18.27%) -- the real, disclosed tradeoff the earlier duration-gate
+   rejection used as its own decisive criterion applies identically here. Two metrics DO
+   improve at every threshold (mean/worst max drawdown, both consistently better than OFF)
+   and beat-bench count reaches 8/9 at the 1.00 extreme -- genuinely interesting, but not
+   enough on their own when the headline return metric never recovers to baseline anywhere
+   in the sweep, and the one point that looks best in aggregate (1.00) is also the point
+   with the fewest Window 3 trades (6) to have drawn that conclusion from.
+
+**Verdict: REJECTED, kept off by default (`V3_PARTICIPATION_GATE=0`).** The axis itself is a
+genuine methodological improvement over the rejected duration gate -- market-wide turnover is
+structurally unrelated to `trend_strength`/ma50 distance, the exploratory check found it the
+only one of seven candidate axes tried this session where Window 3 is a real 9-window
+outlier, and the day-level trace of exactly which entries it filters in Feb 2023 confirms the
+mechanism does what it was designed to do. But "real, working, targeted fix for the window it
+was built for; real, non-monotonic collateral damage to a DIFFERENT currently-strong window
+at nearly every threshold tested; aggregate return metric never recovers to baseline" is the
+same failure signature the duration gate was rejected for, just with Window 1/Window 4 taking
+the hit this time instead of Window 5. Code kept (inert, off by default,
+`compute_market_participation()` + `test_participation_gate.py`) -- the exploratory-check
+methodology here (screen candidate axes for a genuine 9-window outlier BEFORE building
+anything, not just a 2-3-window correlation) is worth reusing for whatever gets tried next;
+the six axes that failed the outlier check are recorded above so a future session doesn't
+re-spend the same effort re-deriving that trend-strength-shape and per-stock-confirmation
+variants don't distinguish this specific episode. Window 3's residual weakness remains
+diagnosed but unresolved without a net-positive fix.

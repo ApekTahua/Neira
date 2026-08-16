@@ -161,6 +161,29 @@ def compute_trend_duration_streak(trend_strength_by_date: dict, threshold: float
     return streak_by_date
 
 
+def compute_market_participation(df: pd.DataFrame) -> dict:
+    """Returns {trade_date: turnover_ratio} -- total market Rupiah turnover
+    (close_price * volume, summed across EVERY stock_code in df, the whole
+    fetched universe, not just the liquid/qualifying subset) that day divided
+    by its own trailing 20-day average. A structurally different data axis
+    from trend_strength (IHSG's price distance from its own ma50) or
+    weekly_ma_spread/sector_rs_momentum (per-stock price-based features
+    already used for entry scoring): this is a crowd-PARTICIPATION read --
+    how much real money actually traded that day, market-wide, independent
+    of which direction prices moved. See PARTICIPATION_GATE_ENABLED below for
+    the diagnosis this was built against and why it's structurally different
+    from the rejected TREND_DURATION_GATE.
+
+    First 19 trading days of the fetched history have no 20-day trailing
+    average yet -- filled with a neutral 1.0 (gate always passes) rather than
+    NaN, matching how a missing regime/trend_strength lookup elsewhere in
+    this module defaults to "don't block", not "always block"."""
+    turnover = (df["close_price"] * df["volume"]).groupby(df["trade_date"]).sum().sort_index()
+    turnover_ma20 = turnover.rolling(20, min_periods=20).mean()
+    ratio = (turnover / turnover_ma20).fillna(1.0)
+    return ratio.to_dict()
+
+
 FETCH_START = date.fromisoformat(os.environ.get("V3_FETCH_START", "2021-01-01"))
 TRAIN_END = date.fromisoformat(os.environ.get("V3_TRAIN_END", "2024-06-30"))
 TEST_START = date.fromisoformat(os.environ.get("V3_TEST_START", "2024-07-31"))
@@ -235,6 +258,48 @@ TREND_STRENGTH_MIN = float(os.environ.get("V3_TREND_STRENGTH_MIN", "0.01"))
 # walk-forward runs -- see V3_FINDINGS_LOG.md for the sweep.
 TREND_DURATION_GATE_ENABLED = os.environ.get("V3_TREND_DURATION_GATE", "0") == "1"
 TREND_DURATION_MIN_DAYS = int(os.environ.get("V3_TREND_DURATION_MIN_DAYS", "3"))
+# Structurally different follow-up to the REJECTED TREND_DURATION_GATE above
+# (docs/V3_FINDINGS_LOG.md, "Trend-duration/episode-quality gate... REJECTED --
+# fixes Window 3, breaks Window 5 every time"): that gate counted consecutive days
+# an INDEX-level series (trend_strength, IHSG's own distance from ma50) held a
+# threshold, and was diagnosed as unable to tell "false start" from "genuine early
+# rally with one noisy day" because both patterns look identical on that one series.
+# PARTICIPATION_GATE uses a completely different data source: total market-wide
+# Rupiah turnover (compute_market_participation, close_price*volume summed across
+# every stock_code, not just the liquid/qualifying subset) that day vs its own
+# trailing 20-day average -- a crowd-participation read, independent of price
+# location relative to any moving average.
+#
+# Before building this, checked (not swept -- an exploratory correlation check, see
+# the walk-forward below for the real test) whether it actually separates Window 3's
+# Feb 2023 false start from the other 8 walk_forward_v4.py windows' gate-open days.
+# It does, and it's the only one of several axes tried that did: W3 has the lowest
+# mean turnover_ratio (0.959) and the highest fraction of below-average days (80%)
+# of all 9 windows (next-worst on each: 1.019 mean, 56% below-average) -- a genuine
+# outlier across the full schedule, not just relative to two hand-picked windows.
+# Tried and discarded before this because they did NOT separate W3 from the other 8
+# windows: trend_strength's own 5-day trailing slope, its 10-day rolling std
+# ("choppiness"), and a rolling-K-day-high breakout requirement on trend_strength
+# (all index-level shape variants); per-entered-stock volume ratio vs avg_vol_20,
+# ADX/+DI-DI trend quality, and score margin above the qualifying weekly/sector cut
+# (all per-stock "confirmation" variants); fraction of the liquid universe with
+# weekly_ma_spread>0, size of the qualifying candidate pool, and count of distinct
+# sectors represented in that pool (all breadth variants restricted to the
+# already-filtered candidate population, as opposed to the whole-market turnover
+# used here) -- see V3_FINDINGS_LOG.md for the numbers behind each.
+#
+# Applied ONLY at the live day-by-day entry check below, NOT the TRAIN
+# threshold-learning mask -- deliberate deviation from TREND_STRENGTH_MIN/
+# REGIME_CONFIRM_DAYS/TREND_DURATION_GATE, which are all applied at both sites.
+# Reasoning: folding a gate into the TRAIN mask changes the population
+# weekly_cut/sector_cut are learned from, and the rejected duration gate's own N=3
+# run took down Window 4 (a window it was never targeting, +45.02%->-0.05%) hard
+# enough to suspect that ripple effect, not entry-day filtering itself, did most of
+# the damage there. Keeping this gate out of the TRAIN mask avoids that specific
+# failure mode by construction. Off by default; new, isolated flag name -- does not
+# touch V3_TREND_DURATION_GATE's own default or behavior.
+PARTICIPATION_GATE_ENABLED = os.environ.get("V3_PARTICIPATION_GATE", "0") == "1"
+PARTICIPATION_MIN = float(os.environ.get("V3_PARTICIPATION_MIN", "0.95"))
 # TESTED, NET NEGATIVE -- kept available (like ADAPTIVE_HOLDTIME below),
 # inert by default. Hypothesis was that window 3's six same-thesis
 # positions (GOTO/BUKA/EMTK/WIRG/ASSA/DMMX, all legit large-caps) needed a
@@ -1461,6 +1526,10 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     # Cheap (one pass over unique index trading days) -- computed unconditionally so its
     # use at the two gate sites below can be a plain flag check, not a re-derivation.
     trend_duration_streak_by_date = compute_trend_duration_streak(trend_strength_by_date, TREND_STRENGTH_MIN)
+    # Also cheap (one groupby over df's own trade_date) -- see PARTICIPATION_GATE_ENABLED
+    # above for what this is and why it's applied only at the live entry-check site below,
+    # not folded into the TRAIN mask the way the other three gates are.
+    market_participation_by_date = compute_market_participation(df)
     df = df.copy()
     df["_regime"] = df["trade_date"].map(regime_by_date).fillna("NEUTRAL")
     df["_streak"] = df["trade_date"].map(bullish_streak_by_date).fillna(0)
@@ -1745,11 +1814,16 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
         # crossed it (see TREND_STRENGTH_MIN comment above) -- AND
         # (TREND_DURATION_GATE_ENABLED only) on that separation having
         # PERSISTED for TREND_DURATION_MIN_DAYS running, not just today
-        # (see compute_trend_duration_streak's docstring).
+        # (see compute_trend_duration_streak's docstring) -- AND
+        # (PARTICIPATION_GATE_ENABLED only) on today's market-wide turnover
+        # being at or above PARTICIPATION_MIN x its own trailing 20-day
+        # average (see compute_market_participation's docstring).
         if (regime == "BULLISH" and bullish_streak_by_date.get(trade_date, 0) >= REGIME_CONFIRM_DAYS
                 and trend_strength_by_date.get(trade_date, 0.0) >= TREND_STRENGTH_MIN
                 and (not TREND_DURATION_GATE_ENABLED
-                     or trend_duration_streak_by_date.get(trade_date, 0) >= TREND_DURATION_MIN_DAYS)):
+                     or trend_duration_streak_by_date.get(trade_date, 0) >= TREND_DURATION_MIN_DAYS)
+                and (not PARTICIPATION_GATE_ENABLED
+                     or market_participation_by_date.get(trade_date, 1.0) >= PARTICIPATION_MIN)):
             # Candidate filtering/scoring extracted to score_candidates() so the live
             # paper-trading signal scan (src/paper_signal_scan.py) uses the exact same
             # candidate logic as this backtest -- see that function's docstring.
