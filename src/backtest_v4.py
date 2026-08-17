@@ -185,6 +185,81 @@ def compute_market_participation(df: pd.DataFrame) -> dict:
     return ratio.to_dict()
 
 
+def compute_spike_confirm_gate(df: pd.DataFrame, vol_mult: float, move_pct: float,
+                                confirm_days: int, giveback_pct: float) -> dict:
+    """Returns {(stock_code, trade_date): bool} -- True unless trade_date sits inside a
+    "breakout spike" stock's confirmation blackout, or that spike episode's single
+    checkpoint failed. See SPIKE_CONFIRM_GATE_ENABLED below for the diagnosis this is
+    built against (docs/V3_FINDINGS_LOG.md, "TEBE gorengan base-rate research"): a
+    spike day is `volume >= vol_mult * avg_vol_20_prev` AND `daily_return >= move_pct`
+    (avg_vol_20_prev is the TRAILING average, excludes the spike day itself -- same
+    definition the base-rate research used, matching TEBE's own +25%/28.2M-share day).
+
+    Mechanics per stock, independently:
+      - For `confirm_days` trading days after a qualifying spike (days_since in
+        [0, confirm_days)), the stock is excluded (the blackout).
+      - On the day exactly `confirm_days` after the spike, ONE checkpoint decides the
+        whole episode: if that day's close hasn't given back more than `giveback_pct`
+        from the SPIKE DAY's own close, the stock is eligible again -- permanently,
+        until its next spike (not re-checked daily afterward, a single pass/fail test).
+        If it has given back more than that, the stock stays excluded for the rest of
+        this episode.
+      - A newer spike occurring at any point (including mid-blackout or after a failed
+        checkpoint) immediately restarts the blackout from the newer spike -- the "most
+        recent spike as of this day" always wins, no memory of older episodes.
+      - A stock that never spikes reads True on every row (pure no-op).
+
+    Vectorized per stock (no Python row loop for the state machine itself): forward-
+    filling the row-position of the most recent spike via np.maximum.accumulate on a
+    "position-or--1" array is the standard "index of the last True" trick -- the
+    accumulate step means a NEWER spike encountered while iterating naturally
+    overwrites an older one's still-pending episode, giving the "most recent always
+    wins" behavior above for free, without any explicit reset logic.
+
+    df must already carry `daily_return`/`avg_vol_20_prev` (strategy.add_features'
+    own output columns, always present after build_full_dataset) -- no new feature is
+    computed here, this only classifies days already-existing columns describe."""
+    sub = df[["stock_code", "trade_date", "close_price", "daily_return", "volume", "avg_vol_20_prev"]]
+    sub = sub.sort_values(["stock_code", "trade_date"])
+    is_spike = (
+        (sub["volume"] >= vol_mult * sub["avg_vol_20_prev"])
+        & (sub["daily_return"] >= move_pct)
+        & sub["avg_vol_20_prev"].notna() & (sub["avg_vol_20_prev"] > 0)
+    ).to_numpy()
+    stock_codes = sub["stock_code"].to_numpy()
+    trade_dates = sub["trade_date"].to_numpy()
+    close = sub["close_price"].to_numpy(dtype=float)
+
+    n = len(sub)
+    gate_open = np.ones(n, dtype=bool)
+    start = 0
+    while start < n:
+        end = start + 1
+        while end < n and stock_codes[end] == stock_codes[start]:
+            end += 1
+        m = end - start
+        idx = np.arange(m)
+        spike_pos = np.where(is_spike[start:end], idx, -1)
+        last_spike_pos = np.maximum.accumulate(spike_pos)
+        has_spike = last_spike_pos >= 0
+        days_since = idx - last_spike_pos
+
+        seg_gate = np.ones(m, dtype=bool)
+        seg_gate[has_spike & (days_since < confirm_days)] = False
+
+        checkpoint_needed = has_spike & (days_since >= confirm_days)
+        if checkpoint_needed.any():
+            seg_close = close[start:end]
+            sp = last_spike_pos[checkpoint_needed]
+            cp = sp + confirm_days  # always < m: days_since >= confirm_days => sp+confirm_days <= idx < m
+            seg_gate[checkpoint_needed] = seg_close[cp] >= seg_close[sp] * (1 - giveback_pct)
+
+        gate_open[start:end] = seg_gate
+        start = end
+
+    return dict(zip(zip(stock_codes.tolist(), trade_dates.tolist()), gate_open.tolist()))
+
+
 FETCH_START = date.fromisoformat(os.environ.get("V3_FETCH_START", "2021-01-01"))
 TRAIN_END = date.fromisoformat(os.environ.get("V3_TRAIN_END", "2024-06-30"))
 TEST_START = date.fromisoformat(os.environ.get("V3_TEST_START", "2024-07-31"))
@@ -301,6 +376,36 @@ TREND_DURATION_MIN_DAYS = int(os.environ.get("V3_TREND_DURATION_MIN_DAYS", "3"))
 # touch V3_TREND_DURATION_GATE's own default or behavior.
 PARTICIPATION_GATE_ENABLED = os.environ.get("V3_PARTICIPATION_GATE", "0") == "1"
 PARTICIPATION_MIN = float(os.environ.get("V3_PARTICIPATION_MIN", "0.95"))
+# A genuinely different follow-up, off a genuinely different diagnostic: the "TEBE
+# gorengan base-rate research" (docs/V3_FINDINGS_LOG.md, 2026-08-16) found that stocks
+# matching a "breakout spike" profile (single-day volume >=10x trailing avg_vol_20,
+# single-day price move >=20%, already clearing the liquidity/ATR floors this backtest
+# enforces) show a classic post-blowoff fade over 932 historical episodes: median
+# forward return from the spike-day close is already -6.12% by +5d (of an eventual
+# -9.18% at +20d) -- front-loaded, not gradual, and only 35-39% win rate at any horizon.
+# V3/V4's entry rule can fire on exactly these stocks the next day at open: a 20%+
+# single-day move pushes weekly_ma_spread up immediately, so the spike day itself can
+# BE the qualifying signal day. This does NOT re-threshold trend_strength/participation
+# (both already tried, both rejected above) -- it is a per-STOCK, per-EVENT gate on a
+# specific price/volume pattern, structurally unrelated to either.
+#
+# Mechanism (compute_spike_confirm_gate, above): for SPIKE_CONFIRM_DAYS trading days
+# after a qualifying spike, the stock is excluded from candidacy entirely (the
+# blackout); a single checkpoint on the day the blackout ends decides the whole
+# episode -- eligible again (permanently, until the next spike) only if close hasn't
+# given back more than SPIKE_GIVEBACK_PCT from the spike day's own close. Applied only
+# as a candidate filter inside simulate_window's pending_entries construction below --
+# score_candidates() and compute_entry_fill() are UNCHANGED, so paper_signal_scan.py/
+# paper_monitor.py (which call those directly, never simulate_window) cannot be
+# affected by this flag regardless of its state. Off by default; new, isolated flag --
+# does not touch PARTICIPATION_GATE_ENABLED/TREND_DURATION_GATE_ENABLED/
+# TREND_STRENGTH_MIN/REGIME_CONFIRM_DAYS's own defaults. See V3_FINDINGS_LOG.md for the
+# walk-forward + sensitivity sweep -- UNVALIDATED until that entry exists.
+SPIKE_CONFIRM_GATE_ENABLED = os.environ.get("V3_SPIKE_CONFIRM_GATE", "0") == "1"
+SPIKE_CONFIRM_DAYS = int(os.environ.get("V3_SPIKE_CONFIRM_DAYS", "3"))
+SPIKE_GIVEBACK_PCT = float(os.environ.get("V3_SPIKE_GIVEBACK_PCT", "0.15"))
+SPIKE_VOL_MULT = float(os.environ.get("V3_SPIKE_VOL_MULT", "10.0"))    # matches the base-rate research's own spike definition -- not swept, see V3_FINDINGS_LOG.md
+SPIKE_MOVE_PCT = float(os.environ.get("V3_SPIKE_MOVE_PCT", "0.20"))    # matches the base-rate research's own spike definition -- not swept, see V3_FINDINGS_LOG.md
 # TESTED, NET NEGATIVE -- kept available (like ADAPTIVE_HOLDTIME below),
 # inert by default. Hypothesis was that window 3's six same-thesis
 # positions (GOTO/BUKA/EMTK/WIRG/ASSA/DMMX, all legit large-caps) needed a
@@ -1558,6 +1663,11 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     # above for what this is and why it's applied only at the live entry-check site below,
     # not folded into the TRAIN mask the way the other three gates are.
     market_participation_by_date = compute_market_participation(df)
+    # Per-STOCK, not per-day -- see SPIKE_CONFIRM_GATE_ENABLED above. Vectorized per
+    # stock (no per-row Python loop for the state machine), still unconditional for the
+    # same reason as the two above: keeps the gate site below a plain dict lookup.
+    spike_confirm_gate = compute_spike_confirm_gate(df, SPIKE_VOL_MULT, SPIKE_MOVE_PCT,
+                                                      SPIKE_CONFIRM_DAYS, SPIKE_GIVEBACK_PCT)
     df = df.copy()
     df["_regime"] = df["trade_date"].map(regime_by_date).fillna("NEUTRAL")
     df["_streak"] = df["trade_date"].map(bullish_streak_by_date).fillna(0)
@@ -1856,11 +1966,18 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
             # paper-trading signal scan (src/paper_signal_scan.py) uses the exact same
             # candidate logic as this backtest -- see that function's docstring.
             day_data = df[df["trade_date"] == trade_date]
-            pending_entries.extend(score_candidates(day_data, weekly_cut, sector_cut, top_n=15,
-                                                      skip_top_n=SCORE_SKIP_TOP_N,
-                                                      outlier_gap_mult=SCORE_OUTLIER_GAP_MULT,
-                                                      weekly_comp_cap_q=SCORE_WEEKLY_COMP_CAP_Q,
-                                                      weekly_comp_abs_cap=weekly_comp_abs_cap))
+            new_candidates = score_candidates(day_data, weekly_cut, sector_cut, top_n=15,
+                                               skip_top_n=SCORE_SKIP_TOP_N,
+                                               outlier_gap_mult=SCORE_OUTLIER_GAP_MULT,
+                                               weekly_comp_cap_q=SCORE_WEEKLY_COMP_CAP_Q,
+                                               weekly_comp_abs_cap=weekly_comp_abs_cap)
+            # SPIKE_CONFIRM_GATE_ENABLED only -- filters simulate_window's OWN
+            # consumption of score_candidates' return value, does not touch
+            # score_candidates() itself (see SPIKE_CONFIRM_GATE_ENABLED's docstring).
+            if SPIKE_CONFIRM_GATE_ENABLED:
+                new_candidates = [c for c in new_candidates
+                                  if spike_confirm_gate.get((c["stock_code"], trade_date), True)]
+            pending_entries.extend(new_candidates)
 
         pos_market_value = 0.0
         for pos in positions:

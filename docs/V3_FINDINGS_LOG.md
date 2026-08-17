@@ -2686,3 +2686,175 @@ so excluding by liquidity wouldn't have caught it anyway. Test the same way the 
 and participation gates were tested this session (9-window walk-forward, both-direction
 sensitivity, explicit rejection if it trades away performance in unrelated windows), not a
 same-session edit.
+
+## Spike confirmation-delay gate: built and swept, REJECTED -- non-monotonic across both of its
+## own parameters, and its one good-looking point is a single-window artifact a Monte Carlo
+## check can't distinguish from random entry-timing noise (2026-08-17)
+
+Built the recommendation above. **Front-loading check first** (the task explicitly asked
+whether the fade is front-loaded or gradual, since that should set how many confirmation days
+make sense): the base-rate research's own numbers already answer this -- median forward return
+from the spike-day close is -6.12% at +5d, -8.09% at +10d, -9.18% at +20d. 66.7% of the eventual
+20-day median loss is already present by day 5, 88.1% by day 10 -- clearly front-loaded, not
+gradual. This is why the sweep below tests confirm_days in {2, 3, 5}, not larger values -- by
+day 10 most of the damage this gate could plausibly avoid has already happened either way.
+
+**Mechanism** (`compute_spike_confirm_gate`, `src/backtest_v4.py`): a spike day is `volume >=
+SPIKE_VOL_MULT * avg_vol_20_prev` (avg_vol_20_prev is the TRAILING average, excludes the spike
+day itself) AND `daily_return >= SPIKE_MOVE_PCT` -- same definition the base-rate research used
+(defaults 10x / 20%, not swept -- these define what counts as "the pattern," a different
+question from how long to wait once one is flagged). Per stock, independently: for
+`SPIKE_CONFIRM_DAYS` trading days after a qualifying spike, the stock is excluded from candidacy
+entirely (the blackout). On the day the blackout ends, ONE checkpoint decides the whole episode:
+if close hasn't given back more than `SPIKE_GIVEBACK_PCT` from the spike day's own close, the
+stock is eligible again -- permanently, until its next spike (not re-checked daily afterward,
+deliberately a single pass/fail test, not continuous monitoring). A newer spike at any point
+(including mid-blackout) immediately restarts the blackout from the newer spike. Vectorized per
+stock via `np.maximum.accumulate` on a "spike-position-or--1" array (the standard "index of the
+last True" trick) -- no per-row Python loop for the state machine itself. Unit-tested against a
+synthetic episode shaped like the mechanism's own three claims (blackout, checkpoint-passes-stays-
+open-through-a-later-dip, checkpoint-fails-stays-closed-through-a-later-recovery) in
+`src/test_spike_confirm_gate.py`.
+
+**Wiring, and why the live paper-trading path cannot be affected regardless of this flag's
+state**: the gate is applied as a single filter step on `score_candidates()`'s *return value*,
+inside `simulate_window`'s own `pending_entries` construction --
+`score_candidates()`/`compute_entry_fill()` themselves are UNCHANGED (confirmed: `git diff`
+touches only `src/backtest_v4.py`, and only inside `simulate_window`/its two new helper
+functions). `paper_signal_scan.py` calls `score_candidates()` directly and `paper_monitor.py`
+calls `compute_entry_fill()` directly -- neither calls `simulate_window`, which is the ONLY place
+this gate's flag is ever read. Gated by `V3_SPIKE_CONFIRM_GATE` (default `"0"`, off), with
+`V3_SPIKE_CONFIRM_DAYS` (default `3`) and `V3_SPIKE_GIVEBACK_PCT` (default `0.15`) -- new,
+isolated flags; a cold-process import check in `test_spike_confirm_gate.py` confirms every other
+gate's own default (`PARTICIPATION_GATE_ENABLED`, `TREND_DURATION_GATE_ENABLED`, etc.) is
+untouched. Full existing test suite (`test_trend_duration_gate.py`, `test_participation_gate.py`,
+`test_feature_test_harness.py`, `test_ara_filter.py`, `test_bandar_sizing_default.py`,
+`test_accdist_signal.py`, `test_rotation_signal.py`, `test_paper_trading_math.py`) still passes
+unchanged.
+
+**9-window walk-forward at the default parameterization** (`src/feature_test_harness.py`,
+`V3_BANDAR_SIZING=0` throughout, matching the reproducible baseline this log has used since the
+tick-size-bug entry; OFF reproduces that baseline byte-for-byte -- mean alpha +15.88%, mean
+profit +15.02%, mean PF 1.46, mean/worst maxDD -16.28%/-22.51%, win>50% 5/9 -- confirming the
+harness and the off-by-default no-op both hold):
+
+| Metric | OFF | ON (spike_confirm_gate, N=3/giveback=15%) |
+|---|---|---|
+| Windows beating benchmark | 6/9 | 6/9 |
+| Windows win-rate > 50% | 5/9 | 4/9 |
+| Win rate (mean / median) | 51.0% / 51.0% | 51.3% / 47.2% |
+| Profit (mean / median) | +15.02% / +2.87% | +12.10% / +2.37% |
+| Alpha (mean / median) | +15.88% / +11.57% | +12.96% / +2.15% |
+| Profit factor (mean / median) | 1.46 / 1.12 | 1.37 / 1.13 |
+| Max drawdown (mean / worst) | -16.28% / -22.51% | -16.97% / -29.01% |
+
+The default parameterization (the one closest to the base-rate research's own numbers: a 3-day
+wait, a 15% giveback floor) is a straightforward net negative -- worse mean AND median on every
+return/consistency metric, and worse drawdown too. Not promising on its own, but one point is not
+a verdict -- swept next.
+
+**Sensitivity sweep** (confirm_days in {2, 3, 5} x giveback_pct in {10%, 15%, 20%} where
+applicable, 9-window walk-forward each, same `V3_BANDAR_SIZING=0` baseline; full per-window CSV
+at `.cache/spike_confirm_sweep_results.csv`):
+
+| Config | Beat bench | Win>50% | Win rate mean/median | Profit mean/median | Alpha mean/median | PF mean/median | MaxDD mean/worst |
+|---|---|---|---|---|---|---|---|
+| OFF | 6/9 | 5/9 | 51.0% / 51.0% | +15.02% / +2.87% | +15.88% / +11.57% | 1.46 / 1.12 | -16.28% / -22.51% |
+| N=2, giveback=10% | 5/9 | 4/9 | 47.2% / 45.7% | +12.34% / -1.04% | +13.20% / +2.51% | 1.35 / 0.95 | -15.04% / -29.33% |
+| N=2, giveback=15% | 5/9 | 4/9 | 51.5% / 50.0% | +13.94% / -4.56% | +14.80% / +9.80% | 1.42 / 0.88 | -16.33% / -24.07% |
+| N=3, giveback=10% | 8/9 | 5/9 | 51.3% / 53.5% | +24.81% / +9.25% | +25.67% / +12.83% | 1.60 / 1.34 | -15.25% / -29.12% |
+| N=3, giveback=15% (default) | 6/9 | 4/9 | 51.3% / 47.2% | +12.10% / +2.37% | +12.96% / +2.15% | 1.37 / 1.13 | -16.97% / -29.01% |
+| N=3, giveback=20% | 6/9 | 4/9 | 52.7% / 50.0% | +18.09% / +2.87% | +18.95% / +9.80% | 1.58 / 1.12 | -16.14% / -27.26% |
+| N=5, giveback=10% | 6/9 | 4/9 | 49.9% / 47.8% | +14.58% / +1.84% | +15.44% / +2.27% | 1.37 / 1.09 | -15.71% / -29.53% |
+| N=5, giveback=15% | 5/9 | 3/9 | 50.7% / 50.0% | +14.78% / -1.59% | +15.64% / +1.17% | 1.52 / 0.87 | -14.61% / -32.14% |
+| N=5, giveback=20% | 6/9 | 4/9 | 51.4% / 49.0% | +18.51% / +4.10% | +19.38% / +14.12% | 1.54 / 1.17 | -17.05% / -30.17% |
+
+**Non-monotonic across both axes -- the exact "worst-in-the-middle" shape this log has already
+learned not to trust** (hysteresis-band sweep, then the participation-gate rejection). Fixing
+`confirm_days=3` and sweeping giveback: mean alpha goes 25.67% (10%) -> 12.96% (15%) -> 18.95%
+(20%) -- a dip in the MIDDLE of the range, not a monotonic trend or a clean interior peak.
+Fixing `giveback=10%` and sweeping confirm_days: 13.20% (N=2) -> 25.67% (N=3) -> 15.44% (N=5) --
+same shape, the other axis. `win-rate>50%` never exceeds the OFF baseline's 5/9 at any of the 9
+points tested; it matches at best (N=3/g10) and is usually worse.
+
+**The one point that looks good (N=3, giveback=10%, beat-bench 8/9) does not survive a per-window
+trace.** Per-window alpha delta vs OFF:
+
+| Window | OFF alpha | N=3/g10 alpha | Delta |
+|---|---|---|---|
+| W1 (2022 H1) | -8.26% | +24.07% | +32.33pp |
+| W2 (2022 H2) | -8.33% | +2.14% | +10.47pp |
+| W3 (2023 H1) | -3.89% | -1.14% | +2.75pp |
+| W4 (2023 H2) | +41.04% | +0.65% | **-40.39pp** |
+| W5 (2024 H1) | +6.42% | +5.88% | -0.54pp |
+| W6 (2024 H2) | +11.57% | +12.89% | +1.31pp |
+| W7 (2025 H1) | +26.13% | +23.98% | -2.15pp |
+| W8 (2025 H2) | +59.56% | +149.76% | **+90.20pp** |
+| W9 (2026 H1) | +18.66% | +12.83% | -5.84pp |
+
+W8's own +90.20pp swing is 102% of the whole schedule's +88.15pp total delta -- every other
+window nets out to roughly zero once W8 is set aside, and W4 (previously one of the two
+strongest windows, alongside W8) takes real, uncompensated damage (+41.04% -> +0.65%, a
+tighter-giveback checkpoint failing and permanently excluding what would otherwise have been
+real winning trades in that episode). This is the identical failure signature the trend-duration
+gate (fixed W3, broke W5 every N) and the participation gate (fixed W3, broke W1 and W4 at
+nearly every threshold) were already rejected for: a real, mechanically-traceable effect in the
+window it helps, paid for by uncompensated damage in a window it wasn't built for. The two milder
+"also positive" points (N=3/g20: mean alpha +18.95%, N=5/g20: +19.38%) don't show W4-style
+collateral damage (both leave W4 within ±1pp of OFF), but W8 still supplies 65-71% of their own
+aggregate improvement -- a much smaller, still real dependence on the same one window.
+
+**Monte Carlo check on W8's own N=3/giveback=10% result, specifically**: is +59.56% -> +149.76%
+real spike-targeting skill, or the same "perturb which candidate-days are excluded -> reshuffle
+which trade fills a scarce `MAX_POSITIONS` slot -> large single-window swing" fragility already
+documented for the tick-size-rounding fix (that entry: "one ticker's entry date shifted by 9
+calendar days... cascading into a different subsequent trade sequence")? Drew 30 random
+`(stock_code, trade_date)` exclusion masks of the exact SAME SIZE as the real N=3/giveback=10%
+gate's total blocked-row count (226,216 of 1,242,246 rows, 18.2% -- a giveback of 10% fails more
+checkpoints than the 15% default, so this config blocks more than the 10.53% the default gate
+blocks), monkeypatched `compute_spike_confirm_gate` to return each random mask instead of the
+real targeted one, and reran ONLY Window 8 (`simulate_window` with `train_end=2025-06-30,
+test=2025-07-01..2025-12-30`) per draw:
+
+  - Window 8 baseline (gate OFF): alpha +59.56%
+  - Window 8 real, spike-targeted N=3/giveback=10% gate: alpha +149.76%
+  - Window 8, 30 random-mask draws of the same size: mean +69.09%, median +71.47%,
+    min -12.91%, max +194.88%, std 47.08pp
+  - Random draws matching or beating the real targeted gate's own result: **2/30 (6.7%)**
+
+The real targeted gate sits above most of the random distribution (roughly its 93rd percentile),
+so this is not pure noise in the strict sense the ~5000-draw permutation test used on the
+original entry rule established -- but the random distribution's own MEAN (+69.09%) already
+exceeds the untouched baseline (+59.56%) by more than the default config's ENTIRE net effect,
+with a standard deviation (47pp) wide enough that 2 of 30 purely random draws beat the real
+targeted mechanism outright, and the random max (+194.88%) clears it by 45pp. Blocking roughly a
+fifth of this one window's candidate-days -- targeted at spikes, or picked at random -- reliably
+pushes Window 8 higher, by an amount too noisy to call a specific mechanism's contribution. This
+is the same known fragility already on record from the tick-size-bug entry, now demonstrated
+directly with a permutation check rather than inferred from one before/after diff.
+
+**One more clean, monotonic-direction finding, independent of all the noisy alpha/profit
+numbers above**: worst-case single-window drawdown is WORSE than the OFF baseline's -22.51% at
+literally every one of the 8 tested configurations (range -24.07% to -32.14%) -- the opposite of
+what a gate designed to avoid buying into blowoff peaks would ideally do. Delaying entry into a
+spike-flagged name doesn't reduce the portfolio's worst realized drawdown anywhere in this sweep;
+if anything it makes the worst case somewhat more, not less, severe (most likely the same
+scarce-slot reshuffling mechanism above, not a property of spike stocks specifically).
+
+**Verdict: REJECTED, kept off by default (`V3_SPIKE_CONFIRM_GATE=0`).** The underlying diagnosis
+(post-blowoff fade, front-loaded within ~5-10 days) is real and already-documented base-rate
+evidence, not in question here. But the specific mechanism built to act on it fails on every
+criterion this log has used to reject gates before: non-monotonic across both of its own
+parameters (worst-in-the-middle on each axis independently), its best-looking point trades real
+uncompensated damage in a previously-strong window (W4) for a single-window blowup (W8) a direct
+Monte Carlo permutation check cannot distinguish from random entry-timing noise, and worst-case
+drawdown is uniformly worse than baseline across the entire sweep regardless of parameters. Code
+kept (inert, off by default, `compute_spike_confirm_gate()` + `test_spike_confirm_gate.py`) --
+the front-loading diagnostic and the per-stock/single-checkpoint mechanism design are both
+reusable if a future session finds a structurally different way to act on the same base-rate
+finding (e.g. sizing the position DOWN on a fresh spike rather than delaying/excluding entry
+outright, matching the "reduced-sizing instead of entry-filtering" idea already flagged and
+unattempted in the Window-3 section above -- not attempted here either). `score_candidates()`,
+`compute_entry_fill()`, `paper_signal_scan.py`, and `paper_monitor.py` are all unchanged by this
+entry; only `src/backtest_v4.py` (inside `simulate_window` and its two new helper functions) and
+the new `src/test_spike_confirm_gate.py` were touched.
