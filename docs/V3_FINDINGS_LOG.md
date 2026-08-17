@@ -3596,3 +3596,75 @@ ever reached a live config) before any walk-forward validation, not a same-sessi
 review converged on is worth designing properly, but the actual shape needed (cross-day position
 rotation, not same-day rank-by-score) is bigger and riskier than what was scoped in council --
 flagging back rather than building it unprompted. Raw data: `.cache/slot_boundary_gap.csv`.
+
+## 2026-08-17: why the Screener page never shows fewer than ~90 signals -- it's reading the wrong
+## function, not a scoring/algorithm problem. Root-caused, not yet fixed.
+
+User complaint: too many BUY signals shown, every day, no matter what -- wanted a system that
+shows exactly as many signals as genuinely qualify (including zero on a bad day), pointed at a
+competitor screener (idx.maxlong.my.id) as a more "confident/selective" benchmark. Ran a 5-advisor
++ 2-peer-review council (report published as a Claude artifact this session).
+
+**Benchmark investigation, before the council**: the competitor's "today" screenshots are 100%
+exact-match stale data from the last real trading day (verified against our own `ihsg_eod` on all
+18 tickers shown, to the exact price and percent) -- the site was displaying Friday 2026-08-14's
+close under a 2026-08-17 header, since IDX was closed today (Hari Kemerdekaan). Its "selective"
+categories also cluster many tickers on IDENTICAL scores (e.g. 3 different stocks all scoring
+exactly 5270 in one category), suggesting a coarse discrete lookup table rather than a
+continuously-computed, stricter quality bar. TEBE -- the exact stock this log already found has a
+35-39% historical win rate / negative median return on this pattern -- appears uncontested in the
+competitor's own "Gamma" category. Verdict: not a validated benchmark, don't build toward it.
+
+**Real root cause, confirmed by direct code read (not inferred from output shape)**: the frontend
+Screener page reads `daily_scoreboard`, populated by `score_full_universe()`
+(`backtest_v4.py:1328`) -- which its OWN docstring says is deliberately built to "never drop a
+row, so a ticker search always has an answer instead of silence." It is a ticker-lookup/display
+function, not a selectivity filter, and was never meant to answer "how many signals qualify
+today." The function ACTUALLY used to decide real trade entries, `score_candidates()` (already
+proven capable of returning few or zero, and already the one live trades are gated on), is a
+different function entirely -- the frontend has never read from it.
+
+Initial framing suspected `score_full_universe`'s label was percentile-based (a fixed proportion
+of the universe always relabeled BUY, whatever the market does). Code read during the council
+found this wrong in the specific way that matters: `weekly_cut`/`sector_cut`/`score_p90` are fixed
+TRAIN-derived quantile thresholds (not same-day percentiles), and there's a real regime kill-switch
+-- if `regime_ok` is False, EVERY ticker gets labeled WAIT, not BUY. But `daily_gate_summary` showed
+`regime_ok=true` on all 8 of the most recently sampled days (2026-08-05..08-14) -- the WAIT-
+everything path exists and was simply never observed in that specific bullish stretch.
+
+**Decisive empirical answer, from data already collected in the MAX_POSITIONS diagnostic earlier
+today**: `score_candidates()`'s real daily output (admitted + dropped candidates, i.e. every day it
+was actually called) across the full 9-window walk-forward --
+
+| Window | Trading days | Days with >=1 real candidate | Days with ZERO |
+|---|---|---|---|
+| 1 | 116 | 63 | 53 (45.7%) |
+| 2 | 130 | 35 | 95 (73.1%) |
+| 3 | 114 | 10 | 104 (91.2%) |
+| 4 | 125 | 67 | 58 (46.4%) |
+| 5 | 110 | 30 | 80 (72.7%) |
+| 6 | 127 | 64 | 63 (49.6%) |
+| 7 | 109 | 26 | 83 (76.1%) |
+| 8 | 127 | 117 | 10 (7.9%) |
+| 9 | 111 | 17 | 94 (84.7%) |
+| **Total** | **1069** | **429** | **640 (59.9%)** |
+
+**The system the user is asking for already exists and is already what real trades are gated
+on.** 60% of all trading days across the full validated history, the real entry-qualifying
+function returns nothing at all -- from as low as 7.9% zero-days in the strongest bull window to
+91.2% in the weakest. The frontend just never shows this, because it was built on a different
+function chosen for a different job (always answer a ticker search) rather than the one already
+doing exactly the selectivity job the user wants.
+
+**Recommendation, not yet built**: don't touch `score_full_universe()` (still needed for ticker
+search/lookup, working as designed) or `score_candidates()`/`compute_entry_fill()`/any trading
+logic (already validated, zero changes needed). Add a new, separate persisted "today's real
+candidate count" -- `score_candidates()`'s output isn't currently stored anywhere long-term (only
+consumed transiently by `paper_signal_scan.py` to decide what to queue, capped at
+`MAX_NEW_ENTRIES_PER_DAY`); the Screener page needs its own read path built on this function's
+real output, not `daily_scoreboard`. This is a frontend/wiring fix once the persistence exists, not
+a backtest research question -- no walk-forward validation needed, since the selectivity itself is
+already validated by definition (same function real trades already use). Two peer reviewers
+independently flagged that the frontend and `daily_scoreboard` can currently disagree with what
+real trades would actually do on the same ticker -- a trust gap worth closing regardless of the
+"too many signals" complaint on its own.
