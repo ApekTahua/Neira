@@ -5,6 +5,99 @@ Blow-by-blow experiment detail (every sweep, every neighbor-check, every
 negative result) lives in `V3_FINDINGS_LOG.md` -- this file tracks WHAT and
 WHY at the initiative level, not every run.
 
+## Real-money deployment readiness -- concrete criteria (written 2026-08-17)
+
+This section didn't exist until today. One month into full dev, the user
+asked directly: "sampai kapan sistemnya anda anggap deployment ready" (until
+when do you consider this deployment-ready) -- fair question, overdue answer.
+Everything below is a checkable criterion, not a vibe. Update the checkbox
+state as evidence comes in; don't move a box to done on a promise.
+
+**Immediate trigger for writing this now**: user asked whether tomorrow's
+real-money trade could use Friday 2026-08-14's stale Screener signal (market
+closed today, Hari Kemerdekaan). Answer was no -- a 4-trading-day-stale
+signal violates the system's own T+1 entry design, and several of that day's
+names matched the exact "already spiked, chasing it" pattern this session's
+own TEBE base-rate research (932 historical episodes) found has a 35-39% win
+rate and negative median return. That specific question is closed. This
+section is the answer to the bigger one behind it.
+
+### A. Live track record depth (the dominant gate -- can't be rushed)
+- [ ] **>= 25-30 CLOSED trades** on V4_PAPER (not open positions -- closed
+      ones are what prove SL/TP1/trailing exits behave the way the backtest
+      predicts against real fills, real slippage, a real live feed).
+      Status 2026-08-17: launched 2026-08-12, 5 trading days in, 2 OPEN, **0
+      CLOSED**. This is the real bottleneck, not a formality.
+- [ ] **>= 6-8 calendar weeks** of continuous live running, even if the trade
+      count above is hit faster -- need to see the system survive ordinary
+      operational reality (holidays, feed hiccups, a real regime wobble),
+      not just get lucky with an active week.
+- [ ] Live win rate / profit factor roughly consistent with the backtest's
+      own prediction for whatever regime actually occurred over that window
+      -- doesn't need to match exactly, but a live win rate far below the
+      45-60% band this system's edge is built on, sustained over 20+ trades,
+      is a stop signal, not noise to wait out.
+
+### B. No new correctness bugs for a real observation window
+Today alone, two live-only bugs were found and fixed -- both invisible in
+any backtest, only discoverable by watching the live system actually run:
+tick-size rounding (affected all 16 STRONG_BUY candidates sampled), and a
+holiday-calendar gap that let `paper_monitor.py` fill a position on a day
+the exchange never opened. Both are patched, but "found two today" is a
+real signal there could be more not yet surfaced.
+- [ ] **>= 3-4 consecutive weeks with zero newly-discovered correctness
+      bugs** in the live pipeline (`paper_monitor.py`/`paper_signal_scan.py`),
+      counted starting from today's fixes, not from project start.
+
+### C. Known structural risks -- each needs an explicit decision, not silence
+Don't need to be solved. Need to be consciously accepted or fixed --
+un-examined is the only unacceptable state.
+- [ ] **Scarce-slot fragility** (`MAX_POSITIONS=6` binds on 84.8% of
+      candidate-days, drops ~4,000 real candidates/year averaging 89% of
+      admitted candidates' own score). Two fix attempts this session
+      (widening the cap, a bounded backlog queue) both rejected on real
+      evidence. Currently: proven real, unfixed, not yet consciously
+      accepted the way Window 3 was -- needs that same explicit sign-off,
+      or a third fix attempt (cross-day position rotation, not yet
+      scoped/attempted) to actually clear it.
+- [ ] **Spike/"gorengan" entry risk** (932-episode base rate: 35-39% win
+      rate, negative median return, buying a stock the day after a >=20%
+      single-day spike on >=10x volume). One fix attempt (confirmation-delay
+      gate) rejected. A different-shaped idea (size down on a fresh spike
+      instead of excluding/delaying it) was flagged, never built or tested.
+      Needs either a validated mitigation or an explicit accepted-risk
+      decision with sizing that actually reflects the risk.
+- [x] **Window 3 (2023 H1)** -- already resolved as an accepted, bounded
+      cost (-5.44%, alpha now close to its own benchmark) after 4 fix
+      attempts, 2026-08-16. Nothing further needed here.
+
+### D. Staged capital rollout -- even once A-C clear, don't go 0 to 100
+- [ ] Start real deployment at a **small fraction of intended capital**
+      (proposed: 10-20%) for a further observation window (proposed: another
+      ~4 weeks / ~15-20 closed trades) before scaling to full intended size.
+      This is the step that catches "works in paper, breaks against real
+      slippage/execution friction/psychology," a gap paper trading cannot
+      fully simulate no matter how long it runs.
+
+### E. Personal risk fit -- the user's call, not mine, but a real precondition
+User's own stated tolerance (this session): comfortable with 45-60% win
+rate, wants occasional multibagger winners, accepts 20-25% drawdown for
+>100%/year returns. Before any real capital moves: size the position
+relative to money you can genuinely absorb a 20-25% drawdown on without it
+changing your life -- not a number I can set for you, but not a step to
+skip either.
+
+### Honest timeline read
+V4_PAPER is 5 trading days in with 2 open, 0 closed -- entry frequency looks
+moderate-to-sparse, consistent with today's own finding that the real entry
+gate returns zero qualifying candidates on 60% of days. Hitting 25-30 closed
+trades realistically takes longer than it sounds; this runs on the market's
+clock, not a sprint calendar. A genuinely honest earliest-case estimate for
+criterion A alone is **8-12+ weeks from now (into October-November 2026)**,
+and only if B and C also clear cleanly by then -- could easily run longer,
+and rushing this specific criterion is exactly the failure mode the rest of
+this section exists to prevent.
+
 ## Repo housekeeping
 
 `src/` audited 2026-08-11 (user asked to declutter, worried it was
