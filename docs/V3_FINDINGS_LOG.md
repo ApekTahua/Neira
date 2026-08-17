@@ -3519,3 +3519,44 @@ byte-identical at defaults. `walk_forward_v4.py`'s `run_schedule()` gained `avg_
 per-window output row (purely additive column). `score_candidates()`, `compute_entry_fill()`,
 `evaluate_position_exit()`, `paper_signal_scan.py`, and `paper_monitor.py` are all unchanged. Raw
 sweep outputs saved at `.cache/backlog_queue_sweep_full.csv`/`_agg.csv`.
+
+## 2026-08-17: council session on today's research yield -- not a failed day, one real untested lever named, next step is a data pull not a new study
+
+After the slot-cap fragility's two fix attempts both rejected (see above), the user directly
+questioned whether a full day of rigorous research (7 attempts, 1 real fix + 6 honest rejections)
+was actually productive. Ran a 5-advisor + 2-peer-review council (Contrarian, First Principles,
+Expansionist, Outsider, Executor) rather than answer unilaterally -- full HTML report:
+`council-report-strategy.html` (published as a Claude artifact this session, not committed to the
+repo).
+
+**Verdict: today was disciplined validation working as intended, not a failure.** Six rejections
+plus one real bug fix, with a Monte Carlo check catching a fake-looking win along the way, is what
+the process is supposed to produce -- a day that found six real improvements would be the alarming
+result (overfitting). Both peer reviewers independently flagged that the two slot-cap fix attempts
+(widen `MAX_POSITIONS`; bounded backlog queue) are really ONE failure mode (diluted concentration)
+tested twice, not two independent confirmations the cap is unfixable -- the "stop touching it,
+it's load-bearing" conclusion from one advisor overreached on that basis.
+
+**One genuinely untested lever, independently proposed by two advisors and rated strongest by both
+peer reviewers**: does `simulate_window()`'s entry loop actually rank-select the best-scoring
+candidate when `MAX_POSITIONS` binds, or something closer to first-come-first-served within that
+day's already-sorted `score_candidates()` output? Neither of the two rejected fixes (#6/#7 above)
+touched selection quality -- both changed capacity or timing while keeping the same admission
+order. Real, unresolved tension flagged by peer review: a third advisor's point that dropped
+candidates score 89% as high as admitted ones might mean the ranking function's resolution is too
+coarse for a rank-by-score fix to matter at all -- nobody connected this to the fix it undermines.
+
+**Recommended next step, not yet done**: before building a rank-by-score fix, pull the existing
+`.cache/slot_queue_diag_dropped_max_positions.csv` data (already collected from the earlier
+diagnostic) and check score separation specifically on capped days -- does the admitted top-6
+clearly outscore the best dropped candidate, or is it usually a near-tie? That's a five-minute data
+pull, not a new walk-forward study, and it decides whether the fix is worth a session at all.
+
+**Also flagged, not a finding requiring action**: the current unchanged baseline (win>50% in 5/9
+windows, mean DD -16.28%/worst -22.51%) already sits roughly inside the user's own previously
+stated comfort zone (45-60% win rate, 20-25% drawdown) -- part of today's "it doesn't feel like
+it's working" read may be an expectations gap against that stated bar, not evidence the research
+effort came up empty. And: 5 days / 0 closed trades of V4_PAPER live data remains genuinely
+uninformative in either direction -- not proof more research is pointless, not proof it's needed
+first. The recommendation is to run the data-pull check AND let live data keep accumulating in
+parallel, not to choose one over the other.
