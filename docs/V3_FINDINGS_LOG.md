@@ -3560,3 +3560,39 @@ effort came up empty. And: 5 days / 0 closed trades of V4_PAPER live data remain
 uninformative in either direction -- not proof more research is pointless, not proof it's needed
 first. The recommendation is to run the data-pull check AND let live data keep accumulating in
 parallel, not to choose one over the other.
+
+## 2026-08-17: the council's "one thing to do first" check, done -- boundary is crisp, but the real
+## open question turns out to be different from what was scoped
+
+`src/check_slot_boundary_gap.py` -- reused `diagnose_slot_queue.py`'s exact diag hook and cached
+dataset (no new backtest mechanism, no live-path files touched), this time pairing each day's
+admitted/dropped scores by DATE (the earlier diagnostic only kept an unpaired flat list) to compute
+`boundary_gap = min(admitted score that day) - max(dropped score that day)` on every day the
+`max_positions` cap actually bound.
+
+**Contrarian's "89% score similarity means the ranking is noise" concern is NOT supported at the
+actual decision boundary.** Across 145 capped days that had both an admit and a drop that day:
+mean gap 3.89, median 2.14 score points, and **zero inversions** -- not one single day where a
+dropped candidate outscored the worst admitted candidate. The 89% figure was a pooled mean across
+ALL dropped candidates (including many deep in the tail, far below the cutoff), which is a
+different and less informative number than the gap right at the boundary that actually decides
+admission. At the boundary specifically, the ranking is reliable.
+
+**But this also surfaces a real, unscoped finding: same-day admission already respects rank order
+perfectly (0% inversion) -- meaning Executor's originally-proposed fix ("replace first-come with
+rank-by-score") may have little room to improve anything, because it may already describe what
+`simulate_window`'s loop does within a single day.** The remaining 219 of the 364 capped days
+(60.2%) had ZERO admits at all that day -- every ranked candidate was dropped, because slots were
+already fully occupied by positions opened on PRIOR days. That reframes the open question:
+it isn't "does today rank its own candidates correctly" (yes, verified) -- it's "should an
+already-open position from an earlier day ever be displaced by a much better new candidate
+arriving later." That's a materially bigger, more invasive idea than a same-day sort tweak --
+it touches live position management, not just entry-queue ordering, and would need its own
+careful design (what triggers a displacement? does it count as prematurely closing a position
+that hasn't hit its own SL/TP/time exit? how does this interact with frozen-run governance if it
+ever reached a live config) before any walk-forward validation, not a same-session build.
+
+**Status: diagnostic-only, not acted on further.** Confirms the fix Executor/Expansionist/peer-
+review converged on is worth designing properly, but the actual shape needed (cross-day position
+rotation, not same-day rank-by-score) is bigger and riskier than what was scoped in council --
+flagging back rather than building it unprompted. Raw data: `.cache/slot_boundary_gap.csv`.
