@@ -2858,3 +2858,218 @@ unattempted in the Window-3 section above -- not attempted here either). `score_
 `compute_entry_fill()`, `paper_signal_scan.py`, and `paper_monitor.py` are all unchanged by this
 entry; only `src/backtest_v4.py` (inside `simulate_window` and its two new helper functions) and
 the new `src/test_spike_confirm_gate.py` were touched.
+
+## VOL_BAND_MULT re-swept on the full 9-window harness (roadmap item #1, "known-fragile
+## parameter" backlog): no better plateau found, KEPT at 2.0 -- REGIME_CONFIRM_DAYS interaction
+## is real but not exploitable, same W8-driven fragility already on record (2026-08-17)
+
+**Hypothesis**: `VOL_BAND_MULT` (regime hysteresis band width, `compute_regime_with_hysteresis()`,
+`src/backtest_v4.py`) gates every single trade in the system, and its only prior sweep
+(`docs/V3_FINDINGS_LOG.md`, "Redesigned as volatility-relative") tested three coarse points
+(1.0/2.0/3.0) on two hand-picked windows, before Window 3 existed and before
+`REGIME_CONFIRM_DAYS`/`TREND_STRENGTH_MIN`/pyramiding/liquidity-sizing were layered on top. The
+2.0 default was explicitly logged as "a convention pick (the standard 2-sigma convention), not an
+evidence-based optimum." A full 9-window, finer-grained re-sweep against the CURRENT full
+configuration might find a genuinely better, more robust value -- or might confirm 2.0 is already
+fine.
+
+**Method**: `src/sweep_vol_band_mult.py` (new) -- reuses `walk_forward_v4.py`'s dataset-cache/
+9-window-schedule infrastructure exactly like `feature_test_harness.py` does for ON/OFF flags,
+generalized to a numeric grid: loads the cached dataset ONCE, then for each grid point mutates
+`backtest_v4.VOL_BAND_MULT`/`REGIME_CONFIRM_DAYS` directly on the already-imported module (same
+"env vars are read once at import time" workaround `feature_test_harness.py`'s docstring explains)
+and reruns `run_schedule()`. Cheaper than `sweep_v4_filters.py`'s one-subprocess-per-cell pattern
+(which would re-unpickle the ~670MB cached dataset every cell); correctness isn't affected either
+way since `VOL_BAND_MULT`/`REGIME_CONFIRM_DAYS` are read as plain module globals inside
+`compute_regime_with_hysteresis()`/`simulate_window()`, not captured at def-time. `V3_BANDAR_SIZING=0`
+pinned throughout, matching the reproducible baseline this log has used since the tick-size-bug
+entry. **Correctness check**: the VOL_BAND_MULT=2.0/REGIME_CONFIRM_DAYS=3 cell (today's actual
+defaults) reproduces that baseline exactly -- mean alpha +15.88%, mean profit +15.02%, mean PF
+1.46, mean/worst maxDD -16.28%/-22.51%, win>50% 5/9, byte-for-byte -- confirming the harness and
+dataset are correct before trusting anything else below.
+
+**Grid**: `VOL_BAND_MULT` in {1.0, 1.5, 2.0, 2.25, 2.5, 2.75, 3.0, 3.5, 4.0} at
+`REGIME_CONFIRM_DAYS=3` (coarse per the task's minimum grid, then finer-neighbor points added
+around 2.0-3.0 once that region looked plateau-like on the coarse pass -- see below for why the
+finer pass changed the read). Second axis: `REGIME_CONFIRM_DAYS` in {2, 3, 5} crossed with
+`VOL_BAND_MULT` in {1.0, 2.0, 3.0} (narrow / current-default / wide) -- judged separable enough
+not to need a full grid (reasoning below), but plausibly interacting mechanically (a wider band
+flips regime less often, so how much protection `REGIME_CONFIRM_DAYS` is even doing should
+shrink as the band widens), so a reduced joint check was run rather than assuming independence.
+
+**Full aggregate table, VOL_BAND_MULT axis** (`REGIME_CONFIRM_DAYS=3`, 9 windows each; full
+per-window CSVs at `.cache/vbm_stage1_full.csv` and `.cache/vbm_stage2a_full.csv`):
+
+| mult | trades | beat bench | win>50% | win% mean/median | profit% mean/median | alpha% mean/median | PF mean/median | DD% mean/worst | conc% mean/max |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.0 | 404 | 6/9 | 5/9 | 48.8/51.4 | 21.25/0.00 | 22.11/3.55 | 1.89/1.00 | -17.70/-29.06 | 85.8/97.9 |
+| 1.5 | 398 | 6/9 | 5/9 | 51.3/51.9 | 21.09/0.86 | 21.95/3.55 | 1.71/1.02 | -16.81/-23.06 | 85.3/97.9 |
+| **2.0 (default)** | 389 | 6/9 | 5/9 | 51.0/51.0 | 15.02/2.87 | 15.88/11.57 | 1.46/1.12 | -16.28/-22.51 | 85.2/98.9 |
+| 2.25 | 386 | 6/9 | 4/9 | 51.7/50.0 | 12.97/4.18 | 13.84/5.01 | 1.32/1.14 | -15.32/-22.51 | 82.0/97.5 |
+| 2.5 | 366 | 6/9 | 5/9 | 51.5/55.4 | 15.77/8.11 | 16.64/13.61 | 1.55/1.29 | -15.86/-22.51 | 82.7/97.5 |
+| 2.75 | 361 | 6/9 | 5/9 | 51.0/55.0 | 21.43/8.11 | 22.29/13.79 | 1.52/1.29 | -16.73/-22.51 | 83.3/97.0 |
+| 3.0 | 363 | 6/9 | 5/9 | 50.8/55.8 | 17.57/8.11 | 18.43/13.79 | 1.39/1.29 | -15.89/-22.51 | 82.5/97.0 |
+| 3.5 | 358 | 6/9 | 5/9 | 50.5/53.7 | 14.37/0.00 | 15.23/3.55 | 1.33/1.00 | -15.06/-22.51 | 82.7/97.8 |
+| 4.0 | 359* | 8/9* | 4/9* | 53.0/52.5 | 12.77/5.69 | 13.40/8.68 | 1.33/1.20 | -15.97/-23.82 | 84.3/96.8 |
+
+(*4.0: only 8/9 windows traded -- Window 3 drops to zero trades entirely at this width, so its
+`beat_bench`/`win>50%` counts are out of 8, not 9; not directly comparable to the other rows.)
+
+**Per-window detail for the three representative points (narrow / current default / wide)**,
+format `trades / win% / profit% / PF / DD% / conc%`:
+
+| Window | mult=1.0 | mult=2.0 (default) | mult=3.0 |
+|---|---|---|---|
+| W1 (2022 H1) | 55 / 32.7% / -19.32% / 0.67 / -29.06% / 71.6% | 56 / 55.4% / -4.56% / 0.88 / -16.92% / 74.6% | 55 / 56.4% / -0.14% / 1.00 / -16.88% / 70.9% |
+| W2 (2022 H2) | 37 / 51.4% / +2.66% / 1.12 / -10.70% / 92.2% | 38 / 50.0% / -7.50% / 0.71 / -12.52% / 96.4% | 31 / 41.9% / -15.91% / 0.32 / -17.84% / 87.2% |
+| W3 (2023 H1) | 18 / 33.3% / -8.26% / 0.52 / -14.77% / 96.0% | 19 / 42.1% / -6.65% / 0.58 / -13.28% / 96.1% | 10 / 30.0% / -6.42% / 0.12 / -7.75% / 82.2% |
+| W4 (2023 H2) | 51 / 54.9% / +53.20% / 2.61 / -17.60% / 89.3% | 49 / 51.0% / +49.64% / 2.49 / -19.20% / 92.9% | 43 / 55.8% / +51.76% / 2.91 / -15.47% / 83.7% |
+| W5 (2024 H1) | 35 / 37.1% / +0.00% / 1.00 / -15.75% / 97.9% | 34 / 41.2% / +2.87% / 1.12 / -15.05% / 98.9% | 36 / 47.2% / +10.24% / 1.43 / -15.04% / 97.0% |
+| W6 (2024 H2) | 63 / 52.4% / -4.23% / 0.88 / -20.39% / 81.6% | 57 / 52.6% / +10.74% / 1.37 / -19.48% / 77.1% | 53 / 60.4% / +8.11% / 1.29 / -20.59% / 81.7% |
+| W7 (2025 H1) | 28 / 78.6% / +52.00% / 6.84 / -7.34% / 86.8% | 21 / 71.4% / +22.84% / 3.18 / -7.97% / 89.5% | 19 / 68.4% / +13.24% / 2.13 / -8.31% / 89.2% |
+| W8 (2025 H2) | 94 / 63.8% / +131.99% / 2.91 / -21.13% / 71.5% | 92 / 60.9% / +84.60% / 2.31 / -19.55% / 55.7% | 93 / 62.4% / +114.04% / 2.80 / -18.64% / 65.3% |
+| W9 (2026 H1) | 23 / 34.8% / -16.82% / 0.48 / -22.51% / 85.1% | 23 / 34.8% / -16.83% / 0.48 / -22.51% / 85.1% | 23 / 34.8% / -16.82% / 0.48 / -22.51% / 85.1% |
+
+**Plateau analysis -- two axes are genuinely flat, the return axes are NOT, and the apparent
+2.5-3.0 "sweet spot" from the coarse pass dissolves once finer points are added.** This is the
+exact discipline this log has required since the fixed-% hysteresis-band walk-back: check the
+neighbours before trusting a value.
+
+- **Real, robust plateau on `dd_worst` and `beat_bench`**: worst-case single-window drawdown is
+  IDENTICAL (-22.51%) at every one of six consecutive tested points, 2.0 through 3.5 -- not
+  approximately similar, byte-identical, because several windows' regime paths (W1, W3, W5, W9 in
+  the table above) don't change AT ALL across some of these multiplier values (same trade count,
+  same exact P&L to the rupiah in several cells) -- the band simply isn't crossing a different
+  threshold on those windows' actual index path in that range. `beat_bench` is flat at 6/9 across
+  the entire 1.0-3.5 range, eight consecutive points. **This part of the original finding
+  replicates and strengthens on the fuller grid: no catastrophic breakdown anywhere in 1.0-3.5,**
+  consistent with (not just repeating) the original two-window conclusion.
+- **NOT robust: `alpha_median`/`pf_median` are non-monotonic, and the apparent 2.5-3.0 improvement
+  is bracketed by a dip on one side and a collapse on the other.** Reading only the coarse 5-point
+  grid (1.0/1.5/2.0/2.5/3.0) would suggest a clean monotonic climb in alpha_median (3.55 -> 3.55 ->
+  11.57 -> 13.61 -> 13.79) -- exactly the kind of read that would tempt promoting 2.5 or 3.0. The
+  finer points kill that story: **2.25 (between 2.0 and 2.5) dips to alpha_median 5.01 -- LOWER
+  than 2.0's 11.57 on both sides of it** -- and **3.5 (just past 3.0) collapses back to 3.55,
+  identical to 1.0's own value**, with `pf_median` doing the same round-trip (1.00 -> 1.02 -> 1.12
+  -> 1.14 -> 1.29 -> 1.29 -> 1.29 -> **1.00**). A value that looks like a genuine climb on 5 points
+  and turns into a dip-then-collapse on 9 is precisely the "one lucky point in a noisy landscape"
+  signature the fixed-percentage hysteresis-band sweep (61%->501% profit swings) originally taught
+  this project to distrust, and the same standard used to reject the trend-duration and
+  participation gates (non-monotonic, worst-in-the-middle shapes). **2.5/2.75/3.0's better-looking
+  median numbers do not survive fine-neighbor scrutiny and are not being recommended.**
+- **One window explains almost the entire aggregate mean-alpha swing across the whole grid.**
+  Window 8 (2025 H2)'s own alpha ranges from +59.56% (at 2.0) to +129.99% (at 2.75) across the
+  1.0-3.5 grid -- a 70.4pp single-window range. Divided across 9 windows, that alone accounts for
+  ~7.8pp of mean-alpha movement -- **about 93% of the entire observed mean-alpha range across the
+  whole 1.0-3.5 sweep (8.45pp, from 13.84 at 2.25 to 22.29 at 2.75).** This is the same
+  single-window-driven fragility already twice documented this session for W8 specifically (the
+  tick-size-rounding fix's "one ticker's entry date shifted 9 days... cascading into a different
+  subsequent trade sequence," and the spike-confirm-gate's own Monte Carlo check on this exact
+  window) -- not new evidence of a different problem, but a third confirmation of the same one.
+- **Region caution, not a promotion**: `mult < 1.5` is measurably worse on the one clean,
+  monotonic-direction axis found (`dd_worst` -29.06% at 1.0 vs a flat -22.51%/-23.06% everywhere
+  from 1.5 up), and (see below) interacts badly with a short `REGIME_CONFIRM_DAYS`. `mult >= 4.0`
+  starts to lose whole-window sample coverage (Window 3 drops to **zero trades**, and `dd_worst`
+  ticks up to -23.82%, the worst of the entire 2.0-4.0 range) -- a real, if milder, echo of the
+  fixed-% design's breakdown-at-its-extreme. **2.0 sits inside the well-behaved 1.5-3.5 region on
+  every axis that's actually trustworthy (dd_worst, beat_bench, trade-count/concentration
+  sanity), and is not demonstrably beaten by any neighbour on the axes that looked promising until
+  checked more closely.**
+
+**`REGIME_CONFIRM_DAYS` interaction: real at the region's edge, not exploitable at the default.**
+Full grid (`.cache/vbm_stage2b_full.csv`/`_agg.csv`):
+
+| mult | confirm | beat bench | win>50% | alpha mean/median | PF mean/median | DD mean/worst | conc mean |
+|---|---|---|---|---|---|---|---|
+| 1.0 | 2 | 4/9 | **2/9** | 10.08 / **-6.55** | 1.56/0.77 | -18.21/-26.29 | 83.7 |
+| 1.0 | 3 | 6/9 | 5/9 | 22.11 / 3.55 | 1.89/1.00 | -17.70/-29.06 | 85.8 |
+| 1.0 | 5 | 5/9 | 3/9 | 13.57 / 3.53 | 1.47/1.04 | -16.41/-22.51 | 84.1 |
+| 2.0 | 2 | 7/9 | 5/9 | 19.19 / 12.96 | 1.49/1.20 | -16.10/-23.30 | 83.9 |
+| **2.0 (default)** | **3** | 6/9 | 5/9 | 15.88 / 11.57 | 1.46/1.12 | -16.28/-22.51 | 85.2 |
+| 2.0 | 5 | 6/9 | 5/9 | 18.51 / 13.79 | 1.49/1.29 | -15.96/-22.51 | 84.5 |
+| 3.0 | 2 | 7/9 | 5/9 | 16.93 / 13.79 | 1.65/1.11 | -16.59/-23.24 | 83.9 |
+| 3.0 | 3 | 6/9 | 5/9 | 18.43 / 13.79 | 1.39/1.29 | -15.89/-22.51 | 82.5 |
+| 3.0 | 5 | 6/9 | **4/9** | 14.41 / 3.62 | 1.15/1.00 | -16.29/-22.51 | 75.7 |
+
+The one clean, mechanistically-sensible, monotonic-direction finding: **at a narrow band
+(mult=1.0), under-confirming (`confirm=2`) is clearly worse** -- win>50% collapses to 2/9 (worst
+of every cell tested in this whole session's VOL_BAND_MULT work), alpha_median goes negative
+(-6.55%), dd_worst is close to the worst overall (-26.29%). This matches the mechanism: a
+narrower band flips regime state more often, so the `REGIME_CONFIRM_DAYS` false-start protection
+has more to protect against there, and 2 days isn't enough. `confirm=5` at mult=1.0 is a partial
+recovery on drawdown but win>50% is still weak (3/9) -- narrow bands are simply a worse
+neighbourhood on this axis regardless of confirm-days, consistent with the region-caution above.
+
+**But at the CURRENT default band width (mult=2.0) and the wide band (mult=3.0), `confirm=2`'s
+apparently-better aggregate numbers do not survive a per-window trace, and don't replicate
+consistently between the two multipliers -- the identical "helps via one window, hurts a
+previously-strong window, direction isn't even consistent" signature already used to reject three
+gates this session.** At mult=2.0, confirm=2 vs confirm=3 per-window alpha delta:
+
+| Window | confirm=3 (default) | confirm=2 | Delta |
+|---|---|---|---|
+| W1 | -8.26% | -8.26% | 0.0pp (identical trade path) |
+| W2 | -8.33% | +2.06% | +10.4pp |
+| W3 | -3.89% | -6.16% | -2.3pp |
+| W4 | +41.04% | +12.96% | **-28.1pp** |
+| W5 | +6.42% | +13.58% | +7.2pp |
+| W6 | +11.57% | +7.59% | -4.0pp |
+| W7 | +26.13% | +25.64% | -0.5pp |
+| W8 | +59.56% | +106.65% | **+47.1pp** |
+| W9 | +18.66% | +18.66% | 0.0pp (identical trade path) |
+
+W4 (previously one of the two strongest, most reliable windows in the whole 9-window schedule)
+takes a real, uncompensated 28pp hit while W8 supplies essentially the entire aggregate
+improvement (+47.1pp on its own, more than the whole schedule's net gain) -- the exact
+"real effect in the window it helps, paid for by damage in a window it wasn't built for" pattern
+the trend-duration, participation, and spike-confirm gates were all rejected for. **Decisive
+extra check: this W8 effect doesn't even replicate in direction at mult=3.0** -- there, confirm=2
+vs confirm=3 makes W8 **worse** (+71.26% vs +89.00%, a -17.7pp move, the opposite sign from
+mult=2.0's +47.1pp) while W3 gets genuinely better (+0.59% alpha, actually beating benchmark --
+the best Window 3 has ever scored across this entire project's many dedicated W3-fix attempts) and
+W7 improves substantially (+26.23% vs +16.53%). A real effect would point the same direction at
+both band widths; this one flips sign, which is close to definitive evidence it's the same
+scarce-`MAX_POSITIONS`-slot reshuffling noise already documented for the tick-size fix and the
+spike-confirm-gate's own Monte Carlo check, not a real `REGIME_CONFIRM_DAYS=2` improvement.
+
+**No Monte Carlo permutation check was run.** The task's own stated bar is to MC-test a candidate
+only once it looks "genuinely better and more robust" on the sweep itself -- neither the
+2.5-3.0 VOL_BAND_MULT region nor `REGIME_CONFIRM_DAYS=2` reached that bar: both were falsified by
+the SAME kind of scrutiny an MC check exists to provide (checking whether an apparent improvement
+survives a stress test, here a finer-neighbour resample and a per-window/cross-parameter trace)
+before ever reaching "candidate for promotion." Running a permutation test on a value already
+shown to fail its own neighbour-stability check would not add information.
+
+**Why not a full 2D grid**: judged separable after the reduced check above -- the interaction is
+real but concentrated entirely at the narrow end of the VOL_BAND_MULT range (mult=1.0), which is
+already a region this sweep independently recommends avoiding on its own (dd_worst) grounds. At
+and above the current default, `REGIME_CONFIRM_DAYS` sensitivity is modest and not usefully
+distinguishable from the pre-existing W8 reshuffling noise; a denser grid in that region would be
+spending compute to resolve noise more precisely, not to find a real effect.
+
+**Verdict: KEEP `VOL_BAND_MULT=2.0`, KEEP `REGIME_CONFIRM_DAYS=3`. No default changed.** The
+honest finding is closer to "2.0 is already fine, no better plateau exists" than to a promotable
+alternative -- exactly the outcome the task asked to be stated plainly rather than dressed up.
+Real, useful findings from this pass even though nothing gets promoted: (1) the volatility-relative
+redesign's core claim -- no catastrophic breakdown across a wide multiplier range -- replicates and
+strengthens on the fuller 9-window/finer grid, not just the original 2-window check; (2) there IS a
+soft floor worth remembering if this parameter is ever revisited downward: below ~1.5x, drawdown
+genuinely worsens and the interaction with `REGIME_CONFIRM_DAYS` turns hostile; (3) concentration%
+does not discriminate between tested values anywhere in this sweep (stays in a 75-86% mean / 97-99%
+max band across the *entire* grid) -- it's a pre-existing, already-documented characteristic of
+this strategy's outlier-driven return distribution generally (see "Walk-forward validation"
+section), not something `VOL_BAND_MULT` moves one way or the other.
+
+**Governance note (no action needed this time, stated for the record per the task's own
+requirement)**: `VOL_BAND_MULT`/`REGIME_CONFIRM_DAYS` are both read by `paper_signal_scan.py`
+(`compute_regime_with_hysteresis()`/`bt.REGIME_CONFIRM_DAYS` directly, confirmed by grep) -- the
+same live-affecting-default category as the tick-size fix. Since this pass concluded KEEP, not
+CHANGE, nothing in `backtest_v4.py`'s live defaults was touched, so this entry (and
+`src/sweep_vol_band_mult.py`) is safe to push without a separate approval step -- unlike a
+promotion would have required.
+
+Code kept: `src/sweep_vol_band_mult.py` (new, reusable for the next numeric-grid parameter sweep
+the same way `feature_test_harness.py` is reusable for the next ON/OFF flag test). Raw sweep
+outputs saved at `.cache/vbm_stage1_full.csv`/`_agg.csv` (coarse grid),
+`.cache/vbm_stage2a_full.csv`/`_agg.csv` (finer neighbours), `.cache/vbm_stage2b_full.csv`/`_agg.csv`
+(REGIME_CONFIRM_DAYS interaction grid).
