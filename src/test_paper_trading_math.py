@@ -332,6 +332,28 @@ def test_looks_like_unadjusted_corporate_action():
     print("[OK] test_looks_like_unadjusted_corporate_action")
 
 
+def test_is_idx_trading_day():
+    # Real incident this guard exists for: EKAD (V3_PAPER) filled 2026-08-17,
+    # Hari Kemerdekaan -- IDX closed, ihsg_realtime updated anyway.
+    assert not pc.is_idx_trading_day(date(2026, 8, 17))  # Independence Day
+    assert not pc.is_idx_trading_day(date(2026, 3, 19))  # Nyepi
+    assert not pc.is_idx_trading_day(date(2026, 12, 25))  # Christmas
+    # Weekends must be caught even though they're not in IDX_HOLIDAYS_2026
+    # (the table only lists weekday holidays -- no need to also enumerate
+    # every Saturday/Sunday).
+    assert not pc.is_idx_trading_day(date(2026, 8, 15))  # Saturday
+    assert not pc.is_idx_trading_day(date(2026, 8, 16))  # Sunday
+    # Ordinary weekdays around the incident must still pass.
+    assert pc.is_idx_trading_day(date(2026, 8, 14))  # Friday before
+    assert pc.is_idx_trading_day(date(2026, 8, 18))  # Tuesday after
+    # A year the table doesn't cover falls back to True (additive-guard
+    # design, not a replacement for the staleness check) -- this also
+    # calls notify(), so route it through a real SUPABASE-free path by
+    # just checking it doesn't raise and returns the fallback value.
+    assert pc.is_idx_trading_day(date(2027, 1, 4))  # ordinary Monday, uncovered year
+    print("[OK] test_is_idx_trading_day")
+
+
 if __name__ == "__main__":
     test_total_buy_fee()
     test_round_to_tick()
@@ -346,4 +368,5 @@ if __name__ == "__main__":
     test_score_full_universe()
     test_retired_paper_versions()
     test_looks_like_unadjusted_corporate_action()
+    test_is_idx_trading_day()
     print("\nAll paper-trading math checks passed.")

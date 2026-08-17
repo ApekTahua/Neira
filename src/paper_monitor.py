@@ -129,6 +129,10 @@ def main():
     supabase = create_client(url, key)
 
     today = date.today()
+    if not pc.is_idx_trading_day(today):
+        print(f"[MONITOR] {today.isoformat()} is not an IDX trading day -- skipping this poll.")
+        return
+
     run_id = pc.get_paper_run_id(supabase)
     acct = _retry(lambda: supabase.table("paper_account").select("*").eq("run_id", run_id).limit(1).execute()).data
     if not acct:

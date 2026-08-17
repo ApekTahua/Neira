@@ -18,12 +18,71 @@ never a silent edit here.
 import os
 import sys
 import traceback
+from datetime import date
 import requests
 import numpy as np
 
 from db_retry import retry as _retry
 
 PAPER_VERSION = os.environ.get("PAPER_VERSION", "V3_PAPER")
+
+# IDX trading-suspension dates for 2026, per BEI's official announcement
+# Peng-00171/BEI.POP/09-2025 (joint decision of 3 ministries on national
+# holidays + cuti bersama). Sourced 2026-08-17 via secondary reporting
+# (fortuneidn.com) after the official PDF at idx.co.id 403'd automated
+# fetch -- cross-checked against a second source (idxchannel.com) for the
+# Idul Fitri dates specifically. Re-verify against the official PDF (or
+# BEI's own trading-calendar page) if anything here looks off, and this
+# needs a fresh list every year -- it is NOT computed, it is transcribed.
+#
+# Added 2026-08-17 after paper_monitor.py filled EKAD (V3_PAPER) on this
+# exact date: ihsg_realtime's upstream sync pushed ~965 freshly-timestamped
+# rows despite the exchange being closed for Hari Kemerdekaan, which the
+# existing 30-minute staleness guard alone couldn't catch (the data really
+# was <30min old by its own timestamp, just wrongly present on a holiday).
+IDX_HOLIDAYS_2026 = frozenset({
+    date(2026, 1, 1),   # New Year's Day
+    date(2026, 1, 16),  # Isra Mikraj
+    date(2026, 2, 16),  # Joint leave, Lunar New Year
+    date(2026, 2, 17),  # Lunar New Year (Imlek)
+    date(2026, 3, 18),  # Joint leave, Nyepi
+    date(2026, 3, 19),  # Nyepi
+    date(2026, 3, 20),  # Joint leave, Idul Fitri
+    date(2026, 3, 23),  # Joint leave, Idul Fitri
+    date(2026, 3, 24),  # Joint leave, Idul Fitri
+    date(2026, 4, 3),   # Good Friday
+    date(2026, 5, 1),   # Labor Day
+    date(2026, 5, 14),  # Ascension Day
+    date(2026, 5, 15),  # Joint leave, Ascension Day
+    date(2026, 5, 27),  # Idul Adha
+    date(2026, 5, 28),  # Joint leave, Idul Adha
+    date(2026, 6, 1),   # Pancasila Day
+    date(2026, 6, 16),  # Islamic New Year
+    date(2026, 8, 17),  # Independence Day
+    date(2026, 8, 25),  # Prophet Muhammad's Birthday (Maulid)
+    date(2026, 12, 24), # Joint leave, Christmas
+    date(2026, 12, 25), # Christmas
+    date(2026, 12, 31), # Stock Exchange year-end holiday
+})
+
+
+def is_idx_trading_day(d: date) -> bool:
+    """Weekday AND not an IDX_HOLIDAYS_2026 date. This is an ADDITIVE guard
+    on top of paper_monitor.py's existing ihsg_realtime staleness check, not
+    a replacement for it -- for a year IDX_HOLIDAYS_2026 doesn't cover (2027
+    onward, until someone updates the table), this falls back to True
+    (assume trading day) rather than False, so an un-updated table degrades
+    back to pre-2026-08-17 behavior (staleness-only) instead of silently
+    going permanently dark. Sends one Telegram warning per call in that
+    case specifically so the gap gets noticed instead of rotting quietly --
+    see notify()."""
+    if d.weekday() >= 5:
+        return False
+    if d.year == 2026:
+        return d not in IDX_HOLIDAYS_2026
+    notify(f"⚠️ IDX_HOLIDAYS_{d.year} not in paper_common.py -- holiday guard is blind for {d.isoformat()}, "
+           f"falling back to staleness-only. Add {d.year}'s IDX holiday calendar to paper_common.py.")
+    return True
 
 # Single source of truth for "this run stopped taking new capital" -- used by
 # paper_signal_scan.py's stop_new_entries gate. V3_PAPER retired 2026-08-15

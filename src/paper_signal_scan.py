@@ -133,6 +133,10 @@ def main():
         sys.exit("Missing SUPABASE_URL / SUPABASE_KEY")
     supabase = create_client(url, key)
 
+    if not pc.is_idx_trading_day(date.today()):
+        print(f"[SCAN] {date.today().isoformat()} is not an IDX trading day -- skipping.")
+        return
+
     latest_res = _retry(lambda: supabase.table("ihsg_eod").select("trade_date").order("trade_date", desc=True).limit(1).execute())
     if not latest_res.data:
         sys.exit("ihsg_eod is empty -- nothing to scan.")
