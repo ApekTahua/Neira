@@ -3668,3 +3668,227 @@ already validated by definition (same function real trades already use). Two pee
 independently flagged that the frontend and `daily_scoreboard` can currently disagree with what
 real trades would actually do on the same ticker -- a trust gap worth closing regardless of the
 "too many signals" complaint on its own.
+
+## 2026-08-17: cross-day position ROTATION -- the third scarce-MAX_POSITIONS-slot fix attempt,
+## tested, REJECTED. Same reshuffling-noise signature the tick-size fix / spike-confirm-gate /
+## REGIME_CONFIRM_DAYS=2 already exposed, now directly traced to a rotation event's own cascade.
+## KEEP `ROTATION_ENABLED=False` (2026-08-17)
+
+**Hypothesis, from the council's "one thing to do first" check** (see above, "the boundary is
+crisp" entry): 60.2% of capped days (219/364) have ZERO admits at all -- every ranked candidate
+dropped because slots are already occupied by positions opened on PRIOR days, not lost on a
+same-day tie (same-day ranking is already crisp, 0% inversion). Neither of the two already-
+rejected fixes (widen `MAX_POSITIONS`; a bounded backlog queue) touches an already-open
+position's own lifecycle -- both changed WHO wins a slot among candidates arriving on the SAME
+cycle. This tests the genuinely different, previously-flagged-but-unbuilt lever: should an
+already-open position ever be force-exited early to free a slot for a materially stronger new
+candidate?
+
+**Design** (`src/backtest_v4.py`, `ROTATION_ENABLED` block, `V3_ROTATION_ENABLED` default `"0"`):
+
+1. **Trigger**: inside the entry-consumption loop, when `len(positions) >= MAX_POSITIONS` would
+   normally `break` (drop the rest of the day's ranked queue), instead compare the incoming
+   candidate's score against the WEAKEST rotation-eligible open position's *current* score (not
+   its entry-day score -- recomputed daily from that stock's own weekly_ma_spread/
+   sector_rs_momentum, using yesterday's data, the same one-day lag `pending_entries` itself
+   already has, so this is not a new lookahead). Rotate only if the gap clears
+   `ROTATION_MARGIN_MULT * score_p90` -- score_p90 is the same train-derived reference
+   `SCORE_SIZING`/`TREND_SIZING` already use, so the margin auto-scales with each window's own
+   score distribution instead of a flat number that means something different in a window with
+   mean admitted score ~16 vs one with ~68 (see the Phase 1 diagnostic's per-window score table,
+   "the scarce-MAX_POSITIONS-slot mechanism itself" entry above). Swept 0.5/1.0/2.0/3.0, plus 999
+   (an unreachable margin) as a boundary/sanity cell.
+2. **Never cut a winner short**: a position that has already hit TP1 is fully protected (never a
+   rotation victim) -- same "proven, don't touch" treatment `PYRAMID_ENABLED` already gives it.
+   A pre-TP1 position that is CURRENTLY IN PROFIT and within `ROTATION_TP1_PROTECT_ATR_MULT`
+   (default 1.0) ATR of its own TP1 price is also protected -- the explicit failure mode this task
+   was scoped to check for: don't force an early exit right before a position would have hit
+   target anyway.
+3. **Minimum hold before eligible**: `ROTATION_MIN_HOLD_DAYS` (default = `cfg.MIN_HOLD_DAYS` = 3)
+   -- a position isn't even eligible for its OWN TP1/trailing exit before that many days, so it
+   shouldn't be forced out by someone else's signal any sooner either.
+4. **Real cost, no free pass**: `_rotate_out()` exits through the EXACT SAME
+   `apply_slippage()` + `risk.apply_fee()` path `evaluate_position_exit()` uses for a real sell --
+   tagged `exit_reason="ROTATE"` in the trade log, contributing to win-rate/profit-factor/
+   concentration exactly like any other exit. A rotation is not a cancel.
+5. **Blast-radius cap**: `MAX_ROTATIONS_PER_DAY` (default 1) bounds how many positions one day's
+   decisions can force-exit, same reasoning `MAX_NEW_ENTRIES_PER_DAY` already applies to fresh
+   entries -- and rotation is only attempted when `new_entries_today < MAX_NEW_ENTRIES_PER_DAY`,
+   so a slot is only freed when the triggering candidate can actually still use it that same day.
+
+**Implementation notes**: `feature_lookup` (a new `(stock_code, trade_date) -> (weekly_ma_spread,
+sector_rs_momentum)` dict, built only when `ROTATION_ENABLED`, same conditional-build pattern
+`limit_lookup` already uses for `ARB_EXIT_REALISM`) is the only new per-window precomputation.
+Fixed a real latent bug surfaced while wiring this in: the existing `diag` hook's
+`positions_start_count` field was computed by subtraction (`len(positions) - new_entries_today`)
+AFTER the entry loop, which silently assumed positions only ever GROW during that loop -- true
+before this feature, false now that rotation can also REMOVE one mid-loop. Replaced with an
+explicitly-captured `_positions_start_count = len(positions)` taken BEFORE the loop starts --
+produces the identical value in every pre-existing (non-rotating) code path, confirmed by the
+correctness checks below, so this is a strictly-more-correct fix, not a behavior change.
+
+**Correctness checks before trusting any sweep number** (`src/test_rotation.py`, same pattern as
+`test_backlog_queue.py`; run on the same real 2025-07-01..2025-08-31 slice):
+- Flag OFF is reproducible run-to-run, never produces a `ROTATE` exit, and (separately) the full
+  9-window walk-forward with the flag at its default (`False`) reproduces the published baseline
+  byte-for-byte: mean alpha +15.88%, mean profit +15.02%, mean PF 1.46, mean/worst DD
+  -16.28%/-22.51%, win>50% 5/9, beat-bench 6/9 -- confirms the `_positions_start_count` fix and
+  the new `feature_lookup`/rotation-helper wiring changed nothing for the existing default path.
+- Flag ON (loose margin, 0.3, to guarantee the mechanism actually fires on this slice) measurably
+  differs (26 trades OFF vs 32 trades / 10 `ROTATE` exits ON) -- rules out the adaptive-hold-time
+  class of bug where a flag looks like it does nothing because the mechanism can structurally
+  never fire.
+- Every rotation in that run cleared the real `ROTATION_MARGIN_MULT * score_p90` margin
+  (recomputed independently in the test, not just trusted from the run itself) and respected
+  `ROTATION_MIN_HOLD_DAYS` -- checked directly against the diag hook's own new `rotated`
+  per-day field, cross-referenced against the actual `ROTATE` trade records.
+- `ROTATION_MARGIN_MULT=999` (an unreachable margin, flag ON) independently reproduces the OFF
+  baseline byte-for-byte across the full 9-window sweep too (389 trades, 0 rotations, every
+  metric identical to the digit) -- the mechanism correctly reduces to the identity case at its
+  own boundary, empirically confirmed, same "confirm the control cell" discipline
+  `sweep_max_positions.py`/`sweep_backlog_queue.py` both used.
+- diag stays purely additive under rotation mode too (`diag=None` vs `diag={}` produce identical
+  trades/metrics with `ROTATION_ENABLED=True`), extending `test_diag_hook.py`'s guarantee.
+
+**Full 9-window sweep** (`src/sweep_rotation.py`, `V3_BANDAR_SIZING=0` pinned; full per-window CSV
+at `.cache/rotation_sweep_full.csv`, agg at `.cache/rotation_sweep_agg.csv`):
+
+| ROTATION_MARGIN_MULT | trades | rotations | beat bench | win>50% | win% mean/median | profit% mean/median | alpha% mean/median | PF mean/median | DD% mean/worst | conc% mean/max |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **OFF (default)** | 389 | 0 | 6/9 | 5/9 | 51.0/51.0 | 15.02/2.87 | 15.88/11.57 | 1.46/1.12 | -16.28/-22.51 | 85.2/98.9 |
+| 0.5 | 467 | 85 | 6/9 | 5/9 | 50.0/52.2 | 18.92/-0.67 | 19.78/6.25 | 1.51/0.98 | -16.58/-31.00 | 76.5/96.1 |
+| 1.0 | 431 | 61 | 6/9 | 4/9 | 49.8/50.0 | 13.56/7.26 | 14.42/8.35 | 1.40/1.27 | -17.03/-31.01 | 80.5/96.3 |
+| 2.0 | 418 | 28 | 7/9 | 4/9 | 50.4/50.0 | 28.44/7.64 | 29.31/18.66 | 1.62/1.37 | -16.76/-24.26 | 83.2/96.1 |
+| 3.0 | 403 | 12 | 6/9 | 6/9 | 51.1/51.4 | 19.28/2.87 | 20.15/10.76 | 1.56/1.12 | -15.76/-22.51 | 84.3/98.9 |
+| 999 (sanity) | 389 | 0 | 6/9 | 5/9 | 51.0/51.0 | 15.02/2.87 | 15.88/11.57 | 1.46/1.12 | -16.28/-22.51 | 85.2/98.9 |
+
+**First red flag: no clean, monotonic relationship between margin and outcome.** Tightening the
+margin from 0.5->1.0->2.0->3.0 should move rotation FREQUENCY monotonically down (85->61->28->12
+rotations, which it does, cleanly) -- but mean alpha does NOT move monotonically with it
+(19.78 -> **14.42 (WORSE than OFF's 15.88, despite 61 rotations firing)** -> 29.31 -> 20.15). A
+setting with MORE rotations (1.0, 61) underperforming both a looser setting (0.5, 85) AND a
+tighter one (2.0, 28) is the same "worst in the middle, no clean trend" shape this log has
+already learned to distrust (used to help reject `MAX_POSITIONS` widening's non-monotonic
+`beat_bench`/`win>50%` pair, and the `BACKLOG_EXPIRY_DAYS` sweep's dip-then-partial-recover
+shape). `win>50%` is also NOT better at the best-looking margin (2.0: 4/9, actually worse than
+OFF's 5/9) -- a real, broad improvement should not come with reduced win-rate consistency.
+
+**Second, decisive check: how much of the "best" result (2.0) is one window.** Per-window alpha:
+
+| Window | OFF | 0.5 | 1.0 | 2.0 | 3.0 |
+|---|---|---|---|---|---|
+| 1 | -8.26 | 6.25 | 8.35 | 18.71 | -9.88 |
+| 2 | -8.33 | -12.51 | -0.87 | -9.14 | -5.20 |
+| 3 | -3.89 | -3.89 | -3.89 | -3.89 | -3.89 |
+| 4 | 41.04 | 20.04 | 22.13 | 39.96 | 41.04 |
+| 5 | 6.42 | -3.97 | -5.47 | 11.19 | 6.42 |
+| 6 | 11.57 | 0.17 | 8.09 | 1.54 | 10.76 |
+| 7 | 26.13 | 28.75 | 26.13 | 26.13 | 26.13 |
+| **8** | **59.56** | **135.35** | **56.69** | **160.60** | **97.28** |
+| 9 | 18.66 | 7.82 | 18.66 | 18.66 | 18.66 |
+
+At `ROTATION_MARGIN_MULT=2.0`, Window 8 alone contributes **+101.04pp of the whole 9-window
+schedule's summed +120.86pp alpha delta -- 83.6% of the entire aggregate "improvement" from one
+window.** Excluding Window 8 entirely, the aggregate mean alpha across the other 8 windows is
+**12.90% at margin=2.0 vs 10.42% for OFF -- a modest +2.48pp bump**, not the headline +13.43pp
+(15.88%->29.31%) the full 9-window number implies. The same check on every other margin tested is
+worse, not better: **ex-Window-8, margin=0.5 (5.33%) and margin=1.0 (9.14%) are both BELOW the
+OFF baseline (10.42%)** -- their apparent aggregate improvement is propped up entirely by Window
+8's swing too (0.5's own W8 delta, +75.79pp, exceeds its ENTIRE 9-window summed delta of
++35.11pp -- the other 8 windows collectively net NEGATIVE once W8 is excluded). Margin=3.0 is the
+one exception: ex-W8 mean 10.51% is flat with OFF's 10.42% -- consistent with it being the
+tightest margin (only 12 rotations across the whole 9-window schedule), close enough to inert
+that it barely differs from not rotating at all.
+
+**Window 8 is the SAME window this log has now flagged three separate times this session** (the
+tick-size-rounding fix, the spike-confirm-delay gate, `REGIME_CONFIRM_DAYS=2` -- see "the scarce-
+MAX_POSITIONS-slot mechanism itself" entry above) as the one that reliably produces a large,
+misleading-looking single-window swing from a small, mechanically-unrelated change, because it
+has the most candidate-days of any window (117/127) and the portfolio sits at capacity ~87% of
+them -- any change that reorders who holds a scarce slot cascades into a materially different
+5-month trade sequence. Rotation was built to do exactly that reordering, deliberately, so testing
+whether it recreates the same signature here (rather than assuming it does) mattered.
+
+**Concrete mechanistic trace** (`src/trace_w8_rotation.py`, same method
+`trace_w8_slot_swaps.py` already used for the other three cases), `ROTATION_MARGIN_MULT=2.0`: the
+first divergence is a single event on **2025-07-31** -- `_rotation_victim` evicts **BDKR** (score
+65.52, held 11 days, comfortably past `ROTATION_MIN_HOLD_DAYS`) to seat **WIFI** (score 104.24,
+clearing the ~34-point margin at that window's `score_p90`). WIFI had been generated fresh and
+dropped on `max_positions` for four straight days (07-28 through 07-31, its own score climbing
+84.1 -> 85.2 -> 88.4 -> 104.2 as the stock kept rallying while queued) -- in the OFF run it
+finally gets admitted the ORDINARY way one day later, on 2025-08-01, once PGEO's own TRAILING
+stop naturally freed a slot. **Rotation's entire effect in this trace is admitting the exact same
+stock one day earlier than it would have entered anyway** -- not surfacing a genuinely different
+opportunity, just timing it slightly sooner by evicting a comparatively weak, already-11-day-old
+position. That one-day timing shift is then enough to cascade into 13 additional trades and a
+completely different subsequent sequence across the rest of the 5-month window (92 trades OFF ->
+110 ON) -- the identical cascade mechanism already mechanistically confirmed for the tick-size fix
+("a different position's exit timing shifting by sub-tick amounts... cascading into a different
+subsequent trade sequence"), just triggered by a deliberate force-exit instead of an incidental
+rounding change.
+
+**No fresh Monte Carlo permutation script was built.** Per this log's own established bar (used
+identically for `REGIME_CONFIRM_DAYS=2`, the `VOL_BAND_MULT` re-sweep, and `MAX_POSITIONS`
+widening): an MC check is for a candidate that looks "genuinely better and more robust" on the
+sweep itself. This one does not reach that bar -- it was falsified by the SAME kind of scrutiny an
+MC check exists to provide: a non-monotonic dose-response, an ex-one-window aggregate that is flat
+or negative at every tested margin, and a direct mechanistic trace confirming the improvement is
+the already-documented reshuffling-cascade artifact, not a new causal story. Running a permutation
+test on a result already falsified this specifically would not add information (matches the exact
+reasoning already used to skip an MC build for the other two rejected scarce-slot fixes).
+
+**Drawdown, checked explicitly since two prior scarce-slot fixes both failed partly on this
+axis**: looser margins cost real drawdown (`dd_worst` -31.00%/-31.01% at 0.5/1.0, in the same
+range as `MAX_POSITIONS=10`'s independently-rejected -30.17% and the backlog queue's -34.11%)
+while buying little-to-nothing ex-Window-8. Only the tightest margin (3.0) avoids drawdown damage
+(`dd_worst` -22.51%, identical to OFF) -- and at that setting the ex-W8 effect is already
+indistinguishable from zero. There is no margin value in this grid that is simultaneously "does
+something real" and "doesn't cost drawdown for a Window-8-sized effect that isn't real."
+
+**Verdict: REJECTED. KEEP `ROTATION_ENABLED=False` (the existing, unchanged default).** This is
+the THIRD scarce-`MAX_POSITIONS`-slot fix attempt this session (after widening the cap and the
+bounded backlog queue), and it fails for a reason that ties all three together even more tightly
+than the two before it: every lever that changes WHO holds a scarce slot -- wider capacity,
+temporal reordering, or now early force-eviction -- runs straight into the same underlying
+fragility Phase 1 already diagnosed (a full-87%-of-the-time, 6-slot, no-backlog queue is
+extremely sensitive to small reorderings, independent of whether those reorderings are
+well-motivated). Unlike the first two rejections (clean monotonic decline; a `avg_n_positions`-
+ruled-out capital-dilution story), this one required tracing an actual trade sequence to
+distinguish "real improvement" from "the reshuffling artifact wearing a different mechanism's
+clothes" -- and once traced, it is unambiguously the latter for the one setting that looked
+promising in aggregate.
+
+**What this closes**: the council's own "one thing to do first" recommendation (see above) has
+now been fully worked through -- same-day ranking was checked first and found already crisp (no
+fix needed there), and cross-day rotation (the bigger, riskier idea flagged as "worth designing
+properly" but not yet built) has now been designed, implemented additively, swept across all 9
+windows, and mechanistically traced to a null result. **All three concrete fix directions this
+session identified for the scarce-slot fragility have now been tried and rejected on real
+evidence** (widening -> capital dilution; backlog -> reshuffling noise; rotation -> reshuffling
+noise via a different but ultimately identical mechanism). This does not mean no fix could ever
+work -- but it does mean the fragility itself should be treated as accepted-and-understood, the
+same posture Window 3's residual weakness already has, rather than an open item still awaiting a
+fourth attempt at the same category of lever (queue/slot reordering). A genuinely different
+category of idea (not "who gets the slot" but e.g. a structurally different MAX_POSITIONS design,
+or accepting the fragility and focusing effort elsewhere, as the 2026-08-17 council session's own
+"where effort is best spent" reasoning already suggested) would be needed to make further progress
+here.
+
+**Governance note (no action needed, stated for the record per this session's own standing
+requirement)**: confirmed by grep -- `paper_signal_scan.py`/`paper_monitor.py`/`paper_common.py`
+reference none of `ROTATION_ENABLED`/`ROTATION_MIN_HOLD_DAYS`/`ROTATION_MARGIN_MULT`/
+`ROTATION_TP1_PROTECT_ATR_MULT`/`MAX_ROTATIONS_PER_DAY` -- this finding has zero effect on the
+live paper-trading path regardless of the verdict, and no default in `backtest_v4.py` was changed
+(REJECTED, not promoted), so no separate approval step is needed before pushing.
+
+Code kept: `src/test_rotation.py` (self-check, same pattern as `test_backlog_queue.py`),
+`src/sweep_rotation.py` (this sweep, reusable the same way `sweep_backlog_queue.py`/
+`sweep_max_positions.py` are for the next numeric-grid parameter), `src/trace_w8_rotation.py`
+(concrete A/B tracer, same pattern as `trace_w8_slot_swaps.py`, reusable for the next "why did
+this one window move so much" question). `simulate_window()`'s day loop in `src/backtest_v4.py`
+gained the `ROTATION_ENABLED` mechanism (`_rotation_current_score`/`_rotation_victim`/
+`_rotate_out` closures, a new conditionally-built `feature_lookup`, the `_positions_start_count`
+correctness fix, and a new `rotated` diag field), all regression-verified byte-identical at
+defaults. `score_candidates()`, `compute_entry_fill()`, `evaluate_position_exit()`,
+`paper_signal_scan.py`, and `paper_monitor.py` are all unchanged. Raw sweep outputs saved at
+`.cache/rotation_sweep_full.csv`/`_agg.csv`, `.cache/rotation_off_regression.csv`.

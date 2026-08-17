@@ -52,14 +52,22 @@ real signal there could be more not yet surfaced.
 ### C. Known structural risks -- each needs an explicit decision, not silence
 Don't need to be solved. Need to be consciously accepted or fixed --
 un-examined is the only unacceptable state.
-- [ ] **Scarce-slot fragility** (`MAX_POSITIONS=6` binds on 84.8% of
+- [x] **Scarce-slot fragility** (`MAX_POSITIONS=6` binds on 84.8% of
       candidate-days, drops ~4,000 real candidates/year averaging 89% of
-      admitted candidates' own score). Two fix attempts this session
-      (widening the cap, a bounded backlog queue) both rejected on real
-      evidence. Currently: proven real, unfixed, not yet consciously
-      accepted the way Window 3 was -- needs that same explicit sign-off,
-      or a third fix attempt (cross-day position rotation, not yet
-      scoped/attempted) to actually clear it.
+      admitted candidates' own score). THREE fix attempts this session --
+      widening the cap, a bounded backlog queue, and cross-day position
+      rotation (2026-08-17, `docs/V3_FINDINGS_LOG.md`) -- all rejected on
+      real evidence. Rotation's apparent aggregate improvement traced
+      directly to a single-window (Window 8) reshuffling cascade, the same
+      artifact already confirmed for three unrelated changes this session;
+      excluding that one window, no tested rotation margin showed a real
+      broad benefit. Checked off as a CONSCIOUSLY ACCEPTED risk, not a
+      solved one: the fragility is real and understood, all three
+      identified "who gets the slot" fix directions have been exhausted,
+      and no fourth attempt in that same category is planned without new
+      evidence. A structurally different idea (not slot/queue reordering)
+      would be needed to actually clear this, not another parameter on the
+      same lever.
 - [ ] **Spike/"gorengan" entry risk** (932-episode base rate: 35-39% win
       rate, negative median return, buying a stock the day after a >=20%
       single-day spike on >=10x volume). One fix attempt (confirmation-delay

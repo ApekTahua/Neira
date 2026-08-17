@@ -446,6 +446,25 @@ MAX_ENTRIES_PER_CLUSTER_WINDOW = int(os.environ.get("V3_MAX_ENTRIES_PER_CLUSTER_
 # UNVALIDATED until its own walk-forward + sweep exists in V3_FINDINGS_LOG.md.
 BACKLOG_QUEUE_ENABLED = os.environ.get("V3_BACKLOG_QUEUE_ENABLED", "0") == "1"
 BACKLOG_EXPIRY_DAYS = int(os.environ.get("V3_BACKLOG_EXPIRY_DAYS", "3"))
+# Cross-day position ROTATION -- the "one thing to do first" the 2026-08-17 council
+# session's own peer review flagged, after BOTH other scarce-MAX_POSITIONS-slot fixes
+# above (widen the cap; the bounded backlog queue) were rejected on real evidence
+# (docs/V3_FINDINGS_LOG.md, "the scarce-MAX_POSITIONS-slot mechanism itself" + "the
+# OTHER candidate direction"). check_slot_boundary_gap.py then found 60.2% of capped
+# days (219/364) have ZERO admits at all -- every ranked candidate dropped because
+# slots are already occupied by positions opened on PRIOR days, not lost on a same-day
+# tie (same-day ranking is already crisp: 0% inversion, median 2.14-point gap at the
+# boundary). Neither rejected fix touched an already-open position's own lifecycle --
+# this is the only remaining lever that can act on that 60.2% majority case. See the
+# block comment inside simulate_window (where this is actually consumed) for the full
+# eligibility/mechanics writeup. Off by default -- UNVALIDATED until its own
+# walk-forward + sweep exists in V3_FINDINGS_LOG.md, same discipline as every other
+# flag in this file.
+ROTATION_ENABLED = os.environ.get("V3_ROTATION_ENABLED", "0") == "1"
+ROTATION_MIN_HOLD_DAYS = int(os.environ.get("V3_ROTATION_MIN_HOLD_DAYS", str(cfg.MIN_HOLD_DAYS)))
+ROTATION_MARGIN_MULT = float(os.environ.get("V3_ROTATION_MARGIN_MULT", "1.0"))
+ROTATION_TP1_PROTECT_ATR_MULT = float(os.environ.get("V3_ROTATION_TP1_PROTECT_ATR_MULT", "1.0"))
+MAX_ROTATIONS_PER_DAY = int(os.environ.get("V3_MAX_ROTATIONS_PER_DAY", "1"))
 ALLOC_PCT = float(os.environ.get("V3_ALLOC_PCT", "0.20"))
 # Walk-forward across 9 real windows (see V3_FINDINGS_LOG.md) found most
 # windows' results are carried by a handful of outlier winners, not a
@@ -1819,6 +1838,14 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
         (r.stock_code, r.trade_date): (r.previous, r.observed_max_move)
         for r in df.itertuples()
     } if (ARB_EXIT_REALISM and _has_limit_cols) else {}
+    # Only needed by ROTATION_ENABLED (a currently-open position's CURRENT score,
+    # not its entry-day score -- see the ROTATION_ENABLED block comment below).
+    # Built once here, same conditional-build pattern as limit_lookup above, so
+    # ROTATION_ENABLED=False (the default) pays zero extra memory/time cost.
+    feature_lookup = {
+        (r.stock_code, r.trade_date): (r.weekly_ma_spread, r.sector_rs_momentum)
+        for r in df.itertuples()
+    } if ROTATION_ENABLED else {}
 
     def get_bar(stock_code, d):
         try:
@@ -1839,6 +1866,102 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
     equity_curve = []
     pending_entries = []
     last_sl_idx = {}
+
+    # ---- ROTATION_ENABLED helpers (no-ops, never called, when the flag is off) ----
+    # Both the victim-selection decision AND the score it's judged on use only
+    # information already known BEFORE today's open (yesterday's close-derived
+    # weekly/sector features via feature_lookup, pos["last_valid_close"]) -- the
+    # SAME one-day lag pending_entries itself already has (scored day T, first
+    # attempted day T+1), not a new lookahead. Execution price is today's OPEN,
+    # matching every other entry/exit fill in this file.
+    def _rotation_current_score(pos, ref_date):
+        """Position's score AS OF ref_date (normally yesterday), using this
+        window's own weekly_cut/sector_cut -- directly comparable to a fresh
+        candidate's score, computed the identical way. Falls back to the last
+        score this function itself computed (cached on the position, seeded at
+        entry to the position's own entry-day score) when today's row is
+        missing/NaN, so a data gap never reads as an artificially weak -inf."""
+        if ref_date is not None:
+            try:
+                w, s = feature_lookup[(pos["stock_code"], ref_date)]
+                if pd.notna(w) and pd.notna(s):
+                    pos["rotation_score"] = (
+                        (w - weekly_cut) / max(abs(weekly_cut), 1e-6)
+                        + (s - sector_cut) / max(abs(sector_cut), 1e-6)
+                    )
+            except KeyError:
+                pass
+        return pos["rotation_score"]
+
+    def _rotation_victim(sig_score, ref_date):
+        """Weakest rotation-eligible open position, if `sig_score` beats it by
+        ROTATION_MARGIN_MULT * score_p90 (score_p90 is the same train-derived
+        reference SCORE_SIZING/TREND_SIZING already use, so the margin
+        auto-scales with this window's own score distribution) -- else None.
+        Eligibility (the two explicit protections this feature was scoped
+        with): (1) pos["hold_days"] >= ROTATION_MIN_HOLD_DAYS -- a position
+        isn't even eligible for its OWN TP1/trailing exit before
+        cfg.MIN_HOLD_DAYS, so it shouldn't be forced out by someone else's
+        signal any sooner either; (2) never a position that has already hit
+        TP1 (same "proven, don't touch" treatment PYRAMID_ENABLED already
+        gives it), and never a pre-TP1 position that is CURRENTLY IN PROFIT
+        and within ROTATION_TP1_PROTECT_ATR_MULT * its own entry ATR of its
+        TP1 price -- don't cut a likely winner short right before it would
+        have hit target anyway."""
+        eligible = []
+        for pos in positions:
+            if pos["hold_days"] < ROTATION_MIN_HOLD_DAYS or pos["tp1_hit"]:
+                continue
+            if pos["atr_at_entry"]:
+                dist_to_tp1 = pos["tp1_price"] - pos["last_valid_close"]
+                unrealized = pos["last_valid_close"] - pos["avg_price"]
+                if unrealized > 0 and dist_to_tp1 <= ROTATION_TP1_PROTECT_ATR_MULT * pos["atr_at_entry"]:
+                    continue
+            eligible.append(pos)
+        if not eligible:
+            return None
+        weakest = min(eligible, key=lambda p: _rotation_current_score(p, ref_date))
+        if sig_score - weakest["rotation_score"] >= ROTATION_MARGIN_MULT * score_p90:
+            return weakest
+        return None
+
+    def _rotate_out(pos, trade_date):
+        """Force-exits `pos` at today's OPEN (falls back to its last known close
+        if today has no tradeable bar -- rare, e.g. a rotation victim itself
+        gapped into a data hole) through the EXACT SAME fee/slippage path
+        evaluate_position_exit() uses for a real sell -- a rotation is not a
+        free cancel, it pays the same real cost a normal exit does. Mutates
+        positions/cash/trades in the enclosing scope, same contract
+        evaluate_position_exit()'s caller already relies on.
+
+        Known, accepted simplification (ponytail: doesn't pre-check whether the
+        incoming candidate will actually clear compute_entry_fill()'s own
+        sizing/gap checks before freeing this slot) -- a rotation can free a
+        slot that the SAME day's candidate then fails to fill (e.g. gap_limit),
+        leaving the slot open for a LATER candidate instead. Upgrade path if
+        this shows up as a real cost in practice: pre-flight compute_entry_fill
+        before committing to the rotation."""
+        nonlocal cash
+        bar = get_bar(pos["stock_code"], trade_date)
+        exit_price = bar[0] if (bar is not None and bar[0] is not None) else pos["last_valid_close"]
+        sell_lots = pos["remaining_lots"]
+        sell_qty = sell_lots * LOT_SIZE
+        sell_cost_basis = pos["cost_basis"] * (sell_lots / pos["total_lots"])
+        sell_participation = sell_qty / max(pos.get("avg_vol_20", 1.0), 1.0)
+        gross_return = apply_slippage(exit_price, "sell", sell_participation) * sell_qty
+        fee = risk.apply_fee(gross_return, "sell", cfg.BUY_FEE, cfg.SELL_FEE)
+        net_return = gross_return - fee
+        pnl = net_return - sell_cost_basis
+        pnl_pct = (exit_price / pos["avg_price"] - 1) * 100
+        cash += net_return
+        pos["remaining_lots"] -= sell_lots
+        trades.append({
+            "stock_code": pos["stock_code"], "entry_date": pos["entry_date"], "exit_date": trade_date,
+            "entry_price": pos["avg_price"], "exit_price": exit_price, "quantity": sell_qty, "lots": sell_lots,
+            "pnl": pnl, "pnl_pct": pnl_pct, "exit_reason": "ROTATE", "trigger": pos["trigger"],
+            "hold_days": pos["hold_days"],
+        })
+        positions.remove(pos)
 
     for day_idx, trade_date in enumerate(trading_days):
         regime = regime_by_date.get(trade_date, "NEUTRAL")
@@ -1869,9 +1992,15 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
             pending_entries = [s for s in pending_entries
                                 if day_idx - s.get("origin_day_idx", day_idx - 1) <= 1 + BACKLOG_EXPIRY_DAYS]
         new_entries_today = 0
+        rotations_today = 0  # ROTATION_ENABLED only -- bounds the blast radius of one day's decisions, same
+                              # reasoning MAX_NEW_ENTRIES_PER_DAY already applies to fresh entries
+        prev_trade_date = trading_days[day_idx - 1] if day_idx > 0 else None  # ROTATION_ENABLED only, see below
         _admitted_codes_today = set()
         _diag_admitted = [] if diag is not None else None  # additive-only, see simulate_window docstring
+        _diag_rotated = [] if diag is not None else None  # additive-only, ROTATION_ENABLED only
         _diag_break_reason, _diag_break_idx = None, None
+        _positions_start_count = len(positions)  # captured explicitly (not derived by subtraction below) since
+                                                   # ROTATION_ENABLED can now REMOVE positions mid-loop too, not just add
         for _sig_idx, sig in enumerate(pending_entries):
             if any(p["stock_code"] == sig["stock_code"] for p in positions):
                 continue
@@ -1888,8 +2017,28 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                 if not regime_ok_today:
                     continue
             if len(positions) >= MAX_POSITIONS:
-                _diag_break_reason, _diag_break_idx = "max_positions", _sig_idx
-                break
+                # ROTATION_ENABLED only: instead of always dropping this (and every remaining
+                # ranked) candidate, check whether it's a materially stronger replacement for
+                # the weakest currently-open, rotation-eligible position -- see the
+                # _rotation_victim/_rotate_out block comment above for eligibility/mechanics.
+                # Gated on new_entries_today < MAX_NEW_ENTRIES_PER_DAY so a slot is only freed
+                # when THIS candidate can actually still use it today (the daily cap below would
+                # otherwise break right after anyway, leaving a freed slot filled by nothing).
+                victim = None
+                if ROTATION_ENABLED and rotations_today < MAX_ROTATIONS_PER_DAY \
+                        and new_entries_today < MAX_NEW_ENTRIES_PER_DAY:
+                    victim = _rotation_victim(sig.get("score", float("-inf")), prev_trade_date)
+                if victim is None:
+                    _diag_break_reason, _diag_break_idx = "max_positions", _sig_idx
+                    break
+                if _diag_rotated is not None:
+                    _diag_rotated.append({
+                        "stock_code": victim["stock_code"], "incoming_stock_code": sig["stock_code"],
+                        "victim_score": victim["rotation_score"], "incoming_score": sig.get("score"),
+                        "victim_hold_days": victim["hold_days"],
+                    })
+                _rotate_out(victim, trade_date)
+                rotations_today += 1
             if new_entries_today >= MAX_NEW_ENTRIES_PER_DAY:
                 _diag_break_reason, _diag_break_idx = "daily_cap", _sig_idx
                 break
@@ -1936,6 +2085,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                 "entry_price_original": entry_price,
                 "atr_at_entry": fill["atr_at_entry"],
                 "avg_vol_20": sig.get("avg_vol_20", 1.0),  # for exit-side slippage's participation estimate
+                "rotation_score": sig.get("score", 0.0),  # ROTATION_ENABLED only -- seeded at entry, refreshed daily by _rotation_current_score
             })
             new_entries_today += 1
             _admitted_codes_today.add(sig["stock_code"])
@@ -1956,9 +2106,10 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
             else:
                 dropped = []
             diag.setdefault("days", []).append({
-                "date": trade_date, "regime": regime, "positions_start_count": len(positions) - new_entries_today,
+                "date": trade_date, "regime": regime, "positions_start_count": _positions_start_count,
                 "positions_end_count": len(positions), "pending_count": len(pending_entries),
                 "break_reason": _diag_break_reason, "admitted": _diag_admitted, "dropped": dropped,
+                "rotated": _diag_rotated,
             })
         # Baseline (flag off): unconditional reset, byte-identical to pre-backlog behavior --
         # any candidate not admitted today is gone. BACKLOG_QUEUE_ENABLED: carry forward
