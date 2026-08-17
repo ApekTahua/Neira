@@ -1644,7 +1644,7 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
     return trade_record, cash_delta
 
 
-def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
+def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=None):
     """Runs the regime + threshold-learning + day-by-day simulation for ONE
     train/test split against an already-fetched df/idx_df (must cover at
     least [some date <= train_end, test_end]). Pulled out of main() so a
@@ -1652,7 +1652,18 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
     instead of re-fetching per window -- fetching is the expensive part
     (see data_fetch.py's month-chunked pagination fix). Returns
     (metrics, df_trades, df_equity, regime_by_date), or (None, None, None,
-    None) if zero trades fired in the window."""
+    None) if zero trades fired in the window.
+
+    `diag` (default None): purely additive research/diagnostic hook, no
+    effect on any trading decision. If a dict is passed, this appends one
+    entry per trading day to `diag.setdefault("days", [])` recording why the
+    pending_entries queue consumption loop stopped that day (full slots /
+    daily cap / cluster cap / ran out of candidates) and which ranked
+    candidates were admitted vs dropped-because-the-queue-reset-tomorrow --
+    see src/diagnose_slot_queue.py. Every write is behind `if diag is not
+    None`, so default callers (diag=None, i.e. every existing caller) get
+    byte-identical behavior -- confirmed by regression check, see
+    docs/V3_FINDINGS_LOG.md."""
     prefix = f"[{label}] " if label else ""
     print(f"{prefix}[REGIME] Precomputing regime per unique trading day ...")
     regime_by_date, bullish_streak_by_date, trend_strength_by_date = compute_regime_with_hysteresis(idx_df)
@@ -1821,15 +1832,20 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
 
         # ---- Execute pending entries at today's OPEN ----
         new_entries_today = 0
-        for sig in pending_entries:
+        _diag_admitted = [] if diag is not None else None  # additive-only, see simulate_window docstring
+        _diag_break_reason, _diag_break_idx = None, None
+        for _sig_idx, sig in enumerate(pending_entries):
             if any(p["stock_code"] == sig["stock_code"] for p in positions):
                 continue
             if len(positions) >= MAX_POSITIONS:
+                _diag_break_reason, _diag_break_idx = "max_positions", _sig_idx
                 break
             if new_entries_today >= MAX_NEW_ENTRIES_PER_DAY:
+                _diag_break_reason, _diag_break_idx = "daily_cap", _sig_idx
                 break
             recent_entries = sum(1 for p in positions if day_idx - p["entry_day_idx"] <= ENTRY_CLUSTER_WINDOW_DAYS)
             if recent_entries >= MAX_ENTRIES_PER_CLUSTER_WINDOW:
+                _diag_break_reason, _diag_break_idx = "cluster_cap", _sig_idx
                 break
             if risk.is_in_cooldown(sig["stock_code"], day_idx, last_sl_idx, cfg.COOLDOWN_DAYS):
                 continue
@@ -1872,6 +1888,24 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label=""):
                 "avg_vol_20": sig.get("avg_vol_20", 1.0),  # for exit-side slippage's participation estimate
             })
             new_entries_today += 1
+            if _diag_admitted is not None:
+                _diag_admitted.append({"stock_code": sig["stock_code"], "score": sig.get("score")})
+        if diag is not None and pending_entries:
+            # Queue is about to be reset (see module docstring) whether or not it was fully
+            # consumed -- anything from _diag_break_idx onward that isn't already an open
+            # position was ranked by score_candidates() but never got a chance today, and
+            # (by design, see the reset immediately below) never will again under this exact
+            # signal.
+            already_held = {p["stock_code"] for p in positions}
+            if _diag_break_idx is not None:
+                dropped = [s for s in pending_entries[_diag_break_idx:] if s["stock_code"] not in already_held]
+            else:
+                dropped = []
+            diag.setdefault("days", []).append({
+                "date": trade_date, "regime": regime, "positions_start_count": len(positions) - new_entries_today,
+                "positions_end_count": len(positions), "pending_count": len(pending_entries),
+                "break_reason": _diag_break_reason, "admitted": _diag_admitted, "dropped": dropped,
+            })
         pending_entries = []
 
         # ---- Exit check (identical to backtest_v2.py, plus a forced exit

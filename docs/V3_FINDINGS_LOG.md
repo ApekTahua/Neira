@@ -3073,3 +3073,237 @@ the same way `feature_test_harness.py` is reusable for the next ON/OFF flag test
 outputs saved at `.cache/vbm_stage1_full.csv`/`_agg.csv` (coarse grid),
 `.cache/vbm_stage2a_full.csv`/`_agg.csv` (finer neighbours), `.cache/vbm_stage2b_full.csv`/`_agg.csv`
 (REGIME_CONFIRM_DAYS interaction grid).
+
+## The scarce-`MAX_POSITIONS`-slot mechanism itself, investigated directly: real and pervasive
+## (84.8% of all candidate-days across all 9 windows, not just Window 8), mechanistically
+## confirmed as the exact cause of all three prior "small change, huge W8 swing" mysteries --
+## but the obvious fix (widen the queue) makes results monotonically WORSE, cleanly rejected.
+## KEEP `MAX_POSITIONS=6`, `ALLOC_PCT=0.20` (2026-08-17)
+
+**Hypothesis, from the VOL_BAND_MULT re-sweep's own closing note**: three independent research
+passes this session (tick-size-rounding fix, spike-confirm-delay gate, VOL_BAND_MULT re-sweep)
+each found a small, mechanically-unrelated change producing a large, misleading-looking swing
+concentrated almost entirely in Window 8 (2025 H2) -- traced each time to a DIFFERENT position's
+exit timing shifting by a small amount, freeing (or not freeing) one of only `MAX_POSITIONS=6`
+slots at a different moment, cascading into a different subsequent trade sequence. `pending_entries`
+(`src/backtest_v4.py`'s main day loop, `simulate_window`) is a ONE-DAY-AHEAD queue, rebuilt fresh
+every day from that day's `score_candidates()` output -- when the loop hits `len(positions) >=
+MAX_POSITIONS`, it `break`s and every remaining ranked candidate for that day is dropped entirely,
+not deferred. Worth investigating this mechanism directly rather than continuing to hit it
+sideways through unrelated parameter research.
+
+**Method (Phase 1, purely additive)**: added an optional `diag=None` kwarg to `simulate_window()`
+-- when a dict is passed, it records one entry per candidate-day (why the entry-queue-consumption
+loop stopped: `max_positions` / `daily_cap` / `cluster_cap` / never broke, and which ranked
+candidates were admitted vs dropped) with zero effect on any trading decision. Every write is
+behind `if diag is not None`, so every existing caller (`walk_forward_v4.py`,
+`feature_test_harness.py`, `sweep_vol_band_mult.py`, `main()`) is unaffected -- confirmed two ways:
+(1) a full 9-window walk-forward with the new kwarg unused reproduced the published baseline
+byte-for-byte (mean alpha +15.88%, mean profit +15.02%, mean PF 1.46, mean/worst DD
+-16.28%/-22.51%, win>50% 5/9); (2) `src/test_diag_hook.py` asserts `diag=None`, `diag={}`, and the
+kwarg omitted entirely all produce identical trades/equity curves on a real 2-month slice, plus
+internal-consistency checks (every day tagged `max_positions` really did end with exactly
+`MAX_POSITIONS` positions open; a day that never broke has nothing dropped). `src/
+diagnose_slot_queue.py` runs the diag-instrumented 9-window schedule and aggregates it.
+
+**Phase 1 result 1 -- how often does the constraint actually bind** (`V3_BANDAR_SIZING=0`
+throughout, matching the reproducible baseline; full per-window CSV at
+`.cache/slot_queue_diag_summary.csv`):
+
+| Window | candidate-days | days broke on `max_positions` | bind rate | n admitted | n dropped (max_positions) | drop:admit ratio | admitted score mean | dropped score mean | dropped/admitted |
+|---|---|---|---|---|---|---|---|---|---|
+| W1 (2022 H1) | 63 | 55 | 87.3% | 37 | 615 | 16.6x | 23.35 | 16.42 | 70.4% |
+| W2 (2022 H2) | 35 | 32 | 91.4% | 26 | 355 | 13.7x | 29.75 | 21.47 | 72.2% |
+| W3 (2023 H1) | 10 | 5 | 50.0% | 14 | 42 | 3.0x | 29.65 | 18.22 | 61.4% |
+| W4 (2023 H2) | 67 | 50 | 74.6% | 35 | 557 | 15.9x | 37.55 | 29.03 | 77.3% |
+| W5 (2024 H1) | 30 | 25 | 83.3% | 25 | 283 | 11.3x | 33.76 | 32.36 | 95.9% |
+| W6 (2024 H2) | 64 | 59 | 92.2% | 37 | 702 | 19.0x | 64.39 | 62.74 | 97.4% |
+| W7 (2025 H1) | 26 | 23 | 88.5% | 13 | 228 | 17.5x | 68.33 | 53.22 | 77.9% |
+| W8 (2025 H2) | 117 | 102 | **87.2%** | 62 | 1158 | 18.7x | 67.89 | 54.64 | 80.5% |
+| W9 (2026 H1) | 17 | 13 | 76.5% | 19 | 145 | 7.6x | 33.86 | 26.56 | 78.5% |
+| **All 9, pooled** | **429** | **364** | **84.8%** | **268** | **4085** | **15.2x** | (46.02 weighted) | 40.91 | **88.9%** |
+
+**The constraint binds on the large majority of candidate-days in EVERY SINGLE WINDOW, not just
+Window 8.** Aggregate bind rate 84.8% (364/429) -- the portfolio is already full when a ranked
+candidate list arrives on roughly 5 out of every 6 days that have a qualifying signal at all.
+**Window 8 is NOT an outlier on this axis** -- its own bind rate (87.2%) sits in the middle of the
+pack; W6 (92.2%) and W2 (91.4%) actually bind MORE often. What makes W8 different is scale, not
+rate: it has by far the most candidate-days of any window (117/127 trading days, 92.1% -- the next
+closest is W6 at 64/127), so it accumulates by far the most raw admitted+dropped candidate-
+instances (62 admitted, 1158 dropped -- both the largest of any window), and it is also the
+highest-return/highest-win-rate window (60.9% win, PF 2.31 at defaults). More binding events on a
+window with more edge per event means more dollar-weighted sensitivity to which exact candidate
+wins a slot -- not a uniquely fragile mechanism, a uniquely busy one.
+
+**Phase 1 result 2 -- the dropped candidates are not marginal dregs.** Pooled across all 4085
+max_positions-dropped candidate-instances, mean score 40.91 vs a (count-weighted) 46.02 mean for
+the 268 admitted candidates -- **dropped candidates average 88.9% of admitted candidates' score.**
+Every single window's own ratio is >=61%, and five of nine windows are >=77%. This is real,
+comparable-quality signal being discarded by queue exhaustion, not noise the ranking already
+correctly filtered out. `MAX_POSITIONS` dominates as the binding mechanism -- 4085 candidates lost
+to full slots vs only 427 lost to the `MAX_NEW_ENTRIES_PER_DAY=2` daily cap (a much smaller,
+secondary contributor, ~9.5% of the total).
+
+**Phase 1 result 3 -- concrete trace of the three already-documented cases** (`src/
+trace_w8_slot_swaps.py`, Window 8 only, diag-instrumented, comparing baseline vs each already-
+published variant):
+
+- **Tick-size rounding fix** (`round_to_tick` monkeypatched to identity = pre-fix behavior).
+  W8 alpha: unrounded/pre-fix +104.09% vs rounded/current-default +59.56% (-44.53pp) --
+  reproduces the direction and rough size of the previously-reported aggregate delta, now traced
+  to a single concrete origin day. On 2025-09-29, both runs start the day with an IDENTICAL
+  4-position portfolio. The unrounded run admits BOTH `PADA` (113.636) and `BNBR` (94.17) that
+  day, filling to 6/6 and triggering `break=max_positions` -- dropping `ZATA, MHKI, VISI, JTPE,
+  ASII, UNTR, KUAS, DADA, BTEK` (9 candidates). The rounded run admits only `PADA`
+  that day (`break=None`, one slot still open) -- `round_to_tick`'s tiny change to `PADA`'s own
+  SL price shifts its RISK_PCT-based position size/cost-basis (see `RISK_PCT=0.04`,
+  `src/config.py`) by enough to change whether the day's SECOND candidate still fits the day's
+  cash budget. That one slot's fate then cascades: by 2025-10-01/10-02 the two runs are admitting
+  `BTEK`-then-`BNBR` vs `BNBR`-then-`BTEK` in swapped order, and 17 vs 16 trades across the rest
+  of the window never realign.
+- **Spike-confirm-delay gate** (N=3/giveback=10%, the rejected gate's own best-looking point).
+  W8 alpha: OFF +59.56% vs ON +149.76% (+90.20pp, already on record). First divergence
+  2025-07-16: the gate directly excludes `JAST`/`MMIX`/`NICE` (blacked out post-spike) from that
+  day's ranked list, so the ON run admits `INET`+`EXCL` where OFF admits `INET`+`JAST` -- both
+  runs still hit `break=max_positions` filling to 6/6 the SAME day, so the gate's own direct,
+  intended filtering and the scarce-slot queue mechanism are entangled from the very first
+  diverging day, not sequential effects. This is the mechanistic explanation for why that
+  entry's own Monte Carlo check found random exclusion masks of the same size ALSO moved W8
+  substantially (mean +69.09%, 2/30 draws beating the real targeted gate) -- with the portfolio
+  full on 87% of W8's candidate-days, ANY exclusion (targeted or random) that reorders who is
+  \#1/\#2/\#3 in the ranked queue on a binding day changes who gets the scarce slot.
+- **`REGIME_CONFIRM_DAYS=2` vs 3** (default). W8 alpha: confirm=3 +59.56% vs confirm=2 +106.65%
+  (+47.09pp, already on record). First divergence 2025-10-01: OFF admits `BTEK` (score 69.078),
+  ON admits `BNBR` (score 69.057) -- a 0.02-point, essentially tied score difference (confirm=2
+  shifts the TRAIN-period population slightly, moving `weekly_ma_spread`'s learned cut from 2.96
+  to 2.94, a rounding-scale change) decides which of two near-identical candidates fills the
+  last slot that day. 10-02 then swaps the order (`BNBR`-then-`BTEK` vs `BTEK`-then-`BNBR`), and
+  this single coin-flip-level tie-break is the entire traceable origin of a 47-point single-
+  window alpha swing.
+
+All three traces confirm the SAME mechanism, mechanistically, for the first time (previously
+inferred from aggregate deltas and one partially-traced ticker per the tick-size-bug entry) --
+not three different bugs, one structural property of a 6-slot, no-backlog, reset-daily queue
+sitting at capacity 85% of the time.
+
+**Decision to proceed to Phase 2**: 4085 candidate-instances lost to a full queue across the
+9-window schedule, at 88.9% of admitted candidates' own score quality, with a mechanistically
+confirmed causal link to three independent large single-window swings already on record, clears
+the bar for "a real, sizeable effect worth testing a structural fix on" by a wide margin.
+
+**Phase 2 -- widen `MAX_POSITIONS` with a correspondingly-scaled `ALLOC_PCT`.** Grid: (6, 0.20)
+default / (8, 0.15) / (10, 0.12) -- each pair holds `MAX_POSITIONS x ALLOC_PCT` at the current
+default's ~1.2x nominal max concurrent exposure multiple, so the sweep isolates "more slots, each
+sized proportionally smaller" from "more slots at the same size" (over-leveraging). `src/
+sweep_max_positions.py`, same in-process module-attribute-mutation pattern as
+`sweep_vol_band_mult.py`.
+
+**Bug found and fixed before trusting any number**: the first run of this sweep did not pin
+`V3_BANDAR_SIZING=0` (the reproducible baseline every other script/entry this session has used
+since the tick-size-bug entry) -- `BANDAR_SIZING_ENABLED` defaults ON since its 2026-08-15
+promotion, so the sweep's own (6, 0.20) "baseline" cell silently ran with bandar-weighted sizing
+on and reproduced numbers close to the tick-size trace's UNROUNDED variant by coincidence, not the
+actual current defaults. Caught by spot-checking the first cell against the known-published
+baseline before trusting the rest of the grid (same discipline the feature-test-harness
+correctness-check entry already flagged: "the flag under test isn't the only environment state a
+published table depends on"). Fixed (`os.environ.setdefault("V3_BANDAR_SIZING", "0")` added
+before the `walk_forward_v4` import) and re-run; the corrected (6, 0.20) cell now reproduces the
+published baseline byte-for-byte on all 9 windows before the (8, 0.15)/(10, 0.12) cells are
+trusted.
+
+**Full 9-window aggregate** (full per-window CSV at `.cache/max_positions_sweep_full.csv`, agg at
+`.cache/max_positions_sweep_agg.csv`):
+
+| MAX_POSITIONS / ALLOC_PCT | trades | beat bench | win>50% | win% mean/median | profit% mean/median | alpha% mean/median | PF mean/median | DD% mean/worst | conc% mean/max |
+|---|---|---|---|---|---|---|---|---|---|
+| **6 / 0.20 (default)** | 389 | 6/9 | 5/9 | 51.0/51.0 | 15.02/2.87 | 15.88/11.57 | 1.46/1.12 | -16.28/-22.51 | 85.2/98.9 |
+| 8 / 0.15 | 476 | 5/9 | 4/9 | 47.3/50.0 | 9.90/2.94 | 10.77/10.75 | 1.41/1.09 | -16.01/-22.00 | 80.0/97.1 |
+| 10 / 0.12 | 546 | 6/9 | 5/9 | 48.4/52.8 | 8.19/4.74 | 9.05/8.29 | 1.32/1.23 | -15.62/-30.17 | 80.0/94.6 |
+
+**Clean, monotonic, unambiguous rejection -- unlike every prior gate this session, this one does
+not need a fine-neighbor sweep or a Monte Carlo check to distrust it.** Trade count rises exactly
+as expected (389 -> 476 -> 546, +40% at the widest setting -- the queue really does admit more of
+the previously-dropped signal). But every continuous return/quality metric moves the WRONG
+direction, monotonically, at every grid point: profit_mean 15.02% -> 9.90% -> 8.19% (roughly
+halved at 10 slots), alpha_mean 15.88% -> 10.77% -> 9.05% (also roughly halved), PF_mean 1.46 ->
+1.41 -> 1.32, win_rate_mean 51.0% -> 47.3% -> 48.4%. `dd_worst` is flat-to-better at 8 slots
+(-22.51% -> -22.00%) then breaks down hard at 10 (-30.17%, the single worst drawdown of ANY
+configuration tested anywhere this session -- worse than the fixed-%-hysteresis-band's own
+breakdown-at-its-extreme, worse than every VOL_BAND_MULT/REGIME_CONFIRM_DAYS/participation-gate/
+spike-confirm-gate cell). `beat_bench`/`win>50%` are the one non-monotonic pair (6/9,5/9 ->
+5/9,4/9 -> 6/9,5/9 -- a dip-then-recover, the "worst in the middle" shape this log already
+distrusts) but even the "recovered" point (10 slots) is still clearly worse than the default on
+every continuous metric, so this doesn't rescue the grid.
+
+**Per-window trace explains why**: only 3 of 9 windows (W1, W5, W9) improve with wider slots, and
+even W1's improvement peaks at 8 and partially reverses at 10 (alpha -8.26% -> +19.03% -> +8.20%).
+The rest are flat (W3) or clearly worse -- W2 (-8.33% -> -11.49% -> -8.50%), W7 (26.13% -> 23.20%
+-> 21.03%), and most decisively **W4, previously one of the two strongest windows in the whole
+9-window schedule, collapses from +41.04% alpha to -5.67% at 8 slots and -9.63% at 10** -- the
+same "a previously-strong window absorbs uncompensated damage" signature every prior gate
+(trend-duration, participation, spike-confirm, REGIME_CONFIRM_DAYS=2) was rejected for, except
+here it happens WITHOUT even a compensating win in the window the change targets: **W8 itself --
+the window with the most scarce-slot drops to potentially recover -- gets WORSE too, and
+monotonically** (alpha +59.56% -> +41.52% -> +24.88%, despite trade count rising 92 -> 99 -> 137).
+Mechanism: `ALLOC_PCT`'s own code comment already documents that this strategy's edge is
+concentration-driven, not broadly distributed (`docs/V3_FINDINGS_LOG.md`, most windows >65% top-5
+concentration) -- shrinking `ALLOC_PCT` from 20% to 12-15% to fund more slots cuts the capital
+behind the FEW big winners that actually drive returns, and the extra marginal positions (real,
+comparably-scored signal per Phase 1, but still systematically lower-ranked within each day) do
+not make up the difference; they add trade count and a worse worst-case drawdown without adding
+net profit.
+
+**No Monte Carlo permutation check run**: per this log's own established bar (used identically in
+the VOL_BAND_MULT re-sweep entry), an MC check is for a candidate that looks "genuinely better and
+more robust" on the sweep itself. This grid fails that bar cleanly and monotonically at every
+point tested -- a permutation test on a result already this decisively negative would not add
+information.
+
+**Verdict: REJECTED. KEEP `MAX_POSITIONS=6`, `ALLOC_PCT=0.20`.** No default changed.
+
+**What Phase 1 and Phase 2 together actually establish**: the scarce-slot queue-reset mechanism
+Phase 1 diagnosed is real, large, structural, and now mechanistically confirmed as the exact cause
+of three separate single-window "small change, huge swing" mysteries this session -- that finding
+stands regardless of Phase 2's outcome. But the obvious lever (make the queue wider) is not a fix
+-- it doesn't relieve the fragility, it just dilutes the concentrated sizing this strategy's real
+edge depends on, for no net return benefit and a materially worse tail-drawdown at the wide end.
+The fragility itself is therefore accepted as understood-but-unresolved, the same posture already
+taken toward Window 3's residual weakness: real, diagnosed, not free to fix with the tools tried so
+far.
+
+**Not attempted this session (flagged for a future session, structurally distinct from what was
+tested here)**: the task's second candidate direction, a real bounded backlog/priority queue (a
+dropped high-score candidate stays eligible for a bounded number of subsequent days instead of
+vanishing the instant `pending_entries` resets) rather than a wider queue. This is mechanistically
+different from what Phase 2 tested -- TEMPORAL reordering (let a good signal wait 1-2 days for a
+slot to free up naturally, keeping `MAX_POSITIONS`/`ALLOC_PCT` untouched) instead of concurrent
+WIDENING (hold more, smaller positions at once) -- so Phase 2's clean rejection of the widening
+approach does not automatically extend to it; it remains untested. It is also a bigger structural
+change (touches the entry-queueing bookkeeping itself, shared conceptually if not by code with
+`paper_signal_scan.py`'s own slot-counting) that would need the same care taken this session to
+keep `score_candidates()`/`compute_entry_fill()` untouched and the change scoped to
+`simulate_window`'s own day-loop bookkeeping.
+
+**Governance note (no action needed this time, stated for the record per this session's own
+standing requirement)**: both `MAX_POSITIONS` and `ALLOC_PCT` are read directly by the live paper-
+trading path -- `paper_signal_scan.py` reads `bt.MAX_POSITIONS`/computes `slots_free = MAX_POSITIONS
+- open_count` for its own live candidate queueing, and `paper_monitor.py` calls
+`bt.compute_entry_fill()`, which reads `ALLOC_PCT` internally -- confirmed by grep, and confirmed
+that V4_PAPER's own live workflow (`main:.github/workflows/paper_signal_scan_v4_trigger.yml`) does
+NOT pin either var, unlike `V3_BANDAR_SIZING`'s explicit pin in the V3_PAPER workflows -- so a
+promoted default change here would flow straight to the live account with no extra step. Since
+this pass concluded REJECTED/KEEP, not CHANGE, nothing in `backtest_v4.py`'s live defaults was
+touched, so (matching the identical situation in the VOL_BAND_MULT re-sweep entry) this entry and
+its new scripts are safe to push without a separate approval step.
+
+Code kept: `src/diagnose_slot_queue.py` (Phase 1 instrumentation + aggregation, reusable for a
+future candidate-drop diagnostic), `src/trace_w8_slot_swaps.py` (Phase 1 point-2 concrete A/B
+tracer for a specific window, reusable for the next "why did this one window move so much"
+question), `src/sweep_max_positions.py` (Phase 2 sweep, reusable the same way
+`sweep_vol_band_mult.py` is for the next paired-parameter numeric grid), `src/test_diag_hook.py`
+(self-check for the `diag` hook itself). `simulate_window()`'s new `diag=None` kwarg in
+`src/backtest_v4.py` is the only change to a previously-existing function -- purely additive,
+regression-verified byte-identical for every existing caller. `score_candidates()`,
+`compute_entry_fill()`, `evaluate_position_exit()`, `paper_signal_scan.py`, and `paper_monitor.py`
+are all unchanged. Raw sweep outputs saved at `.cache/slot_queue_diag_summary.csv`,
+`.cache/slot_queue_diag_dropped_max_positions.csv`, `.cache/max_positions_sweep_full.csv`/`_agg.csv`.
