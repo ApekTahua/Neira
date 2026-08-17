@@ -348,6 +348,23 @@ def main():
     regime_ok = (regime == "BULLISH" and bullish_streak_by_date.get(today, 0) >= bt.REGIME_CONFIRM_DAYS
                  and trend_strength >= bt.TREND_STRENGTH_MIN)
 
+    # ---- Real daily qualifying-signal list (the actual trade-entry gate) --
+    # hoisted here so it's computed whenever regime_ok is true, independent of
+    # slots_free/max_new/stop_new_entries below. Those are portfolio-capacity/
+    # retirement concerns ("how many can we buy"), a different question from
+    # "how many pass the entry gate today" -- computing this only inside the
+    # slots-free branch (as before) would wrongly answer "0 qualify" on a day
+    # a full portfolio just had no room, when the real answer might be "5
+    # qualify, 0 slots free". Reused verbatim by the queueing loop below --
+    # same inputs (day_data/weekly_cut/sector_cut/weekly_comp_abs_cap) at the
+    # same point in the flow as the old inline call, so zero drift in what
+    # actually gets queued.
+    scored = []
+    if regime_ok:
+        day_data = df[df["trade_date"] == today]
+        scored = bt.score_candidates(day_data, weekly_cut, sector_cut, top_n=15,
+                                      weekly_comp_abs_cap=weekly_comp_abs_cap)
+
     # ---- Full-universe daily scoreboard (display only -- never read back
     # into trading decisions, see docs/V3_FINDINGS_LOG.md "NEXT ENHANCEMENT") ----
     train_scores = (
@@ -385,6 +402,31 @@ def main():
         } for row in scoreboard], on_conflict="trade_date,stock_code").execute())
         print(f"[SCOREBOARD] {len(scoreboard)} tickers scored for {today}")
 
+    # ---- Real qualifying-signal list, persisted for the public Screener page
+    # (docs/V3_FINDINGS_LOG.md "why the Screener page never shows fewer than
+    # ~90 signals" -- daily_scoreboard above is a ticker-lookup table that
+    # deliberately never drops a row, not the real selectivity answer).
+    # Only the primary engine's output is public-facing: V3_PAPER/V3.1_PAPER
+    # run different filter env vars (V3_ARA_FILTER, V3_ATR_PRICE_RATIO_MAX,
+    # V3_SCORE_WEEKLY_COMP_ABS_CAP_Q) that make their `scored` NOT the same
+    # computation as V4_PAPER's -- writing theirs here would silently swap
+    # the public count depending on which of the three workflows ran last.
+    # Full delete-then-insert per trade_date (not a plain upsert) so a stock
+    # that qualified on an earlier run for the same date but not this one
+    # doesn't linger -- see the "full day replace, not accumulate" note in
+    # the task. Purely additive: no read-back into score_candidates,
+    # compute_entry_fill, or the paper_positions queueing loop below.
+    if pc.PAPER_VERSION == pc.PRIMARY_PAPER_VERSION:
+        _retry(lambda: supabase.table("daily_qualifying_signals").delete().eq("trade_date", today.isoformat()).execute())
+        if scored:
+            _retry(lambda: supabase.table("daily_qualifying_signals").upsert([{
+                "trade_date": today.isoformat(), "stock_code": sig["stock_code"], "rank": i + 1,
+                "score": sig["score"], "trigger": sig["trigger"], "adtv_20": sig["adtv_20"],
+                "avg_vol_20": sig["avg_vol_20"], "atr": sig["atr"], "signal_close": sig["signal_close"],
+                "tp_target": sig["tp_target"], "concentration": sig.get("concentration"),
+            } for i, sig in enumerate(scored)], on_conflict="trade_date,stock_code").execute())
+            print(f"[QUALIFYING] {len(scored)} candidates passed the real entry gate for {today}")
+
     candidates = []
     # V3.1_PAPER stopped opening NEW positions 2026-08-14, and V3_PAPER got
     # the same treatment 2026-08-15 (user: "Retire beneran, V4 doang" --
@@ -418,9 +460,9 @@ def main():
         slots_free = max(0, bt.MAX_POSITIONS - open_count)
         max_new = min(slots_free, bt.MAX_NEW_ENTRIES_PER_DAY)
         if max_new > 0:
-            day_data = df[df["trade_date"] == today]
-            scored = bt.score_candidates(day_data, weekly_cut, sector_cut, top_n=15,
-                                          weekly_comp_abs_cap=weekly_comp_abs_cap)
+            # `scored` already computed above (hoisted so it runs whenever
+            # regime_ok is true, not just when a slot happens to be free) --
+            # reused verbatim here, identical to the old inline call.
             for sig in scored:
                 if len(candidates) >= max_new:
                     break
