@@ -3307,3 +3307,215 @@ regression-verified byte-identical for every existing caller. `score_candidates(
 `compute_entry_fill()`, `evaluate_position_exit()`, `paper_signal_scan.py`, and `paper_monitor.py`
 are all unchanged. Raw sweep outputs saved at `.cache/slot_queue_diag_summary.csv`,
 `.cache/slot_queue_diag_dropped_max_positions.csv`, `.cache/max_positions_sweep_full.csv`/`_agg.csv`.
+
+## The OTHER candidate direction from the scarce-`MAX_POSITIONS`-slot investigation -- a bounded
+## backlog/priority queue (temporal reordering, not concurrent widening) -- tested, REJECTED.
+## Same qualitative failure signature as the widening approach (Window 4 collapses, Window 8 gets
+## worse despite admitting more of its own dropped candidates), reached by a different mechanism
+## (reshuffling noise, not capital dilution -- avg concurrent positions barely moves). KEEP
+## `BACKLOG_QUEUE_ENABLED=False` (2026-08-17)
+
+**Hypothesis**: the prior entry established that `pending_entries` (`simulate_window`'s day loop,
+`src/backtest_v4.py`) resets to `[]` every day and drops any ranked, comparably-scored candidate
+that doesn't win a slot that same day -- MAX_POSITIONS binds on 84.8% of all candidate-days across
+the 9-window schedule, and Phase 2's fix (widen `MAX_POSITIONS` with a scaled `ALLOC_PCT`) was
+cleanly rejected because it dilutes the concentrated sizing this strategy's edge depends on. The
+task's own second candidate direction, explicitly flagged as untried: instead of holding MORE
+positions at once (concurrent widening), let a dropped candidate wait a BOUNDED number of extra
+days for a slot to free up naturally (temporal reordering) -- `MAX_POSITIONS`/`ALLOC_PCT` stay at
+their current defaults throughout. Mechanistically distinct from Phase 2, so its rejection doesn't
+automatically extend here; needed its own test.
+
+**Design decisions (the four questions posed for this task):**
+
+1. **Expiry window**: swept `BACKLOG_EXPIRY_DAYS` (extra days beyond the normal one-shot-tomorrow
+   attempt every candidate already had) at 2/3/5, plus 0 as a boundary/sanity cell (see the
+   correctness check below).
+2. **Re-validation on re-entry**: a genuinely backlogged attempt (age > 1, i.e. not the normal
+   first-attempt path every candidate already went through pre-feature) re-checks the exact same
+   regime/trend-strength/trend-duration/participation gate that governs whether the strategy opens
+   ANY new position that day (`regime_ok_today`, hoisted from the existing new-candidate-generation
+   site into a single shared boolean so both call sites can never drift out of sync with each
+   other) -- a signal from a regime that has since flipped doesn't get grandfathered in just
+   because it scored well days ago. Price staleness ("has it already run too far") reuses the
+   EXISTING `gap_limit` check against `sig["signal_close"]` (the price on the day it was scored,
+   unchanged when carried forward) rather than inventing a second mechanism -- an old backlog
+   candidate whose price has moved too far from its original signal close already fails this gate
+   today, for free. Deliberately did NOT re-run `score_candidates()`'s own weekly/sector-cut
+   membership test on backlog days -- that would need re-slicing that day's full cross-section per
+   candidate and risks just reproducing the drop-everything baseline in a more expensive way; the
+   regime gate + price-staleness gate combination was judged the right balance per the task's own
+   framing.
+3. **Priority ordering, fresh vs backlogged**: pure score comparison across both pools, the
+   simplest and most defensible default as the task itself suggested. Implementation: survivors
+   (not admitted, not yet expired) plus that day's freshly-scored candidates are merged and
+   re-sorted by score descending before being carried into tomorrow's admission loop, so the
+   FIFO-by-position consumption loop effectively becomes FIFO-by-score across the whole combined
+   pool, not "all leftover backlog first, then today's new candidates appended after."
+4. **Interaction with existing gates**: `MAX_NEW_ENTRIES_PER_DAY`, `ENTRY_CLUSTER_WINDOW_DAYS`/
+   `MAX_ENTRIES_PER_CLUSTER_WINDOW`, and `risk.is_in_cooldown` all sit at the top of the SAME
+   per-candidate loop iteration regardless of a signal's origin (fresh or backlogged) -- no
+   special-casing needed or added; a backlogged entry is subject to the exact same admission
+   checks a fresh one would face, verified by re-reading the loop structure rather than assumed.
+
+**Implementation** (`src/backtest_v4.py`): `BACKLOG_QUEUE_ENABLED` (`V3_BACKLOG_QUEUE_ENABLED`,
+default `"0"`) / `BACKLOG_EXPIRY_DAYS` (`V3_BACKLOG_EXPIRY_DAYS`, default `3`) -- both isolated, new
+flag names, off by default. Each candidate gets an `origin_day_idx` tag (the day it was scored) at
+the point `new_candidates` is built; `age = day_idx - origin_day_idx` is 1 for the pre-existing
+one-shot-tomorrow path every candidate already had, and > 1 only for a genuine backlog re-attempt.
+At the top of each day's admission processing, `BACKLOG_QUEUE_ENABLED` filters out anything with
+`age > 1 + BACKLOG_EXPIRY_DAYS` (permanent expiry) before the admission loop runs; inside the loop,
+`age > 1` items additionally re-check `regime_ok_today` (question 2) via a `continue`, the same
+pattern the existing cooldown check already uses. At the end of the day, the reset that used to be
+an unconditional `pending_entries = []` is now conditional: `BACKLOG_QUEUE_ENABLED=False` keeps
+that exact unconditional reset (byte-identical to every prior caller); `True` instead keeps
+non-admitted, non-expired survivors, merges them with the day's fresh candidates, and re-sorts by
+score (question 3). `diag`'s `admitted` records gained one new field (`age`) for instrumentation;
+`equity_curve` gained one new field (`n_positions`, the day's open position count) so
+`walk_forward_v4.run_schedule()` could compute `avg_n_positions` per window for the concentration/
+dilution check below -- both purely additive (confirmed: `_save_to_supabase` and
+`feature_test_harness.py`'s `_aggregate()` both select fields by name, so an extra dict/column key
+is a no-op for every existing consumer).
+
+**Correctness checks before trusting any sweep number** (`src/test_backlog_queue.py`, new,
+same pattern as `test_diag_hook.py`; run on the same real 2025-07-01..2025-08-31 slice):
+
+- Flag OFF is reproducible run-to-run and byte-identical to the pre-feature baseline; flag ON
+  measurably differs (26 trades both OFF runs, 26 different trades ON -- ruling out the
+  adaptive-hold-time class of bug where a flag looks like it does nothing because the mechanism
+  can structurally never fire).
+- 5 genuine backlog fills (age 2..4) on this slice, all within the configured expiry bound, all on
+  days `diag` itself tagged `BULLISH` -- expiry and regime re-validation are both actually enforced,
+  not just written.
+- The `diag` hook stays purely additive under backlog mode too (`diag=None` vs `diag={}` produce
+  identical trades/metrics with `BACKLOG_QUEUE_ENABLED=True`), extending `test_diag_hook.py`'s
+  existing guarantee to the new code path.
+- **Full 9-window walk-forward with the flag at its default (`False`) reproduces the published
+  baseline byte-for-byte**: mean alpha +15.88%, mean profit +15.02%, mean PF 1.46, mean/worst DD
+  -16.28%/-22.51%, win>50% 5/9 -- confirms the refactor needed to add the backlog mechanism
+  (hoisting `regime_ok_today` out of the new-candidate-generation site so both the extension gate
+  and the backlog re-validation gate share one definition, plus the new `n_positions`/`age`
+  instrumentation) changed nothing for the existing default path.
+- **`BACKLOG_EXPIRY_DAYS=0` (flag ON, zero extra days) independently reproduces the OFF baseline
+  byte-for-byte too** (389 trades, 15.02/2.87 profit, 15.88/11.57 alpha, 1.46/1.12 PF,
+  -16.28/-22.51 DD, 85.2/98.9 conc, 2.62/4.97 avg_n_positions -- every digit matches). This is the
+  mechanism correctly reducing to the identity case at its own boundary, empirically confirmed, not
+  just reasoned about -- the same "confirm the control cell before trusting the grid" discipline
+  `sweep_max_positions.py` used (that one caught a real environment-pinning bug this way; this one
+  didn't need a fix, but got the same scrutiny before the real grid was trusted).
+
+**Full 9-window sweep** (`src/sweep_backlog_queue.py`, `V3_BANDAR_SIZING=0` pinned; full per-window
+CSV at `.cache/backlog_queue_sweep_full.csv`, agg at `.cache/backlog_queue_sweep_agg.csv`):
+
+| BACKLOG_EXPIRY_DAYS | trades | beat bench | win>50% | win% mean/median | profit% mean/median | alpha% mean/median | PF mean/median | DD% mean/worst | conc% mean/max | avg concurrent positions mean/max |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **OFF (default)** | 389 | 6/9 | 5/9 | 51.0/51.0 | 15.02/2.87 | 15.88/11.57 | 1.46/1.12 | -16.28/-22.51 | 85.2/98.9 | 2.62/4.97 |
+| 0 (sanity boundary) | 389 | 6/9 | 5/9 | 51.0/51.0 | 15.02/2.87 | 15.88/11.57 | 1.46/1.12 | -16.28/-22.51 | 85.2/98.9 | 2.62/4.97 |
+| 2 | 385 | 7/9 | 4/9 | 50.0/48.7 | 13.29/8.41 | 14.15/14.74 | 1.98/1.27 | -14.23/-24.67 | 86.3/99.7 | 2.72/4.97 |
+| 3 | 383 | 6/9 | 4/9 | 49.6/50.0 | 9.75/9.41 | 10.61/14.74 | 1.90/1.21 | -16.32/-34.11 | 81.4/99.7 | 2.76/5.00 |
+| 5 | 379 | 6/9 | 5/9 | 50.4/54.4 | 10.42/6.62 | 11.29/7.46 | 1.84/1.35 | -14.83/-23.45 | 82.8/100.0 | 2.81/4.91 |
+
+**Aggregate mean alpha falls at every tested value (15.88% -> 14.15% -> 10.61% -> 11.29%), a dip-
+then-partial-recover shape across 2/3/5 -- the same "worst in the middle, no clean trend" pattern
+this log already distrusts (used to help reject `MAX_POSITIONS` widening's `beat_bench`/`win>50%`
+non-monotonicity). PF and profit MEDIAN both improve at every value** (PF mean 1.46->1.84-1.98,
+profit median 2.87->6.62-9.41) -- a real, not-fabricated secondary effect: the *typical* window
+looks a bit more consistent under backlog. But the aggregate mean is dragged down by damage to
+specific windows, not noise, and the worst-case drawdown gets meaningfully worse at 2 of 3 tested
+values (-24.67% at 2, **-34.11% at 3 -- the single worst drawdown of any configuration tested this
+entire session**, worse than `MAX_POSITIONS=10`'s -30.17% that was independently rejected on that
+basis alone).
+
+**Per-window trace explains why, and it is the same failure signature Phase 2 (widening) showed --
+reached by a different mechanism:**
+
+| Window | OFF/0 alpha | expiry=2 | expiry=3 | expiry=5 |
+|---|---|---|---|---|
+| W1 | -8.26% | +1.07% | +5.71% | +6.16% |
+| W2 | -8.33% | +0.24% | **-9.18%** | -2.52% |
+| W3 | -3.89% | -3.88% | -3.88% | -3.88% |
+| **W4** | **+41.04%** | **-0.19%** | **-7.05%** | **-7.05%** |
+| W5 | +6.42% | +18.75% | +20.26% | +20.11% |
+| W6 | +11.57% | +23.20% | +23.35% | +7.46% |
+| W7 | +26.13% | +34.91% | +34.91% | +34.91% |
+| **W8** | **+59.56%** | **+38.52%** | **+16.64%** | **+30.36%** |
+| W9 | +18.66% | +14.74% | +14.74% | +16.02% |
+
+**Window 4** -- explicitly on record twice already this session as "one of the two strongest, most
+reliable windows in the whole 9-window schedule" (once when the trend-duration gate collapsed it,
+once when `MAX_POSITIONS` widening collapsed it) -- **collapses again**, from +41.04% to
+-0.19%/-7.05%/-7.05%, at every non-trivial backlog value tested, on a modest trade-count change
+(49->44/43/43) that rules out "fewer trades, less opportunity" as the explanation; this is a
+who-fills-which-slot reshuffling effect, the same mechanism Phase 1's concrete traces already
+confirmed for the tick-size fix, the spike-confirm gate, and `REGIME_CONFIRM_DAYS=2`. **Window 8**
+-- the window with by far the most scarce-slot drops (1158 of the 4085 pooled dropped candidates
+from the Phase 1 diagnostic, the window this mechanism was intuitively supposed to help most by
+finally admitting some of its own dropped, comparably-scored signal -- **gets WORSE, not better, at
+every backlog value tested** (+59.56% -> +38.52%/+16.64%/+30.36%), *despite* trade count actually
+rising there (92->95/96/103, backlog IS admitting more of W8's own candidates, just not
+profitably). This is the identical outcome `MAX_POSITIONS` widening produced for W8 ("gets WORSE
+too, and monotonically... despite trade count rising") -- reached via a structurally different
+route (temporal reordering vs concurrent capacity), landing at the same place.
+
+Window 2 is additionally unstable in DIRECTION, not just magnitude, across the grid itself
+(+0.24% at expiry=2, -9.18% at expiry=3 -- worse than OFF's own -8.33%, then -2.52% at expiry=5) --
+a sign-flipping non-monotonic response to a parameter that should, if this were a real structural
+effect, move in a consistent direction as more backlog eligibility is added.
+
+**Explicit check: does this recreate the `MAX_POSITIONS`-widening failure mode from a different
+angle?** Partially, and the distinction is itself informative. `avg_n_positions` (mean concurrent
+open positions, from the new per-day equity-curve field) stays close to baseline at every tested
+value -- 2.62 (OFF) vs 2.72/2.76/2.81 at expiry=2/3/5, a +4-7% relative move, nowhere near
+`MAX_POSITIONS=10`'s own dilution-by-design (`ALLOC_PCT` cut from 20% to 12% specifically to fund
+more concurrent slots). **So this is NOT the same mechanism** -- capital per position is untouched,
+concurrency is essentially unchanged, and the earlier design decision to keep `MAX_POSITIONS`/
+`ALLOC_PCT` completely out of this feature held. **But the OUTCOME signature is the same anyway**:
+the two windows the whole 9-window schedule's aggregate profit depends on most (W4, W8, the largest
+and second-largest alpha contributors at defaults) both get meaningfully worse at every tested
+value, while several weaker windows improve -- the same "real effect in the window(s) it helps,
+paid for by damage in the window(s) it wasn't built for, concentrated exactly in the strongest
+existing performers" pattern this log has now rejected gates for four separate times (trend-
+duration, participation, spike-confirm-gate's own W8 sensitivity, `REGIME_CONFIRM_DAYS=2`). The
+mechanism here is temporal reshuffling, not capital dilution: merging multiple days' worth of
+ranked candidates into one score-sorted pool every day (question 3's design) multiplies the number
+of stock/day pairings whose relative order can flip a scarce-slot outcome, which is exactly the
+lever Phase 1's three concrete traces already showed produces large, misleading single-window
+swings from small, mechanically-unrelated changes. Widening the CONCEPT of eligibility (more days
+a signal can compete, even at unchanged `MAX_POSITIONS`) turns out to be just as exposed to that
+reshuffling sensitivity as widening the CAPACITY was -- a different lever on the same underlying
+fragility, not a fix for it.
+
+**No Monte Carlo permutation check run.** Per this log's own established bar (used identically for
+`REGIME_CONFIRM_DAYS=2` and `MAX_POSITIONS` widening): an MC check is for a candidate that looks
+"genuinely better and more robust" on the sweep itself. No `BACKLOG_EXPIRY_DAYS` value tested here
+reaches that bar -- mean alpha is worse than baseline at all three non-trivial values, the
+worst-case drawdown is meaningfully worse at two of three (and the single worst of the whole
+session at one), and the per-window trace shows the identical strongest-windows-absorb-the-damage
+signature already used to reject four other mechanisms without needing an MC check to falsify them.
+
+**Verdict: REJECTED. KEEP `BACKLOG_QUEUE_ENABLED=False` (the existing, unchanged default).** No
+default changed -- `MAX_POSITIONS`, `ALLOC_PCT`, and every other live-affecting default are
+untouched, and `BACKLOG_QUEUE_ENABLED`/`BACKLOG_EXPIRY_DAYS` are new, isolated, off-by-default flags
+that `paper_signal_scan.py`/`paper_monitor.py` never reference (confirmed by grep) -- so this
+finding has zero effect on the live paper-trading path regardless of the verdict, and no governance
+approval step is needed before pushing.
+
+**What this and the Phase 2 widening rejection together establish**: the scarce-`MAX_POSITIONS`-
+slot mechanism's fragility (Phase 1, prior entry) is real, but BOTH of the two structurally distinct
+fixes this session identified for it -- widen capacity, or widen temporal eligibility -- fail for
+overlapping but not identical reasons (dilution for the former, reshuffling-noise amplification for
+the latter), both landing on the same two windows (W4 damaged in both; W8 gets worse in both despite
+more of its own signal being admitted in both). That convergence, from two mechanistically different
+levers, is itself evidence the fragility is closer to structural than fixable-with-a-queueing-tweak
+-- consistent with this log's existing "understood-but-unresolved" posture toward it, not a reason
+to keep searching for a third queueing variant without new evidence pointing at one.
+
+Code kept: `src/sweep_backlog_queue.py` (this sweep, reusable the same way `sweep_max_positions.py`/
+`sweep_vol_band_mult.py` are for the next numeric-grid parameter), `src/test_backlog_queue.py`
+(self-check, same pattern as `test_diag_hook.py`). `simulate_window()`'s day loop in
+`src/backtest_v4.py` gained the `BACKLOG_QUEUE_ENABLED`/`BACKLOG_EXPIRY_DAYS` mechanism plus the
+`regime_ok_today` hoist and `n_positions`/`age` instrumentation fields, all regression-verified
+byte-identical at defaults. `walk_forward_v4.py`'s `run_schedule()` gained `avg_n_positions` in its
+per-window output row (purely additive column). `score_candidates()`, `compute_entry_fill()`,
+`evaluate_position_exit()`, `paper_signal_scan.py`, and `paper_monitor.py` are all unchanged. Raw
+sweep outputs saved at `.cache/backlog_queue_sweep_full.csv`/`_agg.csv`.

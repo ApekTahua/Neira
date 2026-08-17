@@ -110,13 +110,19 @@ def run_schedule(df, idx_df, schedule):
     results = []
     for i, (tr_end, te_start, te_end) in enumerate(schedule, 1):
         print(f"\n{'-'*100}\nWindow {i}/{len(schedule)}\n{'-'*100}")
-        metrics, df_trades, _df_equity, _regime = bt.simulate_window(df, idx_df, tr_end, te_start, te_end, label=f"W{i}")
+        metrics, df_trades, df_equity, _regime = bt.simulate_window(df, idx_df, tr_end, te_start, te_end, label=f"W{i}")
         if metrics is None:
             results.append({"window": i, "test_start": te_start, "test_end": te_end, "trades": 0})
             continue
         top5 = df_trades.groupby("stock_code")["pnl"].sum().sort_values(ascending=False).head(5)
         pos_total = df_trades[df_trades["pnl"] > 0]["pnl"].sum()
         conc_pct = 100 * top5.clip(lower=0).sum() / pos_total if pos_total > 0 else float("nan")
+        # Avg concurrent position count, from simulate_window's own per-day "n_positions"
+        # (purely additive equity_curve field) -- lets a backlog-queue-style change be
+        # checked for silently re-creating the MAX_POSITIONS-widening failure mode (more
+        # simultaneous positions on average, diluting capital) even when MAX_POSITIONS
+        # itself is unchanged. See docs/V3_FINDINGS_LOG.md.
+        avg_n_positions = df_equity["n_positions"].mean() if "n_positions" in df_equity.columns else float("nan")
         results.append({
             "window": i, "test_start": te_start, "test_end": te_end,
             "trades": metrics["total_trades"], "win_rate": metrics["win_rate"],
@@ -125,6 +131,7 @@ def run_schedule(df, idx_df, schedule):
             "profit_factor": metrics["profit_factor"], "max_dd": metrics["max_drawdown"],
             "cvar_95": metrics["cvar_95"],
             "concentration_pct": conc_pct,
+            "avg_n_positions": avg_n_positions,
         })
     import pandas as pd
     return pd.DataFrame(results)

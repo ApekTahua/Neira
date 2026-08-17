@@ -432,6 +432,20 @@ SPIKE_MOVE_PCT = float(os.environ.get("V3_SPIKE_MOVE_PCT", "0.20"))    # matches
 # MAX_POSITIONS) without deleting the mechanism.
 ENTRY_CLUSTER_WINDOW_DAYS = int(os.environ.get("V3_ENTRY_CLUSTER_WINDOW_DAYS", "5"))
 MAX_ENTRIES_PER_CLUSTER_WINDOW = int(os.environ.get("V3_MAX_ENTRIES_PER_CLUSTER_WINDOW", "6"))
+# The OTHER candidate direction from the scarce-MAX_POSITIONS-slot investigation
+# (docs/V3_FINDINGS_LOG.md, "the scarce-MAX_POSITIONS-slot mechanism itself") --
+# Phase 2 there WIDENED the queue (more concurrent slots, smaller ALLOC_PCT each)
+# and was cleanly rejected (monotonically worse on every continuous metric,
+# diluting the concentrated sizing this strategy's edge depends on). This is
+# structurally different: TEMPORAL reordering, not concurrent widening.
+# `pending_entries` is normally rebuilt from scratch every day (see
+# simulate_window's day loop) -- a candidate that doesn't win a slot on its one
+# eligible day is dropped permanently, never deferred. When enabled, a dropped
+# candidate instead stays eligible for BACKLOG_EXPIRY_DAYS additional days
+# (bounded, not indefinite) before permanently expiring. Off by default;
+# UNVALIDATED until its own walk-forward + sweep exists in V3_FINDINGS_LOG.md.
+BACKLOG_QUEUE_ENABLED = os.environ.get("V3_BACKLOG_QUEUE_ENABLED", "0") == "1"
+BACKLOG_EXPIRY_DAYS = int(os.environ.get("V3_BACKLOG_EXPIRY_DAYS", "3"))
 ALLOC_PCT = float(os.environ.get("V3_ALLOC_PCT", "0.20"))
 # Walk-forward across 9 real windows (see V3_FINDINGS_LOG.md) found most
 # windows' results are carried by a handful of outlier winners, not a
@@ -1828,15 +1842,51 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
 
     for day_idx, trade_date in enumerate(trading_days):
         regime = regime_by_date.get(trade_date, "NEUTRAL")
+        # Hoisted from the new-candidate-generation site below (unchanged condition, just
+        # computed once and reused) so BACKLOG_QUEUE_ENABLED's re-validation check (in the
+        # entry-consumption loop below) can apply the SAME "is today still a day this
+        # strategy would open new positions on" test to an old backlogged signal, instead of
+        # re-typing a second copy of this condition that could drift out of sync.
+        regime_ok_today = (
+            regime == "BULLISH" and bullish_streak_by_date.get(trade_date, 0) >= REGIME_CONFIRM_DAYS
+            and trend_strength_by_date.get(trade_date, 0.0) >= TREND_STRENGTH_MIN
+            and (not TREND_DURATION_GATE_ENABLED
+                 or trend_duration_streak_by_date.get(trade_date, 0) >= TREND_DURATION_MIN_DAYS)
+            and (not PARTICIPATION_GATE_ENABLED
+                 or market_participation_by_date.get(trade_date, 1.0) >= PARTICIPATION_MIN)
+        )
         prev_equity = equity_curve[-1]["total"] if equity_curve else float(INITIAL_CAPITAL)
 
         # ---- Execute pending entries at today's OPEN ----
+        # BACKLOG_QUEUE_ENABLED only: drop candidates that have aged past their bounded
+        # backlog window BEFORE today's admission attempt, i.e. permanent expiry (question 1,
+        # docs/V3_FINDINGS_LOG.md). age==1 is the normal one-shot-tomorrow baseline path (a
+        # candidate scored on day T is first attempted on day T+1); BACKLOG_EXPIRY_DAYS is how
+        # many EXTRA attempts past that it gets. When the flag is off this is a no-op (every
+        # entry that reaches here under the default queue-reset-daily design already has
+        # age==1, always <= 1 + BACKLOG_EXPIRY_DAYS).
+        if BACKLOG_QUEUE_ENABLED:
+            pending_entries = [s for s in pending_entries
+                                if day_idx - s.get("origin_day_idx", day_idx - 1) <= 1 + BACKLOG_EXPIRY_DAYS]
         new_entries_today = 0
+        _admitted_codes_today = set()
         _diag_admitted = [] if diag is not None else None  # additive-only, see simulate_window docstring
         _diag_break_reason, _diag_break_idx = None, None
         for _sig_idx, sig in enumerate(pending_entries):
             if any(p["stock_code"] == sig["stock_code"] for p in positions):
                 continue
+            if BACKLOG_QUEUE_ENABLED and (day_idx - sig.get("origin_day_idx", day_idx - 1)) > 1:
+                # Question 2 (docs/V3_FINDINGS_LOG.md): re-validate a genuinely backlogged
+                # signal (not today's normal first-attempt candidates) against the SAME
+                # regime/trend gate that governs whether new positions open at all today --
+                # a signal from a regime that has since flipped shouldn't get grandfathered
+                # in just because it was ranked highly days ago. Price staleness ("has it
+                # already run too far") is handled below by the EXISTING gap_limit check
+                # against sig["signal_close"] -- that check already compares today's open to
+                # the price on the day the signal was scored, so an old backlog entry that has
+                # moved too far gets caught by the mechanism that already exists, not a new one.
+                if not regime_ok_today:
+                    continue
             if len(positions) >= MAX_POSITIONS:
                 _diag_break_reason, _diag_break_idx = "max_positions", _sig_idx
                 break
@@ -1888,8 +1938,12 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                 "avg_vol_20": sig.get("avg_vol_20", 1.0),  # for exit-side slippage's participation estimate
             })
             new_entries_today += 1
+            _admitted_codes_today.add(sig["stock_code"])
             if _diag_admitted is not None:
-                _diag_admitted.append({"stock_code": sig["stock_code"], "score": sig.get("score")})
+                _diag_admitted.append({
+                    "stock_code": sig["stock_code"], "score": sig.get("score"),
+                    "age": day_idx - sig.get("origin_day_idx", day_idx - 1),  # 1 == normal same-cycle fill, >1 == backlog fill
+                })
         if diag is not None and pending_entries:
             # Queue is about to be reset (see module docstring) whether or not it was fully
             # consumed -- anything from _diag_break_idx onward that isn't already an open
@@ -1906,7 +1960,16 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                 "positions_end_count": len(positions), "pending_count": len(pending_entries),
                 "break_reason": _diag_break_reason, "admitted": _diag_admitted, "dropped": dropped,
             })
-        pending_entries = []
+        # Baseline (flag off): unconditional reset, byte-identical to pre-backlog behavior --
+        # any candidate not admitted today is gone. BACKLOG_QUEUE_ENABLED: carry forward
+        # whatever wasn't admitted (expiry was already applied above, before this loop ran, so
+        # anything left here is still within its bounded backlog window) -- these get merged
+        # with tomorrow's freshly-scored candidates and re-sorted by score at the extension
+        # site below (question 3: pure score comparison across both pools).
+        pending_entries = (
+            [s for s in pending_entries if s["stock_code"] not in _admitted_codes_today]
+            if BACKLOG_QUEUE_ENABLED else []
+        )
 
         # ---- Exit check (identical to backtest_v2.py, plus a forced exit
         # for stocks that stop reporting data mid-position -- delisting or
@@ -1990,12 +2053,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
         # (PARTICIPATION_GATE_ENABLED only) on today's market-wide turnover
         # being at or above PARTICIPATION_MIN x its own trailing 20-day
         # average (see compute_market_participation's docstring).
-        if (regime == "BULLISH" and bullish_streak_by_date.get(trade_date, 0) >= REGIME_CONFIRM_DAYS
-                and trend_strength_by_date.get(trade_date, 0.0) >= TREND_STRENGTH_MIN
-                and (not TREND_DURATION_GATE_ENABLED
-                     or trend_duration_streak_by_date.get(trade_date, 0) >= TREND_DURATION_MIN_DAYS)
-                and (not PARTICIPATION_GATE_ENABLED
-                     or market_participation_by_date.get(trade_date, 1.0) >= PARTICIPATION_MIN)):
+        if regime_ok_today:
             # Candidate filtering/scoring extracted to score_candidates() so the live
             # paper-trading signal scan (src/paper_signal_scan.py) uses the exact same
             # candidate logic as this backtest -- see that function's docstring.
@@ -2011,7 +2069,21 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
             if SPIKE_CONFIRM_GATE_ENABLED:
                 new_candidates = [c for c in new_candidates
                                   if spike_confirm_gate.get((c["stock_code"], trade_date), True)]
+            # BACKLOG_QUEUE_ENABLED reads this to know how many days a dropped
+            # candidate has been waiting (see the entry-consumption loop above and
+            # the reset/carry-forward logic below). Tagged unconditionally (one
+            # cheap dict key) so nothing downstream needs a conditional default.
+            for _c in new_candidates:
+                _c["origin_day_idx"] = day_idx
             pending_entries.extend(new_candidates)
+            if BACKLOG_QUEUE_ENABLED and pending_entries:
+                # Priority ordering when a slot opens among a mix of fresh + carried-
+                # forward candidates: pure score comparison across both pools (see
+                # design question 3, docs/V3_FINDINGS_LOG.md) -- re-sort so tomorrow's
+                # consumption loop (which admits FIFO down this list) sees the whole
+                # pool ranked by score, not "all leftover backlog first, then today's
+                # new candidates appended after."
+                pending_entries.sort(key=lambda s: s.get("score", float("-inf")), reverse=True)
 
         pos_market_value = 0.0
         for pos in positions:
@@ -2024,7 +2096,8 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                 pos_market_value += pos["avg_price"] * pos["remaining_lots"] * LOT_SIZE
 
         portfolio_value = cash + pos_market_value
-        equity_curve.append({"date": trade_date, "cash": cash, "market_value": pos_market_value, "total": portfolio_value})
+        equity_curve.append({"date": trade_date, "cash": cash, "market_value": pos_market_value, "total": portfolio_value,
+                              "n_positions": len(positions)})
 
     # ---- Close remaining positions at end of test window ----
     final_date = trading_days[-1]
