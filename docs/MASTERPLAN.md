@@ -39,15 +39,36 @@ section is the answer to the bigger one behind it.
       is a stop signal, not noise to wait out.
 
 ### B. No new correctness bugs for a real observation window
-Today alone, two live-only bugs were found and fixed -- both invisible in
-any backtest, only discoverable by watching the live system actually run:
-tick-size rounding (affected all 16 STRONG_BUY candidates sampled), and a
-holiday-calendar gap that let `paper_monitor.py` fill a position on a day
-the exchange never opened. Both are patched, but "found two today" is a
-real signal there could be more not yet surfaced.
+**Clock reset 2026-08-18**: a live-path audit found and fixed FIVE more
+correctness bugs the same day, on top of the two from 2026-08-17 (tick-size
+rounding, holiday-calendar gap) this section already counted. Full detail
+in `docs/V3_FINDINGS_LOG.md` ("2026-08-18 -- live-path audit: 5 correctness
+bugs fixed"); one-line summary of each: (1) EOD reconcile fully closed a
+position on a TP1 partial exit instead of selling only TP1_PCT and leaving
+the rest OPEN -- the highest-severity of the five, would have wrongly
+liquidated BEEF's entire position on its first-ever live TP1 (days away at
+discovery time); (2) the "did this stock trade today" check required
+open_price>0, which ~25% of actively-traded stocks fail on a normal day
+(a data-quality gap, not a halt) -- WMPP, a currently-OPEN position, would
+eventually have been wrongly force-exited as "delisted"; (3) the EOD equity
+snapshot fell back to entry price instead of the last real tracked close
+when a stock had no fresh bar, skewing `total_equity`/`drawdown_pct`/
+`cvar_95`; (4) `paper_monitor.py`'s corporate-action guard compared live
+price against entry price (can be weeks stale) instead of the last known
+real close, risking a false trip that disables SL/TP1/trailing at the
+wrong moment; (5) `avg_vol_20` was missing from both live position dicts,
+inert today (`SLIPPAGE_ENABLED` off) but would silently mis-size slippage
+if ever turned on live. All five fixed same-day, verified via
+`src/test_tp1_eod_reconcile.py` (new) plus existing
+`src/test_paper_trading_math.py` (still passing) -- no backtest_v4.py
+shared-function changes, so no 9-window walk-forward regression was
+triggered. "Found seven total across two days" is a stronger signal than
+"found two" that this surface hasn't been fully audited yet -- don't treat
+the clock reset as a formality.
 - [ ] **>= 3-4 consecutive weeks with zero newly-discovered correctness
       bugs** in the live pipeline (`paper_monitor.py`/`paper_signal_scan.py`),
-      counted starting from today's fixes, not from project start.
+      counted starting from 2026-08-18's fixes (the latest reset), not from
+      project start or from 2026-08-17.
 
 ### C. Known structural risks -- each needs an explicit decision, not silence
 Don't need to be solved. Need to be consciously accepted or fixed --

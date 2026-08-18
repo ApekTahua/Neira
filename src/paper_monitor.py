@@ -118,6 +118,10 @@ def _position_dict_from_row(row: dict) -> dict:
         "target_price": float(row["target_price"]) if row["target_price"] is not None else None,
         "entry_price_original": float(row["entry_price_original"]) if row["entry_price_original"] is not None else float(row["avg_price"]),
         "atr_at_entry": float(row["atr_at_entry"]) if row["atr_at_entry"] is not None else None,
+        # For evaluate_position_exit's slippage participation math (only active when
+        # SLIPPAGE_ENABLED, off by default -- see config.py). Omitted before, silently
+        # falling back to that function's own default of 1.0.
+        "avg_vol_20": float(row["avg_vol_20"]) if row.get("avg_vol_20") is not None else 1.0,
     }
 
 
@@ -274,12 +278,23 @@ def main():
                 day_low = min(day_low, float(extremes["day_low"]))
 
         # Same corporate-action guard as paper_signal_scan.py's EOD reconcile
-        # (see paper_common.looks_like_unadjusted_corporate_action's docstring)
-        # -- checked against this position's OWN avg_price, since that's the
-        # anchor SL/TP1/trailing all evaluate against here, not yesterday's close.
-        if pc.looks_like_unadjusted_corporate_action(float(row["avg_price"]), current_price):
-            msg = (f"⚠️ *{row['stock_code']}*: live price Rp{current_price:,.0f} vs entry "
-                   f"Rp{float(row['avg_price']):,.0f} looks like an unadjusted split/corporate "
+        # (see paper_common.looks_like_unadjusted_corporate_action's docstring),
+        # but checked against the position's last known REAL close
+        # (last_valid_close, maintained by paper_signal_scan.py's own EOD reconcile
+        # pass -- updated to that day's close_price every day the stock has a real
+        # print, unchanged through no-print gaps), not avg_price. avg_price is the
+        # entry/cost price and can be weeks stale for a long-running winner --
+        # comparing today's live price against a weeks-old anchor risks a false
+        # trip on perfectly ordinary drift, disabling SL/TP1/trailing at exactly
+        # the wrong moment (found 2026-08-18 audit). Falls back to avg_price only
+        # for a position with no last_valid_close yet (filled earlier today, before
+        # its first EOD reconcile pass) -- same "no prior real close known yet"
+        # edge case as looks_like_unadjusted_corporate_action's own prev_price=None
+        # no-op behavior.
+        prev_close_for_guard = float(row["last_valid_close"]) if row.get("last_valid_close") is not None else float(row["avg_price"])
+        if pc.looks_like_unadjusted_corporate_action(prev_close_for_guard, current_price):
+            msg = (f"⚠️ *{row['stock_code']}*: live price Rp{current_price:,.0f} vs last known "
+                   f"Rp{prev_close_for_guard:,.0f} looks like an unadjusted split/corporate "
                    f"action -- SKIPPING SL/TP check this poll, please verify manually.")
             print(f"[MONITOR][CORP-ACTION-GUARD] {msg}")
             pc.notify(msg)

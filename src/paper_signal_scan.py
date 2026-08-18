@@ -76,6 +76,11 @@ def _position_dict_from_row(row: dict) -> dict:
         "target_price": float(row["target_price"]) if row["target_price"] is not None else None,
         "entry_price_original": float(row["entry_price_original"]) if row["entry_price_original"] is not None else float(row["avg_price"]),
         "atr_at_entry": float(row["atr_at_entry"]) if row["atr_at_entry"] is not None else None,
+        # For evaluate_position_exit's slippage participation math (only active when
+        # SLIPPAGE_ENABLED, off by default -- see config.py). Omitted before, silently
+        # falling back to that function's own default of 1.0. paper_positions.avg_vol_20
+        # is populated at signal time (see the paper_positions.insert() call below).
+        "avg_vol_20": float(row["avg_vol_20"]) if row.get("avg_vol_20") is not None else 1.0,
     }
 
 
@@ -230,13 +235,28 @@ def main():
         # close frozen at the last real print (DOOH, 2026-08-06: exactly this shape).
         # Without this check that row reached evaluate_position_exit as a real bar,
         # low=0 <= any sl_price trivially, and DOOH "sold" at price 0 for a fabricated
-        # -100% loss -- a real production incident, not a hypothetical. open_price==0
-        # is the same no-real-print signal paper_monitor.py's fill guard already uses.
-        has_real_print = (
+        # -100% loss -- a real production incident, not a hypothetical.
+        #
+        # This is deliberately keyed off close_price/volume, NOT open_price>0. Audited
+        # 2026-08-18: ~25% of actively-traded stocks on a normal day have open_price=0
+        # in ihsg_eod (an upstream data-quality gap, not a real halt) while close/high/
+        # low/volume are all real -- WMPP (a currently-OPEN live position) has
+        # open_price=0 on every historical row despite trading normally. Gating "did
+        # this stock trade today" on open_price>0 would misclassify WMPP as delisted
+        # forever, permanently freezing last_valid_close and eventually force-exiting
+        # it via DELISTING_GAP_DAYS on a stock that never stopped trading. close_price
+        # and volume are the real "did it trade" signal; open_price>0 stays required
+        # only where a fill genuinely needs a real opening print (paper_monitor.py's
+        # order-fill guard, ~line 202, and the `open_val` mask a few lines below, which
+        # keeps a fictional 0 open out of evaluate_position_exit's SL/TP1 gap-fill price
+        # selection without weakening the DOOH-style suspension check this comment
+        # describes -- that check already runs on close/high/low, not open).
+        had_real_trade = (
             row["stock_code"] in today_bars.index
-            and float(today_bars.loc[row["stock_code"]]["open_price"]) > 0
+            and float(today_bars.loc[row["stock_code"]]["close_price"]) > 0
+            and float(today_bars.loc[row["stock_code"]]["volume"] or 0) > 0
         )
-        if not has_real_print:
+        if not had_real_trade:
             # No real trading today -- suspension, ARA-lock with no print, or delisting.
             # Same DELISTING_GAP_DAYS force-exit the backtest applies (src/backtest_v4.py's
             # simulate_window "no bar found" branch): without this, a delisted position
@@ -270,7 +290,14 @@ def main():
             continue
 
         bar_row = today_bars.loc[row["stock_code"]]
-        bar = (float(bar_row["open_price"]), float(bar_row["close_price"]), float(bar_row["high"]), float(bar_row["low"]))
+        # open_price==0 on a day with a real close/volume print is the data-quality gap
+        # described above (WMPP etc), not a real opening trade at Rp0 -- mask it to None
+        # so evaluate_position_exit's own documented None-handling (falls back to
+        # sl_price/tp1_price for the gap-fill price, see that function's SL/TP1 branches)
+        # kicks in instead of feeding it a fabricated Rp0 "gap-through" fill price.
+        raw_open = float(bar_row["open_price"])
+        open_val = raw_open if raw_open > 0 else None
+        bar = (open_val, float(bar_row["close_price"]), float(bar_row["high"]), float(bar_row["low"]))
 
         prev_close = prev_close_by_stock.get(row["stock_code"])
         if pc.looks_like_unadjusted_corporate_action(prev_close, bar[1]):
@@ -289,15 +316,40 @@ def main():
         cash += cash_delta
 
         if trade_record is not None:
-            _close_position(supabase, run_id, row["id"], pos, trade_record)
-            had_exit_today = True
-            print(f"  [EOD-RECONCILE] {trade_record['stock_code']}: {trade_record['exit_reason']} "
-                  f"pnl={trade_record['pnl']:+,.0f}")
             if trade_record["exit_reason"] == "TP1":
-                pos["hold_days"] += 1
+                # Partial exit only -- TP1_PCT of remaining_lots sold, position
+                # rides on. Mirrors paper_monitor.py's own TP1 branch (~line
+                # 302-311): update the position's bookkeeping fields in place
+                # (already mutated onto `pos` by evaluate_position_exit --
+                # avg_price, sl_price, total_lots, remaining_lots, cost_basis,
+                # tp1_hit) and leave status="OPEN". Do NOT call _close_position
+                # (that unconditionally sets status="CLOSED", wrongly liquidating
+                # the other 90% of lots) and do NOT insert a backtest_trades row
+                # -- same as paper_monitor.py's TP1 branch, a "trade" for win-
+                # rate/profit-factor purposes is the position's eventual full
+                # exit, not each partial leg.
+                #
+                # hold_days is deliberately NOT incremented here: neither
+                # paper_monitor.py's TP1 branch nor simulate_window's own TP1
+                # continuation (src/backtest_v4.py, the
+                # `if trade_record["exit_reason"] == "TP1": remaining_positions.
+                # append(pos)` branch, which skips the `pos["hold_days"] += 1`
+                # that only runs in the `else` branch below it) increments
+                # hold_days on the TP1 day itself.
                 _persist_position(supabase, row["id"], pos)
                 # Retry-safe: absolute overwrite keyed by this row's own id.
-                _retry(lambda: supabase.table("paper_positions").update({"no_data_days": 0, "last_valid_close": bar[1]}).eq("id", row["id"]).execute())
+                _retry(lambda: supabase.table("paper_positions").update({
+                    "tp1_at": datetime.now(timezone.utc).isoformat(),
+                    "no_data_days": 0, "last_valid_close": bar[1],
+                }).eq("id", row["id"]).execute())
+                had_exit_today = True
+                print(f"  [EOD-RECONCILE] {trade_record['stock_code']}: TP1 (partial, {pos['remaining_lots']} "
+                      f"lot(s) remaining OPEN) pnl={trade_record['pnl']:+,.0f}")
+            else:
+                _close_position(supabase, run_id, row["id"], pos, trade_record)
+                had_exit_today = True
+                print(f"  [EOD-RECONCILE] {trade_record['stock_code']}: {trade_record['exit_reason']} "
+                      f"pnl={trade_record['pnl']:+,.0f}")
             continue
 
         pos["hold_days"] += 1
@@ -517,7 +569,18 @@ def main():
     for row in still_open:
         if row["stock_code"] in today_bars.index:
             close_px = float(today_bars.loc[row["stock_code"]]["close_price"])
+        elif row.get("last_valid_close") is not None:
+            # No fresh EOD row for this stock today (no-print gap, not yet at
+            # DELISTING_GAP_DAYS) -- mark at the last real close this same script
+            # already tracks (updated a few dozen lines above, in the DELISTED_GAP
+            # branch's sibling continue paths), not the entry/cost price. avg_price
+            # can be weeks stale for a long-running winner and understates/overstates
+            # equity, drawdown_pct, and cvar_95 versus the stock's real last mark.
+            close_px = float(row["last_valid_close"])
         else:
+            # Rare edge case: a position that has never had a real print since entry
+            # (e.g. filled today, or every day since has been a no-print gap) -- no
+            # last_valid_close exists yet either. Cost price is the only mark available.
             close_px = float(row["avg_price"])
         market_value += close_px * int(row["remaining_lots"]) * LOT_SIZE
     total_equity = cash + market_value

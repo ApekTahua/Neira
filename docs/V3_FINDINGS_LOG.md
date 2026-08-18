@@ -4077,3 +4077,117 @@ entry) -- all regression-verified byte-identical at defaults (existing `test_dia
 `compute_entry_fill()`'s own signature, `evaluate_position_exit()`, `paper_signal_scan.py`, and
 `paper_monitor.py` are all unchanged. Raw sweep outputs saved at
 `.cache/spike_sizing_sweep_full.csv`/`_agg.csv`.
+
+## 2026-08-18 -- live-path audit: 5 correctness bugs fixed
+
+Follow-up to a read-only audit of the live paper-trading path (`src/paper_signal_scan.py`,
+`src/paper_monitor.py`, `src/paper_common.py`). Five real bugs found and fixed same-day, in
+priority order below. All five are live-script-only fixes -- **no change to `src/backtest_v4.py`'s
+shared functions** (`evaluate_position_exit`, `compute_entry_fill`, `simulate_window`), so none of
+this triggers the 9-window walk-forward regression this project requires for shared-logic changes.
+Verified via a new `src/test_tp1_eod_reconcile.py` plus the existing `src/test_paper_trading_math.py`
+(still passing unchanged). No `main`-branch protected files touched.
+
+**Priority 1 (most urgent) -- EOD reconcile fully closed a position on a TP1 partial exit.**
+`paper_signal_scan.py`'s EOD-reconcile loop called `_close_position()` (unconditional
+`status="CLOSED"`) for ANY non-null `trade_record` from `evaluate_position_exit`, including a TP1
+partial exit (`TP1_PCT=0.10` -- only 10% of lots should sell, 90% should keep riding). This would
+have wrongly liquidated the ENTIRE position the first time the EOD safety-net recheck (not the
+15-min intraday monitor -- that one already had this right) caught a TP1 trigger, e.g. via a brief
+intraday spike the monitor's polling cadence missed. BEEF (a real open V4_PAPER position) was
+days from its first-ever live TP1 at discovery time -- this is exactly the code path it would have
+hit. Fixed by mirroring `paper_monitor.py`'s own TP1 branch (~line 302-311): for
+`exit_reason=="TP1"` specifically, persist the position's already-mutated fields (`avg_price`,
+`sl_price`, `total_lots`, `remaining_lots`, `cost_basis`, `tp1_hit` -- all updated in-place by
+`evaluate_position_exit` itself) via `_persist_position`, set `tp1_at`, leave `status="OPEN"`, and
+do NOT insert a `backtest_trades` row (matching `paper_monitor.py`: a "trade" for win-rate/
+profit-factor purposes is the position's eventual full exit, not each partial leg). `_close_position`
+now only fires for a genuine full-exit reason (SL/TRAILING/CHECKPOINT/TIME/DELISTED_GAP).
+Also removed the extra `pos["hold_days"] += 1` that used to run only on the TP1 branch: confirmed
+by reading `simulate_window`'s own TP1 continuation (`src/backtest_v4.py`, the
+`if trade_record["exit_reason"] == "TP1": remaining_positions.append(pos)` branch skips the
+`pos["hold_days"] += 1` that only runs in the sibling `else` branch) and `paper_monitor.py`'s TP1
+branch (also doesn't increment) that hold_days is deliberately NOT incremented on the TP1 day
+itself anywhere else in this system -- the extra increment was a live-script-only drift, now
+removed. Verified with `src/test_tp1_eod_reconcile.py`: constructs a synthetic OPEN position near
+TP1, runs it through the real `_position_dict_from_row`/`evaluate_position_exit`/
+`_persist_position`/`_close_position` functions against a fake Supabase double (records
+`.update()`/`.insert()` payloads, no real DB needed since both functions take `supabase` as an
+explicit parameter), and asserts: status is never touched on the TP1 path (no `"status"` key in
+any payload), `remaining_lots` matches what `evaluate_position_exit` actually computed on `pos`
+(never 0, never unchanged), `hold_days` stays at its pre-call value, and a genuine full exit (SL,
+regression guard) still sets `status="CLOSED"` and still inserts a `backtest_trades` row. A second
+test confirms `paper_signal_scan.py`'s and `paper_monitor.py`'s identical `_position_dict_from_row`
++ `evaluate_position_exit` calls on the same synthetic input leave `pos` in byte-identical state.
+
+**Priority 2 -- `has_real_print`/"did this stock trade today" required `open_price>0`, which ~25%
+of actively-traded stocks fail on a normal day.** Audited real `ihsg_eod` data: `open_price=0` with
+real `close_price`/`high`/`low`/`volume` is a chronic upstream data-quality gap, not a trading
+halt -- and WMPP (a currently-OPEN V4_PAPER/V3_PAPER position, ids 20/21 per the prior audit) has
+`open_price=0` on every historical row despite trading normally. Gating "did it trade today" on
+`open_price>0` would eventually force-exit WMPP via `DELISTING_GAP_DAYS` as if it had delisted,
+and would permanently freeze `last_valid_close` on it in the meantime. Split into two questions:
+(a) "did this stock trade at all today" -- now keyed off `close_price>0 and volume>0` (renamed
+`has_real_print` -> `had_real_trade`), gating `last_valid_close`/`no_data_days` tracking and the
+`DELISTING_GAP_DAYS` force-exit safety net; (b) "is there a valid opening price to fill/gap-price
+against" -- stays strict. Two call sites needed the strict version and were left alone:
+`paper_monitor.py`'s order-fill guard (`r.get("open") in (None, 0)`, ~line 202, unchanged) and a
+NEW guard added in `paper_signal_scan.py`'s EOD-reconcile bar construction -- previously
+`open_price` flowed straight into the `bar` tuple passed to `evaluate_position_exit`, and that
+function's own SL exit-price selection (`o if (o is not None and o < sl_price) else sl_price`)
+would have picked a fabricated Rp0 fill price for any SL exit on a real-trading, `open_price=0` day,
+which the old strict gate coincidentally prevented by simply never reaching that code for such a
+stock. Fixed by masking `open_price<=0` to `None` before building the `bar` tuple, which triggers
+`evaluate_position_exit`'s own documented `o is None` fallback (uses `sl_price`/`tp1_price` instead)
+-- the function was already designed to handle a missing open correctly; this just stops feeding it
+a fictional zero instead of a real "unknown" signal. The original DOOH-shaped suspension check
+(`open=high=low=0`, frozen close, real production incident 2026-08-06) still trips correctly under
+the new definition too: DOOH's `volume=0` on a suspended day fails the new `had_real_trade` check
+just as it failed the old `open_price>0` one. **DB verification not done from this session**: no
+Supabase MCP tool was exposed to this sandboxed sub-agent (only Read/Grep/Glob/Bash/Write/Edit were
+available), so WMPP's real current row (`last_valid_close`/`no_data_days` state) was not directly
+queried to confirm post-fix behavior against live data -- confirm via a real query before/shortly
+after this ships, per the original task's ask. The fix's correctness against the documented data
+shape (real close/volume, `open_price=0`) was verified by code-path reasoning and the existing
+`test_paper_trading_math.py` suite (`evaluate_position_exit`'s `o is None` handling is exercised
+implicitly by every existing SL/TP1 test there, unchanged).
+
+**Priority 3 -- EOD equity snapshot fell back to entry price instead of the last tracked real
+price.** When `today_bars` had no row for a held stock, the EOD equity mark used
+`row["avg_price"]` (entry/cost price, can be weeks stale) instead of `last_valid_close` (this same
+script's own real-time tracker, updated every day the stock has a real print). Fixed: fall back to
+`last_valid_close` first, `avg_price` only if `last_valid_close` is also null (a position that's
+never had a real print since entry -- rare, rarer still after the Priority 2 fix). Affects
+`total_equity`/`drawdown_pct`/`cvar_95` accuracy in `backtest_runs`/`backtest_equity`.
+
+**Priority 4 -- `paper_monitor.py`'s corporate-action guard compared live price to entry price
+instead of prior close.** `pc.looks_like_unadjusted_corporate_action(float(row["avg_price"]),
+current_price)` -- the ratio-bound design (`CORP_ACTION_RATIO_LOW/HIGH`) is meant for a
+day-over-day close comparison (correctly done in `paper_signal_scan.py`'s own EOD version, which
+compares `prev_close` to today's close), but here it compared against `avg_price`, which can be
+weeks old for a long-running winner -- a false trip would disable SL/TP1/trailing at exactly the
+wrong moment. Fixed: compare against `row["last_valid_close"]` (the position's own last known real
+close, maintained by `paper_signal_scan.py`'s EOD reconcile pass) instead, falling back to
+`avg_price` only when `last_valid_close` is still null (a position filled earlier the same day,
+before its first EOD reconcile pass -- on that one day, `avg_price` IS effectively "today's real
+price," so this fallback is intentional, not a smuggled version of the bug). No new schema field
+needed -- `last_valid_close` already exists and is already maintained for exactly this purpose.
+
+**Priority 5 (low urgency) -- `avg_vol_20` missing from both live position dicts.**
+`_position_dict_from_row()` in both `paper_signal_scan.py` and `paper_monitor.py` omitted
+`avg_vol_20`, silently falling back to `evaluate_position_exit`'s own default of `1.0` for the
+slippage participation math. Currently inert (`SLIPPAGE_ENABLED` defaults off, not set in any live
+workflow) but would silently mis-size slippage if ever turned on live. Fixed: both dict-builders
+now pull `avg_vol_20` from the `paper_positions` row (column already exists in
+`sql/paper_trading_schema.sql`, populated at signal time), falling back to `1.0` only if the row's
+own value is null.
+
+**Governance note**: none of these five change any validated strategy parameter or exit-rule
+threshold -- they fix live-script bookkeeping/data-quality bugs in code that was supposed to
+already implement the frozen V3/V4 configuration correctly. Per this project's own frozen-config
+rule, a fix to a bug is not a mutation of a live run's decision logic; the decision logic (SL/TP1/
+trailing thresholds, entry gates) is unchanged for V3_PAPER/V3.1_PAPER/V4_PAPER alike. Resets the
+`docs/MASTERPLAN.md` section B "no new correctness bugs" observation-window clock -- see that file.
+
+Code changed: `src/paper_signal_scan.py` (Priorities 1, 2, 3, 5), `src/paper_monitor.py`
+(Priorities 4, 5). Code added: `src/test_tp1_eod_reconcile.py`.
