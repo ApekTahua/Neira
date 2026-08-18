@@ -572,6 +572,32 @@ ACCDIST_SIZING_MAX = float(os.environ.get("V3_ACCDIST_SIZING_MAX", "2.0"))
 ROTATION_SIZING_ENABLED = os.environ.get("V3_ROTATION_SIZING", "0") == "1"
 ROTATION_SIZING_MIN = float(os.environ.get("V3_ROTATION_SIZING_MIN", "0.5"))
 ROTATION_SIZING_MAX = float(os.environ.get("V3_ROTATION_SIZING_MAX", "2.0"))
+# Structurally different follow-up to the REJECTED SPIKE_CONFIRM_GATE_ENABLED above
+# (docs/V3_FINDINGS_LOG.md, "Spike confirmation-delay gate ... REJECTED"): that gate
+# excluded a spike-flagged stock from candidacy entirely, on the theory that the
+# post-blowoff fade (35-39% win rate, base-rate research) makes the trade not worth
+# taking. Rejected because the fade's own base rate is NOT zero win rate and the
+# right tail is fat (winners up to +453%) -- exclusion throws away real upside along
+# with the bad base rate, and the rejection's own numbers bore this out (worse
+# drawdown at every tested config, its one good-looking point a single-window
+# reshuffling artifact a Monte Carlo check couldn't distinguish from noise). This
+# takes the entry through as normal instead and reduces size only -- respects the
+# asymmetry (real tail winners worth keeping some exposure to) rather than filtering
+# them out. Reuses the exact SAME spike_confirm_gate dict (same SPIKE_VOL_MULT/
+# SPIKE_MOVE_PCT/SPIKE_CONFIRM_DAYS/SPIKE_GIVEBACK_PCT definition, computed once per
+# window regardless of either flag) as a sizing tag instead of a candidacy filter --
+# see the is_spike tagging site in simulate_window. Off by default, new isolated
+# flag -- does not touch SPIKE_CONFIRM_GATE_ENABLED's own default, and the two can
+# be enabled independently (though combining them is untested: with the gate ON,
+# spike-flagged candidates are excluded before sizing ever sees them, so
+# SPIKE_SIZING_ENABLED would have nothing left to act on). UNVALIDATED until its own
+# walk-forward + multiplier sweep exists in V3_FINDINGS_LOG.md. compute_entry_fill()
+# reads sig.get("is_spike", False) -- paper_monitor.py's own score_candidates()-
+# sourced sig dicts never carry that key (only simulate_window's pending_entries
+# tagging adds it), so this cannot affect the live paper-trading fill path even if
+# some future change flips the default, independent of the env var staying off.
+SPIKE_SIZING_ENABLED = os.environ.get("V3_SPIKE_SIZING", "0") == "1"
+SPIKE_SIZING_MULT = float(os.environ.get("V3_SPIKE_SIZING_MULT", "0.5"))
 # Alternative framing to score-weighted sizing (rejected -- see
 # V3_FINDINGS_LOG.md): instead of predicting at entry which signal will
 # be the outlier winner, add to a position only after it's already
@@ -1498,7 +1524,12 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
         min(ROTATION_SIZING_MAX, max(ROTATION_SIZING_MIN, rotation_score / rotation_score_p90))
         if ROTATION_SIZING_ENABLED and has_rotation_score else 1.0
     )
-    alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult * bandar_mult * mover_mult * accdist_mult * rotation_mult, cash)
+    # Flat reduction, not a ratio-and-clip multiplier like the others above -- there is
+    # no natural "how spike-y" continuum being ranked here, just a binary flag (see
+    # SPIKE_SIZING_ENABLED above): reduce size specifically for spike-flagged entries,
+    # otherwise leave sizing untouched.
+    spike_mult = SPIKE_SIZING_MULT if (SPIKE_SIZING_ENABLED and sig.get("is_spike", False)) else 1.0
+    alloc = min(prev_equity * ALLOC_PCT * size_mult * liq_mult * trend_mult * bandar_mult * mover_mult * accdist_mult * rotation_mult * spike_mult, cash)
     # Participation estimated from the pre-slippage desired size (one-pass
     # approximation, not an iterative solver -- good enough given lots is
     # further capped by liq_lots below regardless of this estimate).
@@ -2093,6 +2124,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                 _diag_admitted.append({
                     "stock_code": sig["stock_code"], "score": sig.get("score"),
                     "age": day_idx - sig.get("origin_day_idx", day_idx - 1),  # 1 == normal same-cycle fill, >1 == backlog fill
+                    "is_spike": sig.get("is_spike", False), "cost_basis": fill["cost_basis"],  # SPIKE_SIZING_ENABLED research hook, additive only
                 })
         if diag is not None and pending_entries:
             # Queue is about to be reset (see module docstring) whether or not it was fully
@@ -2226,6 +2258,17 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
             # cheap dict key) so nothing downstream needs a conditional default.
             for _c in new_candidates:
                 _c["origin_day_idx"] = day_idx
+                # SPIKE_SIZING_ENABLED reads this at fill time (compute_entry_fill) to
+                # size DOWN, not exclude, a candidate currently inside a recent
+                # breakout-spike's blackout/failed-checkpoint window -- reuses the
+                # SAME already-computed spike_confirm_gate dict SPIKE_CONFIRM_GATE_ENABLED
+                # uses to exclude candidates outright (that mechanism was REJECTED, see
+                # V3_FINDINGS_LOG.md "Spike confirmation-delay gate"), just inverted and
+                # read as a sizing flag instead of a candidacy filter. Tagged
+                # unconditionally (one cheap dict lookup, gate already computed above
+                # regardless of either flag's state) so nothing downstream needs a
+                # conditional default -- same pattern as origin_day_idx above.
+                _c["is_spike"] = not spike_confirm_gate.get((_c["stock_code"], trade_date), True)
             pending_entries.extend(new_candidates)
             if BACKLOG_QUEUE_ENABLED and pending_entries:
                 # Priority ordering when a slot opens among a mix of fresh + carried-

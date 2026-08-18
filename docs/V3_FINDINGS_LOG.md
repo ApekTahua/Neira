@@ -3892,3 +3892,188 @@ correctness fix, and a new `rotated` diag field), all regression-verified byte-i
 defaults. `score_candidates()`, `compute_entry_fill()`, `evaluate_position_exit()`,
 `paper_signal_scan.py`, and `paper_monitor.py` are all unchanged. Raw sweep outputs saved at
 `.cache/rotation_sweep_full.csv`/`_agg.csv`, `.cache/rotation_off_regression.csv`.
+
+## Spike sizing (reduce, don't exclude/delay): built and swept, REJECTED -- same non-monotonic
+## dose-response, uniformly-worse worst-case drawdown, and two-window reshuffling-cascade
+## signature already documented for SPIKE_CONFIRM_GATE and three scarce-slot mechanisms this
+## session (2026-08-18)
+
+**Hypothesis**: the confirmation-delay gate (previous entry, REJECTED) excluded spike-flagged
+candidates outright and lost on every axis this log checks, including because the underlying
+pattern isn't zero-edge -- 35-39% win rate, and a fat right tail (932-episode base-rate research,
+best cases up to +453% at 20d). A structurally different mechanism, flagged but not built at the
+time: let the entry through as normal, reduce its position size only. This respects the
+asymmetry (real tail winners worth keeping some exposure to) instead of filtering them out
+entirely.
+
+**Mechanism** (`src/backtest_v4.py`): reuses `compute_spike_confirm_gate()` completely unchanged
+(same `SPIKE_VOL_MULT`/`SPIKE_MOVE_PCT`/`SPIKE_CONFIRM_DAYS`/`SPIKE_GIVEBACK_PCT` = 10x/20%/3
+days/15%, already computed once per window regardless of either flag's state) -- but reads it as
+a per-candidate **sizing tag** instead of a candidacy filter: `simulate_window`'s own
+`new_candidates` loop tags each candidate `is_spike = not spike_confirm_gate.get((stock_code,
+trade_date), True)` (inverted: True means "currently inside a recent spike's blackout or its
+failed checkpoint," the same condition the rejected gate used to exclude outright). Tagged
+unconditionally, same "cheap dict key, no conditional default needed downstream" pattern
+`origin_day_idx` already uses. `compute_entry_fill()` reads `sig.get("is_spike", False)` and
+applies a flat multiplier (`SPIKE_SIZING_MULT`, not a ratio-and-clip formula like the other
+sizing multipliers -- there's no "how spike-y" continuum here, just a binary flag) alongside the
+existing composed multiplier chain (`size_mult * liq_mult * trend_mult * bandar_mult *
+mover_mult * accdist_mult * rotation_mult * spike_mult`). Gated by `SPIKE_SIZING_ENABLED`
+(default `"0"`, off), `SPIKE_SIZING_MULT` (default `0.5`) -- new, isolated flags, independent of
+`SPIKE_CONFIRM_GATE_ENABLED`'s own default.
+
+**Cannot affect the live paper-trading path regardless of this flag's state, for a stronger
+reason than usual**: `score_candidates()`'s own real output (what `paper_signal_scan.py`/
+`paper_monitor.py` actually call) never carries an `"is_spike"` key at all -- only
+`simulate_window`'s own `pending_entries` tagging adds it. `compute_entry_fill()`'s
+`sig.get("is_spike", False)` therefore reads `False` for every live sig dict unconditionally, so
+even a future accidental env-var flip could not change a live fill's sizing; confirmed directly
+in `src/test_spike_sizing.py` (part 1: a sig dict missing the key sizes identically to
+`is_spike=False`, with the flag ON).
+
+**Correctness checks before trusting any sweep number** (`src/test_spike_sizing.py`):
+- Flag OFF: sizing is byte-identical regardless of `is_spike`, including a sig dict missing the
+  key entirely (paper_monitor.py's real shape) -- confirms the off-by-default no-op.
+- Flag ON, `MULT=0.5`: an `is_spike=True` candidate's `cost_basis` comes out at 0.500x an
+  otherwise-identical `is_spike=False` candidate's (isolated from `LIQ_SIZING_ENABLED`'s own
+  liquidity cap, which otherwise saturates both branches to the same value and masks the ratio --
+  a real trap this test caught on the first run, see the test file for the isolation reasoning);
+  `is_spike=False`/missing candidates stay untouched.
+- Cold-process import check: default OFF/0.5, overrides both ways, `SPIKE_CONFIRM_GATE_ENABLED`/
+  `ROTATION_SIZING_ENABLED`'s own defaults untouched.
+- Real out-of-sample slice (full Window 8, 2025-07-01..2025-12-30 -- the Jul-Aug half alone
+  admits zero spike-flagged candidates, too small a sample to exercise the mechanism at all):
+  OFF reproducible run-to-run, diag purely additive (`diag=None` vs `diag={}` identical), ON
+  (loose `MULT=0.3`) measurably differs, and every spike-flagged admit in the ON run sizes
+  smaller on average (avg cost_basis Rp19.6M -> Rp6.3M) than the OFF run's own spike-flagged
+  admits.
+
+**Full 9-window sweep** (`src/sweep_spike_sizing.py`, `V3_BANDAR_SIZING=0` pinned; full
+per-window CSV at `.cache/spike_sizing_sweep_full.csv`, agg at
+`.cache/spike_sizing_sweep_agg.csv`; OFF row reproduces the session's standing baseline
+byte-for-byte -- 389 trades, 15.02/2.87 profit, 15.88/11.57 alpha, 1.46/1.12 PF, -16.28/-22.51
+DD, 85.2/98.9 conc, 5/9 win>50%, 6/9 beat-bench -- confirming the `is_spike` tagging and the new
+diag field changed nothing for the existing default path):
+
+| SPIKE_SIZING_MULT | trades | spike admits | beat bench | win>50% | win% mean/median | profit% mean/median | alpha% mean/median | PF mean/median | DD% mean/worst | conc% mean/max |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **OFF (default)** | 389 | 26 | 6/9 | 5/9 | 51.0/51.0 | 15.02/2.87 | 15.88/11.57 | 1.46/1.12 | -16.28/-22.51 | 85.2/98.9 |
+| 0.25 | 391 | 26 | 6/9 | 4/9 | 50.8/47.1 | 20.74/7.70 | 21.60/13.59 | 1.51/1.32 | -16.23/-26.04 | 86.2/97.8 |
+| 0.5 | 391 | 26 | 6/9 | 5/9 | 51.7/52.6 | 15.66/2.87 | 16.53/14.26 | 1.49/1.12 | -15.89/-24.72 | 83.6/98.9 |
+| 0.75 | 388 | 26 | 7/9 | 4/9 | 51.0/50.0 | 18.29/4.37 | 19.16/13.97 | 1.56/1.13 | -16.28/-24.11 | 85.5/98.9 |
+
+**First red flag: no clean dose-response.** A real, causal sizing effect should move
+monotonically as the cut gets more aggressive (0.25 = biggest cut, 0.75 = smallest). Mean alpha
+instead dips in the middle: 21.60% (0.25) -> **16.53% (0.5, barely above OFF's 15.88%)** ->
+19.16% (0.75) -- the identical "worst in the middle, no clean trend" shape this log has now used
+to help reject `MAX_POSITIONS` widening, the backlog queue, `ROTATION_MARGIN_MULT`, and the
+spike-confirm-gate's own giveback sweep. `win-rate>50%` is WORSE than OFF's 5/9 at two of the
+three tested multipliers (4/9 at both 0.25 and 0.75), matching only at 0.5.
+
+**Second, decisive check: worst-case drawdown is worse than baseline at every single tested
+multiplier** (`dd_worst` -26.04%/-24.72%/-24.11% vs OFF's -22.51%) -- the exact test the
+confirmation-delay gate itself already failed on ("worst-case single-window drawdown is WORSE
+than the OFF baseline... at literally every one of the 8 tested configurations"). Reducing size
+on a spike-flagged entry does not reduce the portfolio's worst realized drawdown anywhere in this
+sweep either.
+
+**Third, the trace: the best-looking config's headline number is two known-fragile windows
+moving in opposite directions, not a broad improvement.** Per-window alpha, mult=0.25 (the
+config with the best mean alpha, +21.60%) vs OFF:
+
+| Window | OFF alpha | 0.25 alpha | Delta | trades (0.25 vs OFF) | spike admits (0.25 vs OFF) |
+|---|---|---|---|---|---|
+| 1 | -8.26% | +17.25% | +25.51pp | 50 vs 56 | 3 vs 5 |
+| 2 | -8.33% | -8.07% | +0.26pp | 38 vs 38 | 4 vs 3 |
+| 3 | -3.89% | -1.72% | +2.17pp | 19 vs 19 | 2 vs 2 |
+| **4** | **+41.04%** | **-19.97%** | **-61.01pp** | 49 vs 49 | 4 vs 4 |
+| 5 | +6.42% | +11.25% | +4.83pp | 34 vs 34 | 1 vs 1 |
+| 6 | +11.57% | +13.59% | +2.02pp | 57 vs 57 | 4 vs 4 |
+| 7 | +26.13% | +24.68% | -1.45pp | 21 vs 21 | 1 vs 1 |
+| **8** | **+59.56%** | **+142.22%** | **+82.66pp** | 100 vs 92 | 5 vs 4 |
+| 9 | +18.66% | +15.18% | -3.48pp | 23 vs 23 | 2 vs 2 |
+
+Window 4 -- on record twice already this session as "one of the two strongest, most reliable
+windows in the whole 9-window schedule" (once when the trend-duration gate collapsed it, once
+when `MAX_POSITIONS` widening collapsed it) -- **collapses again**, from +41.04% to -19.97%, on
+an *unchanged* trade count (49) and an *unchanged* spike-admit count (4 both runs) -- sizing
+down the exact same 4 flagged candidates by 75% was enough, on its own, to flip this window from
+one of the best in the schedule to a loser. Window 8 -- the window this session has now flagged
+**five separate times** (tick-size fix, spike-confirm-gate, rotation, backlog queue, and now
+this) as the one that reliably produces a large, misleading single-window swing from a small
+mechanical change -- explodes from +59.56% to +142.22%, on a modest trade-count change (92->100)
+and one extra spike-admit (4->5). Summed across all 9 windows, W4's -61.01pp and W8's +82.66pp
+net to +21.65pp of alpha delta between them -- 2.41pp of the schedule's own +5.72pp mean-alpha
+improvement (21.60%-15.88%) once divided across all 9 windows, meaning these two single windows
+alone contribute more than 40% of the whole schedule's apparent mean improvement, on top of the
+already-large individual swings within each.
+
+**Excluding W4 and W8 does not rescue this into a clean result either.** Ex-W4/W8 mean alpha:
+OFF 6.04% -> 0.25: 10.31%, 0.5: 6.56%, 0.75: 7.46% -- still the same worst-in-the-middle
+non-monotonic shape, and even the "best" ex-W4/W8 number (0.25's 10.31%) leans hard on a THIRD
+single-window swing: Window 1 moves from -8.26% to +17.25% (+25.51pp) while its own spike-admit
+COUNT changes (5 -> 3, a different set of candidates got admitted, not a pure sizing effect on
+the same trades) on a trade-count change from 56 to 50 -- the identical small-perturbation
+signature, a third time, in the same sweep.
+
+**In the windows where sizing alone is the only thing that changed** (trade count AND spike-admit
+count both identical across every tested multiplier -- W3, W5, W6, W7, W9, the closest this sweep
+gets to isolating a pure sizing effect from the reshuffling artifact): the direction is flat to
+mildly NEGATIVE as the cut gets more aggressive, not positive. W7 (24.68% at 0.25 -> 26.13% OFF)
+and W9 (15.18% -> 18.66% OFF) both decline monotonically as sizing gets more aggressive; W3 and
+W6 show small positive moves (+2.17pp, +2.02pp); W5 shows a real but modest gain (+4.83pp) despite
+an unchanged trade/admit count, confirming sizing changes ripple into subsequent trades' own
+cash-funded sizes even without changing *which* candidates get admitted. None of these five
+"clean" windows shows the large, consistent benefit the fat-tail hypothesis predicted -- if
+sizing down a real 35-39%-win-rate pattern were working as designed, the clean windows (no
+reshuffling noise to explain it away) should show a modest, broad, mostly-positive effect. They
+don't.
+
+**No fresh Monte Carlo permutation script was built**, for the same reason `sweep_rotation.py`'s
+own rejection skipped one: per this log's established bar, an MC check is for a result that
+still looks "genuinely better and more robust" after the sweep and trace above -- this one does
+not reach that bar. The trace already identifies the exact same non-monotonic dose-response,
+uniformly-worse worst-case drawdown, and small-perturbation/large-single-window-swing signature
+the confirmation-delay gate, `MAX_POSITIONS` widening, the backlog queue, and `ROTATION_MARGIN_MULT`
+were all independently rejected for; running a permutation test on a result already falsified
+this specifically would not add information.
+
+**Verdict: REJECTED. KEEP `SPIKE_SIZING_ENABLED=False` (the existing, unchanged default).** The
+size-down reframing does not escape the failure mode the exclusion-based gate already failed on --
+it just relocates it. Both spike-related mechanisms this session (exclude/delay, then size-down)
+fail on the identical combination of checks: non-monotonic across the swept parameter, worst-case
+drawdown worse than baseline at every tested value, and a headline "best" result that traces to a
+small number of already-known-fragile windows (W4, W8, and here also W1) swinging in opposite
+directions on a modest trade-count perturbation -- not a broad, real improvement. **This closes
+both concrete fix directions this session identified for the spike/gorengan base-rate finding**
+(exclude/delay -- REJECTED 2026-08-17; size-down -- REJECTED here). The underlying diagnosis (a
+real, front-loaded post-blowoff fade, 35-39% win rate, fat right tail up to +453%) is not in
+question -- what's now twice-rejected is every tested way of mechanically acting on it inside this
+specific scarce-`MAX_POSITIONS`-slot portfolio construction, for the same reshuffling-fragility
+reason the scarce-slot investigation (widening/backlog/rotation) already found governs far more
+of this system's single-window variance than any one entry-side signal does. A genuinely
+different category of idea would be needed here too -- not a third parameter on either of these
+two levers -- most plausibly one that doesn't touch which/how-much of a scarce slot gets consumed
+at all (e.g. an exit-side response specific to a position that becomes spike-flagged AFTER entry,
+never tried this session), or accepting this as a bounded, understood risk the way Window 3's
+residual weakness and the scarce-slot fragility itself are already accepted.
+
+**Governance note (no action needed, stated for the record)**: confirmed by grep --
+`paper_signal_scan.py`/`paper_monitor.py`/`paper_common.py` reference neither `SPIKE_SIZING_ENABLED`
+nor `SPIKE_SIZING_MULT` -- this finding has zero effect on the live paper-trading path regardless
+of the verdict, and no default in `backtest_v4.py` was changed (REJECTED, not promoted), so no
+separate approval step is needed before pushing.
+
+Code kept: `src/test_spike_sizing.py` (self-check, same pattern as `test_rotation.py`/
+`test_spike_confirm_gate.py`), `src/sweep_spike_sizing.py` (this sweep, reusable the same way
+`sweep_rotation.py`/`sweep_backlog_queue.py` are for the next numeric-grid parameter).
+`src/backtest_v4.py` gained the `is_spike` tagging site inside `simulate_window`'s
+`new_candidates` loop (reuses the existing `spike_confirm_gate` dict, no new precomputation),
+`SPIKE_SIZING_ENABLED`/`SPIKE_SIZING_MULT`, the `spike_mult` term in `compute_entry_fill()`'s
+multiplier chain, and one additive diag field (`is_spike`/`cost_basis` on each `_diag_admitted`
+entry) -- all regression-verified byte-identical at defaults (existing `test_diag_hook.py`,
+`test_backlog_queue.py`, `test_rotation.py`, `test_spike_confirm_gate.py`,
+`test_bandar_sizing_default.py` all still pass unchanged). `score_candidates()`,
+`compute_entry_fill()`'s own signature, `evaluate_position_exit()`, `paper_signal_scan.py`, and
+`paper_monitor.py` are all unchanged. Raw sweep outputs saved at
+`.cache/spike_sizing_sweep_full.csv`/`_agg.csv`.

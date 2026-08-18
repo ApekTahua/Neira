@@ -70,11 +70,23 @@ un-examined is the only unacceptable state.
       same lever.
 - [ ] **Spike/"gorengan" entry risk** (932-episode base rate: 35-39% win
       rate, negative median return, buying a stock the day after a >=20%
-      single-day spike on >=10x volume). One fix attempt (confirmation-delay
-      gate) rejected. A different-shaped idea (size down on a fresh spike
-      instead of excluding/delaying it) was flagged, never built or tested.
-      Needs either a validated mitigation or an explicit accepted-risk
-      decision with sizing that actually reflects the risk.
+      single-day spike on >=10x volume). TWO fix attempts now rejected, both
+      concrete directions this session identified: confirmation-delay gate
+      (exclude/delay, 2026-08-17) and size-down-on-spike (let the entry
+      through, reduce size only, 2026-08-18, `docs/V3_FINDINGS_LOG.md`
+      "Spike sizing"). Both fail on the identical combination -- non-monotonic
+      across the swept parameter, worst-case drawdown worse than baseline at
+      every tested value, and the best-looking config traced to known-fragile
+      windows (W4, W8, W1) swinging in opposite directions on a small
+      trade-count perturbation, the same scarce-`MAX_POSITIONS`-slot
+      reshuffling artifact already documented for widening/backlog/rotation.
+      The underlying base-rate diagnosis is not in question; every tested way
+      of mechanically acting on it inside this portfolio construction is.
+      CURRENTLY AN ACCEPTED RISK, not a solved one -- a genuinely different
+      category of idea (not entry-side exclude/delay/size, e.g. an exit-side
+      response to a position becoming spike-flagged AFTER entry) would be
+      needed for a third attempt; no third attempt on the same
+      exclude-or-size lever is planned without new evidence.
 - [x] **Window 3 (2023 H1)** -- already resolved as an accepted, bounded
       cost (-5.44%, alpha now close to its own benchmark) after 4 fix
       attempts, 2026-08-16. Nothing further needed here.
