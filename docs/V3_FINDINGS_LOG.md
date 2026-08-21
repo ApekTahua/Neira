@@ -4191,3 +4191,15 @@ trailing thresholds, entry gates) is unchanged for V3_PAPER/V3.1_PAPER/V4_PAPER 
 
 Code changed: `src/paper_signal_scan.py` (Priorities 1, 2, 3, 5), `src/paper_monitor.py`
 (Priorities 4, 5). Code added: `src/test_tp1_eod_reconcile.py`.
+
+## 2026-08-21: one-day EOD-scan gap (2026-08-20), isolated and self-recovered
+
+`daily_gate_summary`/`daily_qualifying_signals` have zero rows for 2026-08-20 -- a real trading
+day (`ihsg_eod` has 963 real rows with real volume for that date, market was genuinely open).
+The day before (08-19) and the day after (08-21) both ran normally (regime BULLISH, 15
+qualifying signals on 08-21). No GitHub token was available in this session to pull the Actions
+run log and find the exact cause. Given it's a single isolated day bracketed by two normal runs,
+most likely a transient GitHub Actions hiccup (runner/network blip) rather than a code
+regression -- but not confirmed, since the log itself was never inspected. User declined a
+monitoring/alert addition for this (Telegram ping if the EOD job doesn't post that day) --
+noted here instead, no code changed.
