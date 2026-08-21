@@ -47,9 +47,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
           PAPER_VERSION: V3.1_PAPER
-          V3_ARA_FILTER: '1'
-          V3_ATR_PRICE_RATIO_MAX: '0.08'
-          V3_SCORE_WEEKLY_COMP_ABS_CAP_Q: '0.81'
+          V4_ARA_FILTER: '1'
+          V4_ATR_PRICE_RATIO_MAX: '0.08'
+          V4_SCORE_WEEKLY_COMP_ABS_CAP_Q: '0.81'
         run: python src/paper_monitor.py
 
       # Deliberately no failure alert here -- same reasoning as

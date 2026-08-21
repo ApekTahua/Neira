@@ -65,7 +65,7 @@ jobs:
           # specifically to isolate this exact change; without this pin the
           # default flip would silently change V3_PAPER's own new-entry
           # sizing too. Existing OPEN positions are unaffected either way.
-          V3_BANDAR_SIZING: '0'
+          V4_BANDAR_SIZING: '0'
         run: python src/paper_signal_scan.py
 
       - name: Alert on failure

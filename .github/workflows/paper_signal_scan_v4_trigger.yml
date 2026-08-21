@@ -48,7 +48,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
           PAPER_VERSION: V4_PAPER
-          V3_BANDAR_SIZING: '1'
+          V4_BANDAR_SIZING: '1'
         run: python src/paper_signal_scan.py
 
       - name: Alert on failure
