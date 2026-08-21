@@ -56,6 +56,12 @@ if os.environ.get("V4_TP1_MULT"):
     cfg.TP1_MULT = float(os.environ["V4_TP1_MULT"])
 if os.environ.get("V4_TRAILING_PCT"):
     cfg.TRAILING_PCT = float(os.environ["V4_TRAILING_PCT"])
+# SL's own multiplier, independent of cfg.TP1_MULT -- compute_entry_fill() used to
+# hardcode this as a bare `1.5` literal that only numerically matched TP1_MULT by
+# coincidence (2026-08-22 audit finding: newscraper.ai's frontend estimate mirrored
+# the same coincidence, reusing TP1_MULT for its SL estimate too). Named here so a
+# future TP1_MULT sweep can't silently drag SL along with it.
+SL_MULT = float(os.environ.get("V4_SL_MULT", "1.5"))
 from strategy import add_features
 from phase0c_rrg_validation import fetch_sector_indices, fetch_sector_map, compute_rs_momentum
 from phase0d_multitimeframe_validation import attach_weekly_trend
@@ -1477,7 +1483,7 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
         atr_val = None
     else:
         tp1_price = entry_price + atr_val * cfg.TP1_MULT
-        sl_price = entry_price - atr_val * 1.5
+        sl_price = entry_price - atr_val * SL_MULT
         tp1_price = max(tp1_price, entry_price * 1.01)
         sl_price = min(sl_price, entry_price * 0.99)
         expected_hold_days = abs(sig["tp_target"] - entry_price) / atr_val
