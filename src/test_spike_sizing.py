@@ -1,6 +1,6 @@
-"""Self-check for V3_SPIKE_SIZING / V3_SPIKE_SIZING_MULT (docs/V3_FINDINGS_LOG.md, "Spike
+"""Self-check for V4_SPIKE_SIZING / V4_SPIKE_SIZING_MULT (docs/V3_FINDINGS_LOG.md, "Spike
 sizing: reduce, don't exclude/delay"). Structurally different follow-up to the REJECTED
-V3_SPIKE_CONFIRM_GATE (docs/V3_FINDINGS_LOG.md, "Spike confirmation-delay gate ... REJECTED"):
+V4_SPIKE_CONFIRM_GATE (docs/V3_FINDINGS_LOG.md, "Spike confirmation-delay gate ... REJECTED"):
 that gate excluded a spike-flagged stock from candidacy entirely; this lets the entry through
 as normal and reduces size only, reusing the exact same compute_spike_confirm_gate() dict
 (inverted) as a per-candidate sizing tag instead of a candidacy filter. Same pattern as
@@ -28,7 +28,7 @@ import sys
 from datetime import date
 
 REPO_SRC = os.path.dirname(os.path.abspath(__file__))
-os.environ.setdefault("V3_TEST_END", "2026-06-30")
+os.environ.setdefault("V4_TEST_END", "2026-06-30")
 
 import backtest_v4 as bt  # noqa: E402
 
@@ -82,8 +82,8 @@ bt.LIQ_SIZING_ENABLED = orig_liq_sizing
 # ---- (2) Flag defaults OFF, env var overrides both ways, other flags untouched ----
 def _flags(env_overrides: dict) -> str:
     env = dict(os.environ)
-    for k in ("V3_SPIKE_SIZING", "V3_SPIKE_SIZING_MULT", "V3_SPIKE_CONFIRM_GATE",
-              "V3_ROTATION_SIZING", "V3_BANDAR_SIZING"):
+    for k in ("V4_SPIKE_SIZING", "V4_SPIKE_SIZING_MULT", "V4_SPIKE_CONFIRM_GATE",
+              "V4_ROTATION_SIZING", "V4_BANDAR_SIZING"):
         env.pop(k, None)
     env.update(env_overrides)
     out = subprocess.run(
@@ -99,9 +99,9 @@ assert _flags({}) == "False 0.5 False False", (
     "default must be OFF, mult=0.5, and must NOT touch SPIKE_CONFIRM_GATE_ENABLED's own "
     "default (False) or ROTATION_SIZING_ENABLED's own default (False)"
 )
-assert _flags({"V3_SPIKE_SIZING": "1", "V3_SPIKE_SIZING_MULT": "0.3"}) == "True 0.3 False False", (
+assert _flags({"V4_SPIKE_SIZING": "1", "V4_SPIKE_SIZING_MULT": "0.3"}) == "True 0.3 False False", (
     "flipping the new flag must not flip SPIKE_CONFIRM_GATE_ENABLED or ROTATION_SIZING_ENABLED")
-print("[PASS] V3_SPIKE_SIZING defaults OFF (mult=0.5), overrides both ways, and every other "
+print("[PASS] V4_SPIKE_SIZING defaults OFF (mult=0.5), overrides both ways, and every other "
       "gate/sizing flag's own default is untouched.")
 
 

@@ -28,7 +28,7 @@ from datetime import date
 
 import pandas as pd
 
-os.environ.setdefault("V3_BANDAR_SIZING", "0")  # same baseline pin as diagnose_slot_queue.py
+os.environ.setdefault("V4_BANDAR_SIZING", "0")  # same baseline pin as diagnose_slot_queue.py
 
 import walk_forward_v4 as wf  # noqa: E402
 from diagnose_slot_queue import run_with_diag  # noqa: E402

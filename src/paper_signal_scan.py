@@ -37,7 +37,7 @@ from datetime import date, datetime, timezone
 
 import numpy as np
 
-os.environ.setdefault("V3_TEST_END", date.today().isoformat())
+os.environ.setdefault("V4_TEST_END", date.today().isoformat())
 
 import config as cfg  # noqa: E402
 import backtest_v4 as bt  # noqa: E402
@@ -459,8 +459,8 @@ def main():
     # ~90 signals" -- daily_scoreboard above is a ticker-lookup table that
     # deliberately never drops a row, not the real selectivity answer).
     # Only the primary engine's output is public-facing: V3_PAPER/V3.1_PAPER
-    # run different filter env vars (V3_ARA_FILTER, V3_ATR_PRICE_RATIO_MAX,
-    # V3_SCORE_WEEKLY_COMP_ABS_CAP_Q) that make their `scored` NOT the same
+    # run different filter env vars (V4_ARA_FILTER, V4_ATR_PRICE_RATIO_MAX,
+    # V4_SCORE_WEEKLY_COMP_ABS_CAP_Q) that make their `scored` NOT the same
     # computation as V4_PAPER's -- writing theirs here would silently swap
     # the public count depending on which of the three workflows ran last.
     # Full delete-then-insert per trade_date (not a plain upsert) so a stock

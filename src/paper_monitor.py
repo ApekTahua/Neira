@@ -29,7 +29,7 @@ import re
 import sys
 from datetime import date, datetime, timezone
 
-os.environ.setdefault("V3_TEST_END", date.today().isoformat())
+os.environ.setdefault("V4_TEST_END", date.today().isoformat())
 
 import config as cfg  # noqa: E402
 import backtest_v4 as bt  # noqa: E402
@@ -63,8 +63,8 @@ STALE_MINUTES = 30
 # forward-tested safety guard, same spirit as the paper-trading run itself,
 # not a validated-on-history rule. Off in effect on any normal day (a real
 # 30%-of-universe simultaneous 3%+ drop is a genuinely rare event).
-BREADTH_CRASH_DROP_PCT = float(os.environ.get("V3_BREADTH_CRASH_DROP_PCT", "-3.0"))
-BREADTH_CRASH_FRACTION = float(os.environ.get("V3_BREADTH_CRASH_FRACTION", "0.30"))
+BREADTH_CRASH_DROP_PCT = float(os.environ.get("V4_BREADTH_CRASH_DROP_PCT", "-3.0"))
+BREADTH_CRASH_FRACTION = float(os.environ.get("V4_BREADTH_CRASH_FRACTION", "0.30"))
 
 
 def _detect_breadth_crash(supabase) -> tuple:

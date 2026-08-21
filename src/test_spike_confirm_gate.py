@@ -1,4 +1,4 @@
-"""Self-check for V3_SPIKE_CONFIRM_GATE (docs/V3_FINDINGS_LOG.md, "Spike
+"""Self-check for V4_SPIKE_CONFIRM_GATE (docs/V3_FINDINGS_LOG.md, "Spike
 confirmation-delay gate ..."). Follow-up to the "TEBE gorengan base-rate
 research" entry -- gates candidacy on a PER-STOCK breakout-spike/confirmation
 pattern, structurally unrelated to the rejected TREND_DURATION_GATE (index-
@@ -23,7 +23,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-os.environ.setdefault("V3_TEST_END", "2026-06-30")
+os.environ.setdefault("V4_TEST_END", "2026-06-30")
 
 REPO_SRC = os.path.dirname(os.path.abspath(__file__))
 
@@ -81,8 +81,8 @@ print("[PASS] compute_spike_confirm_gate: a stock that never spikes is a pure no
 # ---- Flag defaults OFF, env var overrides both ways, cold-process import (real CI shape) ----
 def _gate_flags(env_overrides: dict) -> str:
     env = dict(os.environ)
-    for k in ("V3_SPIKE_CONFIRM_GATE", "V3_SPIKE_CONFIRM_DAYS", "V3_SPIKE_GIVEBACK_PCT",
-              "V3_PARTICIPATION_GATE", "V3_TREND_DURATION_GATE"):
+    for k in ("V4_SPIKE_CONFIRM_GATE", "V4_SPIKE_CONFIRM_DAYS", "V4_SPIKE_GIVEBACK_PCT",
+              "V4_PARTICIPATION_GATE", "V4_TREND_DURATION_GATE"):
         env.pop(k, None)
     env.update(env_overrides)
     out = subprocess.run(
@@ -99,10 +99,10 @@ assert _gate_flags({}) == "False 3 0.15 10.0 0.2 False False", (
     "default must be OFF (confirm_days=3, giveback=0.15, vol_mult=10.0, move_pct=0.2), "
     "and must NOT touch PARTICIPATION_GATE_ENABLED/TREND_DURATION_GATE_ENABLED's own defaults"
 )
-assert _gate_flags({"V3_SPIKE_CONFIRM_GATE": "1", "V3_SPIKE_CONFIRM_DAYS": "5"}) == (
+assert _gate_flags({"V4_SPIKE_CONFIRM_GATE": "1", "V4_SPIKE_CONFIRM_DAYS": "5"}) == (
     "True 5 0.15 10.0 0.2 False False"
 ), "flipping the new flag must not flip any other gate's own default"
-print("[PASS] V3_SPIKE_CONFIRM_GATE defaults OFF, overrides both ways, and every other "
+print("[PASS] V4_SPIKE_CONFIRM_GATE defaults OFF, overrides both ways, and every other "
       "gate's own default is untouched")
 
 print("\nAll spike-confirm-gate checks passed.")

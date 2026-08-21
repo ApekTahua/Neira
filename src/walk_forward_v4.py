@@ -39,7 +39,7 @@ from datetime import date, timedelta
 # module-level constants at import time. FETCH_START stays at the
 # existing default (2021-01-01); TEST_END is widened to cover the whole
 # schedule below so build_full_dataset's one fetch spans everything.
-os.environ.setdefault("V3_TEST_END", "2026-06-30")
+os.environ.setdefault("V4_TEST_END", "2026-06-30")
 
 import backtest_v4 as bt  # noqa: E402
 from supabase import create_client  # noqa: E402
@@ -81,9 +81,9 @@ def load_dataset(supabase=None):
     cache_dir = os.path.join(os.path.dirname(__file__), "..", ".cache")
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f"walk_forward_data_{bt.FETCH_START}_{bt.TEST_END}.pkl")
-    if os.path.exists(cache_path) and os.environ.get("V3_FORCE_REFETCH", "0") != "1":
+    if os.path.exists(cache_path) and os.environ.get("V4_FORCE_REFETCH", "0") != "1":
         print(f"\n[FETCH] Using local cache ({cache_path}) -- no Supabase query. "
-              f"Set V3_FORCE_REFETCH=1 to force a fresh pull.")
+              f"Set V4_FORCE_REFETCH=1 to force a fresh pull.")
         with open(cache_path, "rb") as f:
             return pickle.load(f)
     if supabase is None:

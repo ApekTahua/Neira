@@ -51,7 +51,7 @@ the findings log:
     | Max drawdown (mean / worst) | ... | ... |
 
 Run standalone (`python src/feature_test_harness.py`) to see this against
-the actual V3_PARTICIPATION_GATE flag -- the correctness check for this
+the actual V4_PARTICIPATION_GATE flag -- the correctness check for this
 module: it should reproduce the OFF and ON_0.95 rows from commit f9cd458
 (docs/V3_FINDINGS_LOG.md, "Market-wide participation gate...") exactly.
 
@@ -65,7 +65,7 @@ from datetime import date
 
 import pandas as pd
 
-import walk_forward_v4 as wf  # noqa: E402 -- sets V3_TEST_END default before bt import
+import walk_forward_v4 as wf  # noqa: E402 -- sets V4_TEST_END default before bt import
 
 bt = wf.bt  # the exact module object wf's own bt reads/writes -- see module docstring
 
@@ -149,7 +149,7 @@ def run_isolated_feature_test(label: str, set_flag, supabase=None, schedule=None
 
 
 if __name__ == "__main__":
-    # Retrofit / correctness check: V3_PARTICIPATION_GATE, isolated the same
+    # Retrofit / correctness check: V4_PARTICIPATION_GATE, isolated the same
     # way commit f9cd458 (docs/V3_FINDINGS_LOG.md) ran it by hand. Should
     # reproduce that commit's OFF and ON_0.95 (PARTICIPATION_MIN's own
     # default, 0.95) rows exactly.

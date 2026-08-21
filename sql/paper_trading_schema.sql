@@ -113,8 +113,8 @@ select id, 100000000, null from new_run;
 -- ("Fine neighbor sweep confirms the wcap plateau", 2026-08-08):
 -- ARA_FILTER_ENABLED=1, ATR_PRICE_RATIO_MAX=0.08 (was 0.10),
 -- SCORE_WEEKLY_COMP_ABS_CAP_Q=0.81 (was off). Set via env on the V3.1
--- trigger workflows (PAPER_VERSION, V3_ARA_FILTER, V3_ATR_PRICE_RATIO_MAX,
--- V3_SCORE_WEEKLY_COMP_ABS_CAP_Q), not in this repo's frozen config.py.
+-- trigger workflows (PAPER_VERSION, V4_ARA_FILTER, V4_ATR_PRICE_RATIO_MAX,
+-- V4_SCORE_WEEKLY_COMP_ABS_CAP_Q), not in this repo's frozen config.py.
 with new_run_v31 as (
   insert into backtest_runs (
     version, period_start, period_end, initial_capital, final_capital,
@@ -160,7 +160,7 @@ alter table paper_positions add column if not exists concentration numeric;
 -- sizing tested mixed, needs a redesign first, not launch-ready) -- single-
 -- variable-change discipline, so any V4-vs-V3 difference is cleanly
 -- attributable to Bandarmology alone. Set via env on the V4 trigger
--- workflows (PAPER_VERSION, V3_BANDAR_SIZING), not in this repo's frozen
+-- workflows (PAPER_VERSION, V4_BANDAR_SIZING), not in this repo's frozen
 -- config.py.
 with new_run_v4 as (
   insert into backtest_runs (

@@ -1,4 +1,4 @@
-"""Self-check for V3_TREND_DURATION_GATE (docs/V3_FINDINGS_LOG.md, "Trend-
+"""Self-check for V4_TREND_DURATION_GATE (docs/V3_FINDINGS_LOG.md, "Trend-
 duration/episode-quality gate ..."). Two things a broken implementation
 could silently get wrong:
 
@@ -19,7 +19,7 @@ import subprocess
 import sys
 from datetime import date, timedelta
 
-os.environ.setdefault("V3_TEST_END", "2026-06-30")
+os.environ.setdefault("V4_TEST_END", "2026-06-30")
 
 REPO_SRC = os.path.dirname(os.path.abspath(__file__))
 
@@ -47,8 +47,8 @@ print("[PASS] compute_trend_duration_streak counts up cleanly with no dips (wind
 # ---- Flag defaults OFF, env var overrides both ways, cold-process import (real CI shape) ----
 def _gate_flags(env_overrides: dict) -> str:
     env = dict(os.environ)
-    env.pop("V3_TREND_DURATION_GATE", None)
-    env.pop("V3_TREND_DURATION_MIN_DAYS", None)
+    env.pop("V4_TREND_DURATION_GATE", None)
+    env.pop("V4_TREND_DURATION_MIN_DAYS", None)
     env.update(env_overrides)
     out = subprocess.run(
         [sys.executable, "-c",
@@ -63,8 +63,8 @@ assert _gate_flags({}) == "False 3 0.01 3", (
     "default must be OFF (min_days=3), and must NOT touch TREND_STRENGTH_MIN (0.01) "
     "or REGIME_CONFIRM_DAYS's (3) own defaults"
 )
-assert _gate_flags({"V3_TREND_DURATION_GATE": "1", "V3_TREND_DURATION_MIN_DAYS": "5"}) == "True 5 0.01 3"
-print("[PASS] V3_TREND_DURATION_GATE defaults OFF, overrides both ways, "
+assert _gate_flags({"V4_TREND_DURATION_GATE": "1", "V4_TREND_DURATION_MIN_DAYS": "5"}) == "True 5 0.01 3"
+print("[PASS] V4_TREND_DURATION_GATE defaults OFF, overrides both ways, "
       "TREND_STRENGTH_MIN/REGIME_CONFIRM_DAYS defaults untouched")
 
 print("\nAll trend-duration-gate checks passed.")

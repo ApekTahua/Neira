@@ -12,8 +12,8 @@
 -- comment at the `scored` hoist for why those are a different question.
 --
 -- Only ever written by the PRIMARY_PAPER_VERSION run (V4_PAPER) -- V3_PAPER/
--- V3.1_PAPER apply different filter env vars (V3_ARA_FILTER,
--- V3_ATR_PRICE_RATIO_MAX, V3_SCORE_WEEKLY_COMP_ABS_CAP_Q) that make their own
+-- V3.1_PAPER apply different filter env vars (V4_ARA_FILTER,
+-- V4_ATR_PRICE_RATIO_MAX, V4_SCORE_WEEKLY_COMP_ABS_CAP_Q) that make their own
 -- score_candidates() output a different computation, not fit for the public
 -- Screener page. Display/explain only, same isolation as daily_scoreboard /
 -- daily_gate_summary -- never read back into a trading decision.

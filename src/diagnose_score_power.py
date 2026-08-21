@@ -56,7 +56,7 @@ import os
 import sys
 from datetime import date, timedelta
 
-os.environ.setdefault("V3_TEST_END", date.today().isoformat())
+os.environ.setdefault("V4_TEST_END", date.today().isoformat())
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402

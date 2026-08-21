@@ -15,7 +15,7 @@ from datetime import date
 
 import pandas as pd
 
-os.environ.setdefault("V3_BANDAR_SIZING", "0")
+os.environ.setdefault("V4_BANDAR_SIZING", "0")
 
 import walk_forward_v4 as wf  # noqa: E402
 from trace_w8_slot_swaps import run_w8, report_pair  # noqa: E402

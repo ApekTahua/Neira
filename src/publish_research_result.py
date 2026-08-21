@@ -41,7 +41,7 @@ def main():
 
     params = {
         k: v for k, v in os.environ.items()
-        if k.startswith(("V3_", "SWEEP_", "DIAG_"))
+        if k.startswith(("V4_", "SWEEP_", "DIAG_"))
     }
 
     create_client(url, key).table("research_results").insert({

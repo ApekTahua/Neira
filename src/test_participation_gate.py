@@ -1,6 +1,6 @@
-"""Self-check for V3_PARTICIPATION_GATE (docs/V3_FINDINGS_LOG.md, "Market-
+"""Self-check for V4_PARTICIPATION_GATE (docs/V3_FINDINGS_LOG.md, "Market-
 wide participation gate ..."). Structurally different follow-up to the
-REJECTED V3_TREND_DURATION_GATE (src/test_trend_duration_gate.py) -- this
+REJECTED V4_TREND_DURATION_GATE (src/test_trend_duration_gate.py) -- this
 gates on total market turnover (close_price * volume, summed across every
 stock_code that day) vs its own trailing 20-day average, not on any
 trend_strength/ma50-distance series. Two things a broken implementation
@@ -28,7 +28,7 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
-os.environ.setdefault("V3_TEST_END", "2026-06-30")
+os.environ.setdefault("V4_TEST_END", "2026-06-30")
 
 REPO_SRC = os.path.dirname(os.path.abspath(__file__))
 
@@ -74,7 +74,7 @@ print("[PASS] compute_market_participation reads 1.0 on a day with no turnover d
 # ---- Flag defaults OFF, env var overrides both ways, cold-process import (real CI shape) ----
 def _gate_flags(env_overrides: dict) -> str:
     env = dict(os.environ)
-    for k in ("V3_PARTICIPATION_GATE", "V3_PARTICIPATION_MIN", "V3_TREND_DURATION_GATE", "V3_TREND_DURATION_MIN_DAYS"):
+    for k in ("V4_PARTICIPATION_GATE", "V4_PARTICIPATION_MIN", "V4_TREND_DURATION_GATE", "V4_TREND_DURATION_MIN_DAYS"):
         env.pop(k, None)
     env.update(env_overrides)
     out = subprocess.run(
@@ -91,10 +91,10 @@ assert _gate_flags({}) == "False 0.95 False 3 0.01 3", (
     "default must be OFF (min=0.95), and must NOT touch TREND_DURATION_GATE_ENABLED (False), "
     "TREND_DURATION_MIN_DAYS (3), TREND_STRENGTH_MIN (0.01), or REGIME_CONFIRM_DAYS's (3) own defaults"
 )
-assert _gate_flags({"V3_PARTICIPATION_GATE": "1", "V3_PARTICIPATION_MIN": "0.90"}) == (
+assert _gate_flags({"V4_PARTICIPATION_GATE": "1", "V4_PARTICIPATION_MIN": "0.90"}) == (
     "True 0.9 False 3 0.01 3"
 ), "flipping the new flag must not flip TREND_DURATION_GATE_ENABLED's own default"
-print("[PASS] V3_PARTICIPATION_GATE defaults OFF, overrides both ways, and every other "
+print("[PASS] V4_PARTICIPATION_GATE defaults OFF, overrides both ways, and every other "
       "gate's own default is untouched")
 
 print("\nAll participation-gate checks passed.")

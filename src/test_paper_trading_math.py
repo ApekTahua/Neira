@@ -18,7 +18,7 @@ Usage: python src/test_paper_trading_math.py
 import os
 from datetime import date
 
-os.environ.setdefault("V3_TEST_END", "2026-07-31")
+os.environ.setdefault("V4_TEST_END", "2026-07-31")
 
 import backtest_v4 as bt  # noqa: E402
 import paper_common as pc  # noqa: E402

@@ -11,7 +11,7 @@ Usage: python src/test_accdist_signal.py
 import os
 from datetime import date
 
-os.environ.setdefault("V3_TEST_END", "2026-06-30")
+os.environ.setdefault("V4_TEST_END", "2026-06-30")
 
 import pandas as pd  # noqa: E402
 

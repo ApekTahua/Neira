@@ -9,12 +9,12 @@ lucky point on a noisy surface. A parameter is only trustworthy if its
 NEIGHBOURS behave too. Same standard applies here.
 
 Three knobs, run as a grid:
-  V3_ATR_PRICE_RATIO_MAX -- signal-day volatility ceiling (live run: 0.10;
+  V4_ATR_PRICE_RATIO_MAX -- signal-day volatility ceiling (live run: 0.10;
       DOOH, which took a -13.6% stop, sat at 9.1%)
-  V3_ARA_FILTER          -- drop candidates locked at the auto-reject
+  V4_ARA_FILTER          -- drop candidates locked at the auto-reject
       ceiling on the signal day (BAJA, which then suspended and could
       never fill at all)
-  V3_ARB_EXIT_REALISM    -- refuse to book an exit on an auto-reject-FLOOR
+  V4_ARB_EXIT_REALISM    -- refuse to book an exit on an auto-reject-FLOOR
       bar, where there is no bid to sell into. Expect this one to make the
       numbers WORSE and truer; it removes a fill the backtest was granting
       itself for free on exactly the days that hurt in real life.
@@ -62,8 +62,8 @@ def main():
         label = f"ATR<={atr} ARA={'on' if ara == '1' else 'off'} ARB={'on' if arb == '1' else 'off'}"
         print(f"\n{'=' * 100}\n[SWEEP] {label}\n{'=' * 100}", flush=True)
         env = {
-            **os.environ, "V3_ATR_PRICE_RATIO_MAX": atr,
-            "V3_ARA_FILTER": ara, "V3_ARB_EXIT_REALISM": arb,
+            **os.environ, "V4_ATR_PRICE_RATIO_MAX": atr,
+            "V4_ARA_FILTER": ara, "V4_ARB_EXIT_REALISM": arb,
         }
         proc = subprocess.run(
             [sys.executable, os.path.join(here, "walk_forward_v4.py")],

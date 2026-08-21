@@ -29,7 +29,7 @@ from datetime import date
 
 import pandas as pd
 
-os.environ.setdefault("V3_BANDAR_SIZING", "0")  # matches the reproducible baseline this log has used since the tick-size-bug entry
+os.environ.setdefault("V4_BANDAR_SIZING", "0")  # matches the reproducible baseline this log has used since the tick-size-bug entry
 
 import walk_forward_v4 as wf  # noqa: E402
 

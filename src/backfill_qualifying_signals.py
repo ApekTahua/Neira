@@ -54,13 +54,13 @@ import os
 import sys
 from datetime import date
 
-os.environ.setdefault("V3_TEST_END", "2026-08-14")
+os.environ.setdefault("V4_TEST_END", "2026-08-14")
 # Matches V4_PAPER's own live workflow env exactly (.github/workflows/
 # paper_signal_scan_v4_trigger.yml on main) -- doesn't affect score_candidates'
 # output (BANDAR_SIZING_ENABLED only feeds compute_entry_fill's sizing, not
 # the entry gate), set anyway so nothing about this run's config differs
 # from what actually produced 2026-08-12/13/14 live.
-os.environ.setdefault("V3_BANDAR_SIZING", "1")
+os.environ.setdefault("V4_BANDAR_SIZING", "1")
 
 import numpy as np  # noqa: E402
 
@@ -163,7 +163,7 @@ def main():
         os.rename(bf.DATA_DIR, disabled_path)
         moved = True
     try:
-        print(f"[FETCH] building full dataset through {os.environ['V3_TEST_END']} "
+        print(f"[FETCH] building full dataset through {os.environ['V4_TEST_END']} "
               f"(same call paper_signal_scan.py makes) ...")
         df, idx_df = bt.build_full_dataset(supabase)
     finally:

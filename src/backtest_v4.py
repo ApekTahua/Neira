@@ -52,10 +52,10 @@ import risk
 # is untouched, so V1 (a separate process, re-importing config.py fresh
 # each run) is unaffected regardless of what gets tested here. No env
 # var set = cfg's own file defaults, unchanged behavior.
-if os.environ.get("V3_TP1_MULT"):
-    cfg.TP1_MULT = float(os.environ["V3_TP1_MULT"])
-if os.environ.get("V3_TRAILING_PCT"):
-    cfg.TRAILING_PCT = float(os.environ["V3_TRAILING_PCT"])
+if os.environ.get("V4_TP1_MULT"):
+    cfg.TP1_MULT = float(os.environ["V4_TP1_MULT"])
+if os.environ.get("V4_TRAILING_PCT"):
+    cfg.TRAILING_PCT = float(os.environ["V4_TRAILING_PCT"])
 from strategy import add_features
 from phase0c_rrg_validation import fetch_sector_indices, fetch_sector_map, compute_rs_momentum
 from phase0d_multitimeframe_validation import attach_weekly_trend
@@ -89,7 +89,7 @@ from diagnose_bandarmology_power import add_forward_returns as _bandar_add_forwa
 # automatically in volatile periods and narrows in calm ones, which is
 # what a fixed percentage cannot do. This is V3-only; strategy.py is
 # untouched.
-VOL_BAND_MULT = float(os.environ.get("V3_VOL_BAND_MULT", "2.0"))
+VOL_BAND_MULT = float(os.environ.get("V4_VOL_BAND_MULT", "2.0"))
 
 
 def compute_regime_with_hysteresis(idx_df: pd.DataFrame):
@@ -150,7 +150,7 @@ def compute_trend_duration_streak(trend_strength_by_date: dict, threshold: float
     (another streak=1). Every qualifying signal day in that episode cleared
     TREND_STRENGTH_MIN on its own, but only ever 1-3 days at a stretch
     before a reset -- unlike window 1, where trend_strength cleared the bar
-    for long unbroken runs. See V3_TREND_DURATION_GATE below for how this
+    for long unbroken runs. See V4_TREND_DURATION_GATE below for how this
     dict is used as an additional entry condition, gated separately from
     TREND_STRENGTH_MIN and REGIME_CONFIRM_DAYS so it can be swept/disabled
     on its own."""
@@ -260,11 +260,11 @@ def compute_spike_confirm_gate(df: pd.DataFrame, vol_mult: float, move_pct: floa
     return dict(zip(zip(stock_codes.tolist(), trade_dates.tolist()), gate_open.tolist()))
 
 
-FETCH_START = date.fromisoformat(os.environ.get("V3_FETCH_START", "2021-01-01"))
-TRAIN_END = date.fromisoformat(os.environ.get("V3_TRAIN_END", "2024-06-30"))
-TEST_START = date.fromisoformat(os.environ.get("V3_TEST_START", "2024-07-31"))
-TEST_END = date.fromisoformat(os.environ.get("V3_TEST_END", "2026-06-30"))
-QUANTILE_CUT = float(os.environ.get("V3_QUANTILE_CUT", "0.60"))
+FETCH_START = date.fromisoformat(os.environ.get("V4_FETCH_START", "2021-01-01"))
+TRAIN_END = date.fromisoformat(os.environ.get("V4_TRAIN_END", "2024-06-30"))
+TEST_START = date.fromisoformat(os.environ.get("V4_TEST_START", "2024-07-31"))
+TEST_END = date.fromisoformat(os.environ.get("V4_TEST_END", "2026-06-30"))
+QUANTILE_CUT = float(os.environ.get("V4_QUANTILE_CUT", "0.60"))
 # Swept 0.50/0.60/0.70/0.80/0.90 across the full 9-window walk-forward --
 # 0.60 is a genuine interior peak (bracketed on both sides, not a
 # monotonic runaway or an edge-of-range fluke): best beat-benchmark count
@@ -275,7 +275,7 @@ QUANTILE_CUT = float(os.environ.get("V3_QUANTILE_CUT", "0.60"))
 INITIAL_CAPITAL = 100_000_000
 LOT_SIZE = 100
 SL_PCT = 0.02
-MAX_POSITIONS = int(os.environ.get("V3_MAX_POSITIONS", "6"))
+MAX_POSITIONS = int(os.environ.get("V4_MAX_POSITIONS", "6"))
 # Third OOS window (2023-01..2023-06) lost money because six positions
 # opened SIMULTANEOUSLY on 2023-02-06 -- MAX_POSITIONS filled entirely in
 # one day on a regime flip that turned out to be a false start, and all
@@ -296,8 +296,8 @@ MAX_POSITIONS = int(os.environ.get("V3_MAX_POSITIONS", "6"))
 # same wrong thesis. Kept as defense-in-depth, but REGIME_CONFIRM_DAYS
 # below is the fix that actually targets the failure mode: don't deploy
 # capital on day 1 of a flip, wait to see if it holds.
-MAX_NEW_ENTRIES_PER_DAY = int(os.environ.get("V3_MAX_NEW_ENTRIES_PER_DAY", "2"))
-REGIME_CONFIRM_DAYS = int(os.environ.get("V3_REGIME_CONFIRM_DAYS", "3"))
+MAX_NEW_ENTRIES_PER_DAY = int(os.environ.get("V4_MAX_NEW_ENTRIES_PER_DAY", "2"))
+REGIME_CONFIRM_DAYS = int(os.environ.get("V4_REGIME_CONFIRM_DAYS", "3"))
 # Even after both fixes above, window 3 still lost money (-12.28%, 38.5%
 # win). Diagnostic: IHSG's own separation from ma50 averaged 5.49% in
 # window 1 (great), 2.18% in window 2 (modest), only 1.13% in window 3
@@ -315,7 +315,7 @@ REGIME_CONFIRM_DAYS = int(os.environ.get("V3_REGIME_CONFIRM_DAYS", "3"))
 # -12.28%->-5.44% (small loss, alpha -2.68% now nearly matches its own
 # benchmark instead of badly missing it). Win rate clears 50% in ALL
 # THREE windows simultaneously for the first time all session.
-TREND_STRENGTH_MIN = float(os.environ.get("V3_TREND_STRENGTH_MIN", "0.01"))
+TREND_STRENGTH_MIN = float(os.environ.get("V4_TREND_STRENGTH_MIN", "0.01"))
 # Direct follow-up to the diagnosis above ("Window 3's remaining -5.44%:
 # trade-level diagnosis", V3_FINDINGS_LOG.md): all 6 losers in window 3's
 # one losing episode (2023-02-08..02-20) had trend_strength barely above
@@ -332,8 +332,8 @@ TREND_STRENGTH_MIN = float(os.environ.get("V3_TREND_STRENGTH_MIN", "0.01"))
 # oscillates near the threshold within that streak, which is exactly
 # what happened in Feb 2023). Off by default, unvalidated until its own
 # walk-forward runs -- see V3_FINDINGS_LOG.md for the sweep.
-TREND_DURATION_GATE_ENABLED = os.environ.get("V3_TREND_DURATION_GATE", "0") == "1"
-TREND_DURATION_MIN_DAYS = int(os.environ.get("V3_TREND_DURATION_MIN_DAYS", "3"))
+TREND_DURATION_GATE_ENABLED = os.environ.get("V4_TREND_DURATION_GATE", "0") == "1"
+TREND_DURATION_MIN_DAYS = int(os.environ.get("V4_TREND_DURATION_MIN_DAYS", "3"))
 # Structurally different follow-up to the REJECTED TREND_DURATION_GATE above
 # (docs/V3_FINDINGS_LOG.md, "Trend-duration/episode-quality gate... REJECTED --
 # fixes Window 3, breaks Window 5 every time"): that gate counted consecutive days
@@ -373,9 +373,9 @@ TREND_DURATION_MIN_DAYS = int(os.environ.get("V3_TREND_DURATION_MIN_DAYS", "3"))
 # enough to suspect that ripple effect, not entry-day filtering itself, did most of
 # the damage there. Keeping this gate out of the TRAIN mask avoids that specific
 # failure mode by construction. Off by default; new, isolated flag name -- does not
-# touch V3_TREND_DURATION_GATE's own default or behavior.
-PARTICIPATION_GATE_ENABLED = os.environ.get("V3_PARTICIPATION_GATE", "0") == "1"
-PARTICIPATION_MIN = float(os.environ.get("V3_PARTICIPATION_MIN", "0.95"))
+# touch V4_TREND_DURATION_GATE's own default or behavior.
+PARTICIPATION_GATE_ENABLED = os.environ.get("V4_PARTICIPATION_GATE", "0") == "1"
+PARTICIPATION_MIN = float(os.environ.get("V4_PARTICIPATION_MIN", "0.95"))
 # A genuinely different follow-up, off a genuinely different diagnostic: the "TEBE
 # gorengan base-rate research" (docs/V3_FINDINGS_LOG.md, 2026-08-16) found that stocks
 # matching a "breakout spike" profile (single-day volume >=10x trailing avg_vol_20,
@@ -401,11 +401,11 @@ PARTICIPATION_MIN = float(os.environ.get("V3_PARTICIPATION_MIN", "0.95"))
 # does not touch PARTICIPATION_GATE_ENABLED/TREND_DURATION_GATE_ENABLED/
 # TREND_STRENGTH_MIN/REGIME_CONFIRM_DAYS's own defaults. See V3_FINDINGS_LOG.md for the
 # walk-forward + sensitivity sweep -- UNVALIDATED until that entry exists.
-SPIKE_CONFIRM_GATE_ENABLED = os.environ.get("V3_SPIKE_CONFIRM_GATE", "0") == "1"
-SPIKE_CONFIRM_DAYS = int(os.environ.get("V3_SPIKE_CONFIRM_DAYS", "3"))
-SPIKE_GIVEBACK_PCT = float(os.environ.get("V3_SPIKE_GIVEBACK_PCT", "0.15"))
-SPIKE_VOL_MULT = float(os.environ.get("V3_SPIKE_VOL_MULT", "10.0"))    # matches the base-rate research's own spike definition -- not swept, see V3_FINDINGS_LOG.md
-SPIKE_MOVE_PCT = float(os.environ.get("V3_SPIKE_MOVE_PCT", "0.20"))    # matches the base-rate research's own spike definition -- not swept, see V3_FINDINGS_LOG.md
+SPIKE_CONFIRM_GATE_ENABLED = os.environ.get("V4_SPIKE_CONFIRM_GATE", "0") == "1"
+SPIKE_CONFIRM_DAYS = int(os.environ.get("V4_SPIKE_CONFIRM_DAYS", "3"))
+SPIKE_GIVEBACK_PCT = float(os.environ.get("V4_SPIKE_GIVEBACK_PCT", "0.15"))
+SPIKE_VOL_MULT = float(os.environ.get("V4_SPIKE_VOL_MULT", "10.0"))    # matches the base-rate research's own spike definition -- not swept, see V3_FINDINGS_LOG.md
+SPIKE_MOVE_PCT = float(os.environ.get("V4_SPIKE_MOVE_PCT", "0.20"))    # matches the base-rate research's own spike definition -- not swept, see V3_FINDINGS_LOG.md
 # TESTED, NET NEGATIVE -- kept available (like ADAPTIVE_HOLDTIME below),
 # inert by default. Hypothesis was that window 3's six same-thesis
 # positions (GOTO/BUKA/EMTK/WIRG/ASSA/DMMX, all legit large-caps) needed a
@@ -430,8 +430,8 @@ SPIKE_MOVE_PCT = float(os.environ.get("V3_SPIKE_MOVE_PCT", "0.20"))    # matches
 # correlated risk, since there's little signal volume to throttle in the
 # first place. Default below makes the gate unreachable (equals
 # MAX_POSITIONS) without deleting the mechanism.
-ENTRY_CLUSTER_WINDOW_DAYS = int(os.environ.get("V3_ENTRY_CLUSTER_WINDOW_DAYS", "5"))
-MAX_ENTRIES_PER_CLUSTER_WINDOW = int(os.environ.get("V3_MAX_ENTRIES_PER_CLUSTER_WINDOW", "6"))
+ENTRY_CLUSTER_WINDOW_DAYS = int(os.environ.get("V4_ENTRY_CLUSTER_WINDOW_DAYS", "5"))
+MAX_ENTRIES_PER_CLUSTER_WINDOW = int(os.environ.get("V4_MAX_ENTRIES_PER_CLUSTER_WINDOW", "6"))
 # The OTHER candidate direction from the scarce-MAX_POSITIONS-slot investigation
 # (docs/V3_FINDINGS_LOG.md, "the scarce-MAX_POSITIONS-slot mechanism itself") --
 # Phase 2 there WIDENED the queue (more concurrent slots, smaller ALLOC_PCT each)
@@ -444,8 +444,8 @@ MAX_ENTRIES_PER_CLUSTER_WINDOW = int(os.environ.get("V3_MAX_ENTRIES_PER_CLUSTER_
 # candidate instead stays eligible for BACKLOG_EXPIRY_DAYS additional days
 # (bounded, not indefinite) before permanently expiring. Off by default;
 # UNVALIDATED until its own walk-forward + sweep exists in V3_FINDINGS_LOG.md.
-BACKLOG_QUEUE_ENABLED = os.environ.get("V3_BACKLOG_QUEUE_ENABLED", "0") == "1"
-BACKLOG_EXPIRY_DAYS = int(os.environ.get("V3_BACKLOG_EXPIRY_DAYS", "3"))
+BACKLOG_QUEUE_ENABLED = os.environ.get("V4_BACKLOG_QUEUE_ENABLED", "0") == "1"
+BACKLOG_EXPIRY_DAYS = int(os.environ.get("V4_BACKLOG_EXPIRY_DAYS", "3"))
 # Cross-day position ROTATION -- the "one thing to do first" the 2026-08-17 council
 # session's own peer review flagged, after BOTH other scarce-MAX_POSITIONS-slot fixes
 # above (widen the cap; the bounded backlog queue) were rejected on real evidence
@@ -460,12 +460,12 @@ BACKLOG_EXPIRY_DAYS = int(os.environ.get("V3_BACKLOG_EXPIRY_DAYS", "3"))
 # eligibility/mechanics writeup. Off by default -- UNVALIDATED until its own
 # walk-forward + sweep exists in V3_FINDINGS_LOG.md, same discipline as every other
 # flag in this file.
-ROTATION_ENABLED = os.environ.get("V3_ROTATION_ENABLED", "0") == "1"
-ROTATION_MIN_HOLD_DAYS = int(os.environ.get("V3_ROTATION_MIN_HOLD_DAYS", str(cfg.MIN_HOLD_DAYS)))
-ROTATION_MARGIN_MULT = float(os.environ.get("V3_ROTATION_MARGIN_MULT", "1.0"))
-ROTATION_TP1_PROTECT_ATR_MULT = float(os.environ.get("V3_ROTATION_TP1_PROTECT_ATR_MULT", "1.0"))
-MAX_ROTATIONS_PER_DAY = int(os.environ.get("V3_MAX_ROTATIONS_PER_DAY", "1"))
-ALLOC_PCT = float(os.environ.get("V3_ALLOC_PCT", "0.20"))
+ROTATION_ENABLED = os.environ.get("V4_ROTATION_ENABLED", "0") == "1"
+ROTATION_MIN_HOLD_DAYS = int(os.environ.get("V4_ROTATION_MIN_HOLD_DAYS", str(cfg.MIN_HOLD_DAYS)))
+ROTATION_MARGIN_MULT = float(os.environ.get("V4_ROTATION_MARGIN_MULT", "1.0"))
+ROTATION_TP1_PROTECT_ATR_MULT = float(os.environ.get("V4_ROTATION_TP1_PROTECT_ATR_MULT", "1.0"))
+MAX_ROTATIONS_PER_DAY = int(os.environ.get("V4_MAX_ROTATIONS_PER_DAY", "1"))
+ALLOC_PCT = float(os.environ.get("V4_ALLOC_PCT", "0.20"))
 # Walk-forward across 9 real windows (see V3_FINDINGS_LOG.md) found most
 # windows' results are carried by a handful of outlier winners, not a
 # broad distributed edge -- 6/9 windows showed >65% concentration. Flat
@@ -474,7 +474,7 @@ ALLOC_PCT = float(os.environ.get("V3_ALLOC_PCT", "0.20"))
 # computed for ranking, never used for sizing) has any real relationship
 # to which trades become the outliers -- off by default until validated
 # across the full walk-forward battery.
-SCORE_SIZING_ENABLED = os.environ.get("V3_SCORE_SIZING", "0") == "1"
+SCORE_SIZING_ENABLED = os.environ.get("V4_SCORE_SIZING", "0") == "1"
 # Real ADTV-based sizing -- see docstring at the trigger site. VALIDATED
 # across the 9-window walk-forward: best mean alpha (+21.71%) AND best
 # worst-case drawdown (-21.61%) of every configuration tested this
@@ -482,9 +482,9 @@ SCORE_SIZING_ENABLED = os.environ.get("V3_SCORE_SIZING", "0") == "1"
 # informational content in the liquidity signal, not just more variance.
 # Real disclosed tradeoff: win-rate-consistency (windows clearing 50%)
 # dropped from 5/9 to 4/9. Default ON. See V3_FINDINGS_LOG.md.
-LIQ_SIZING_ENABLED = os.environ.get("V3_LIQ_SIZING", "1") == "1"
-LIQ_SIZING_MIN = float(os.environ.get("V3_LIQ_SIZING_MIN", "0.5"))
-LIQ_SIZING_MAX = float(os.environ.get("V3_LIQ_SIZING_MAX", "2.0"))
+LIQ_SIZING_ENABLED = os.environ.get("V4_LIQ_SIZING", "1") == "1"
+LIQ_SIZING_MIN = float(os.environ.get("V4_LIQ_SIZING_MIN", "0.5"))
+LIQ_SIZING_MAX = float(os.environ.get("V4_LIQ_SIZING_MAX", "2.0"))
 # Regime-conditional capital allocation (roadmap item #1 from the
 # 2026-07-27 strategic assessment): TREND_STRENGTH_MIN already gates
 # *whether* new entries fire at all; this scales *how much* capital
@@ -494,9 +494,9 @@ LIQ_SIZING_MAX = float(os.environ.get("V3_LIQ_SIZING_MAX", "2.0"))
 # TREND_STRENGTH_MIN threshold (weak trend, window-3-like) gets less
 # capital than one firing well clear of it (window-1-like). Off by
 # default until validated across the full walk-forward battery.
-TREND_SIZING_ENABLED = os.environ.get("V3_TREND_SIZING", "0") == "1"
-TREND_SIZING_MIN = float(os.environ.get("V3_TREND_SIZING_MIN", "0.5"))
-TREND_SIZING_MAX = float(os.environ.get("V3_TREND_SIZING_MAX", "1.5"))
+TREND_SIZING_ENABLED = os.environ.get("V4_TREND_SIZING", "0") == "1"
+TREND_SIZING_MIN = float(os.environ.get("V4_TREND_SIZING_MIN", "0.5"))
+TREND_SIZING_MAX = float(os.environ.get("V4_TREND_SIZING_MAX", "1.5"))
 # Bandarmology V4 integration (docs/BANDARMOLOGY_DESIGN.md): scales entry
 # size by that day's broker-concentration reading -- one dominant broker's
 # share of total |net| across all brokers active in the stock that day.
@@ -513,12 +513,15 @@ TREND_SIZING_MAX = float(os.environ.get("V3_TREND_SIZING_MAX", "1.5"))
 # bench both, win rate>50% 4/9 both, mean alpha +21.71%->+24.09%, mean
 # profit factor 1.58->1.88, mean max DD -16.08%->-15.03%, worst max DD
 # -21.61%->-21.84%). Env var override kept so it can still be disabled;
-# V3_PAPER's own live workflows now pin V3_BANDAR_SIZING=0 explicitly so
-# this default flip does not silently change V3_PAPER's frozen config --
-# see that doc entry for why the pin was needed.
-BANDAR_SIZING_ENABLED = os.environ.get("V3_BANDAR_SIZING", "1") == "1"
-BANDAR_SIZING_MIN = float(os.environ.get("V3_BANDAR_SIZING_MIN", "0.5"))
-BANDAR_SIZING_MAX = float(os.environ.get("V3_BANDAR_SIZING_MAX", "2.0"))
+# V3_PAPER's own live workflow used to pin V3_BANDAR_SIZING=0 explicitly
+# for this same reason, before it was retired 2026-08-15. V4_PAPER (the
+# current live run) now pins V4_BANDAR_SIZING=1 in its own workflow env
+# block instead, matching its frozen launch config -- so a future change
+# to this function's own default here still can't silently drift any
+# live run's frozen config either way. See docs/V3_FINDINGS_LOG.md.
+BANDAR_SIZING_ENABLED = os.environ.get("V4_BANDAR_SIZING", "1") == "1"
+BANDAR_SIZING_MIN = float(os.environ.get("V4_BANDAR_SIZING_MIN", "0.5"))
+BANDAR_SIZING_MAX = float(os.environ.get("V4_BANDAR_SIZING_MAX", "2.0"))
 # Second, independent Bandarmology multiplier -- mover_pairs, not
 # concentration. Layer 1 (docs/BANDARMOLOGY_DESIGN.md, pair-level
 # forward-return check) found this the STRONGEST Bandarmology signal all
@@ -530,9 +533,9 @@ BANDAR_SIZING_MAX = float(os.environ.get("V3_BANDAR_SIZING_MAX", "2.0"))
 # same discipline as everything else here -- and per explicit
 # instruction, not to be promoted/wired into live paper trading without
 # being asked.
-MOVER_SIZING_ENABLED = os.environ.get("V3_MOVER_SIZING", "0") == "1"
-MOVER_SIZING_MIN = float(os.environ.get("V3_MOVER_SIZING_MIN", "0.5"))
-MOVER_SIZING_MAX = float(os.environ.get("V3_MOVER_SIZING_MAX", "2.0"))
+MOVER_SIZING_ENABLED = os.environ.get("V4_MOVER_SIZING", "0") == "1"
+MOVER_SIZING_MIN = float(os.environ.get("V4_MOVER_SIZING_MIN", "0.5"))
+MOVER_SIZING_MAX = float(os.environ.get("V4_MOVER_SIZING_MAX", "2.0"))
 # Third, independent Bandarmology multiplier -- SIGNED, magnitude-weighted
 # accumulation/distribution classifier (docs/BANDARMOLOGY_DESIGN.md,
 # "Directional Big/Small Accumulation/Distribution classifier"). Gap found
@@ -548,9 +551,9 @@ MOVER_SIZING_MAX = float(os.environ.get("V3_MOVER_SIZING_MAX", "2.0"))
 # multiplier, not merged into BANDAR_SIZING or MOVER_SIZING, same per-
 # feature isolation discipline as both -- off by default, unvalidated until
 # its own walk-forward runs.
-ACCDIST_SIZING_ENABLED = os.environ.get("V3_ACCDIST_SIZING", "0") == "1"
-ACCDIST_SIZING_MIN = float(os.environ.get("V3_ACCDIST_SIZING_MIN", "0.5"))
-ACCDIST_SIZING_MAX = float(os.environ.get("V3_ACCDIST_SIZING_MAX", "2.0"))
+ACCDIST_SIZING_ENABLED = os.environ.get("V4_ACCDIST_SIZING", "0") == "1"
+ACCDIST_SIZING_MIN = float(os.environ.get("V4_ACCDIST_SIZING_MIN", "0.5"))
+ACCDIST_SIZING_MAX = float(os.environ.get("V4_ACCDIST_SIZING_MAX", "2.0"))
 # Fourth, independent Bandarmology multiplier -- rotation_pairs (the
 # recurring opposite-side broker-pair "tuker barang" pattern,
 # bandarmology_rotation_detector.py), not concentration/mover_score/
@@ -569,9 +572,9 @@ ACCDIST_SIZING_MAX = float(os.environ.get("V3_ACCDIST_SIZING_MAX", "2.0"))
 # separate flag/multiplier, not merged into BANDAR_SIZING/MOVER_SIZING/
 # ACCDIST_SIZING, same per-feature isolation discipline as all three -- off
 # by default, unvalidated until its own walk-forward runs.
-ROTATION_SIZING_ENABLED = os.environ.get("V3_ROTATION_SIZING", "0") == "1"
-ROTATION_SIZING_MIN = float(os.environ.get("V3_ROTATION_SIZING_MIN", "0.5"))
-ROTATION_SIZING_MAX = float(os.environ.get("V3_ROTATION_SIZING_MAX", "2.0"))
+ROTATION_SIZING_ENABLED = os.environ.get("V4_ROTATION_SIZING", "0") == "1"
+ROTATION_SIZING_MIN = float(os.environ.get("V4_ROTATION_SIZING_MIN", "0.5"))
+ROTATION_SIZING_MAX = float(os.environ.get("V4_ROTATION_SIZING_MAX", "2.0"))
 # Structurally different follow-up to the REJECTED SPIKE_CONFIRM_GATE_ENABLED above
 # (docs/V3_FINDINGS_LOG.md, "Spike confirmation-delay gate ... REJECTED"): that gate
 # excluded a spike-flagged stock from candidacy entirely, on the theory that the
@@ -596,8 +599,8 @@ ROTATION_SIZING_MAX = float(os.environ.get("V3_ROTATION_SIZING_MAX", "2.0"))
 # sourced sig dicts never carry that key (only simulate_window's pending_entries
 # tagging adds it), so this cannot affect the live paper-trading fill path even if
 # some future change flips the default, independent of the env var staying off.
-SPIKE_SIZING_ENABLED = os.environ.get("V3_SPIKE_SIZING", "0") == "1"
-SPIKE_SIZING_MULT = float(os.environ.get("V3_SPIKE_SIZING_MULT", "0.5"))
+SPIKE_SIZING_ENABLED = os.environ.get("V4_SPIKE_SIZING", "0") == "1"
+SPIKE_SIZING_MULT = float(os.environ.get("V4_SPIKE_SIZING_MULT", "0.5"))
 # Alternative framing to score-weighted sizing (rejected -- see
 # V3_FINDINGS_LOG.md): instead of predicting at entry which signal will
 # be the outlier winner, add to a position only after it's already
@@ -609,37 +612,37 @@ SPIKE_SIZING_MULT = float(os.environ.get("V3_SPIKE_SIZING_MULT", "0.5"))
 # not a free upgrade: amplifies whichever direction a window is already
 # going (6/9 windows improved, 3/9 got worse), mean max drawdown
 # slightly worse (-15.56%->-17.21%). See V3_FINDINGS_LOG.md.
-PYRAMID_ENABLED = os.environ.get("V3_PYRAMID", "1") == "1"
-PYRAMID_ADD_PCT = float(os.environ.get("V3_PYRAMID_ADD_PCT", "0.20"))  # same as ALLOC_PCT by default; swept 0.10/0.20/0.30, see V3_FINDINGS_LOG.md
+PYRAMID_ENABLED = os.environ.get("V4_PYRAMID", "1") == "1"
+PYRAMID_ADD_PCT = float(os.environ.get("V4_PYRAMID_ADD_PCT", "0.20"))  # same as ALLOC_PCT by default; swept 0.10/0.20/0.30, see V3_FINDINGS_LOG.md
 # Unvalidated refinement on top of the adopted unconditional pyramid --
 # off by default. See docstring at the pyramid trigger site.
-PYRAMID_TREND_GATE_ENABLED = os.environ.get("V3_PYRAMID_TREND_GATE", "0") == "1"
-PYRAMID_TREND_GATE_MIN = float(os.environ.get("V3_PYRAMID_TREND_GATE_MIN", "0.03"))
+PYRAMID_TREND_GATE_ENABLED = os.environ.get("V4_PYRAMID_TREND_GATE", "0") == "1"
+PYRAMID_TREND_GATE_MIN = float(os.environ.get("V4_PYRAMID_TREND_GATE_MIN", "0.03"))
 # Second add-on tier: extends the validated single pyramid to a position
 # that proves itself further (see docstring at the trigger site). Off by
 # default -- unvalidated.
-PYRAMID_TP2_ENABLED = os.environ.get("V3_PYRAMID_TP2", "0") == "1"
+PYRAMID_TP2_ENABLED = os.environ.get("V4_PYRAMID_TP2", "0") == "1"
 # diagnose_score_power.py (2026-08-07): the day's single #1-ranked candidate
 # specifically has a real problem (~2x average score magnitude, ~20% higher
 # ATR%, 82-98% stop-loss-hit rate in BOTH halves of a 4.5yr sample, vs
 # ~75-85% for rank 2+) -- the likely signature of a same-day statistical
 # outlier the score formula reads as strength. Off by default -- unvalidated
 # against the full walk-forward battery yet, see V3_FINDINGS_LOG.md.
-SCORE_SKIP_TOP_N = int(os.environ.get("V3_SCORE_SKIP_TOP_N", "0"))
+SCORE_SKIP_TOP_N = int(os.environ.get("V4_SCORE_SKIP_TOP_N", "0"))
 # Conditional refinement on SCORE_SKIP_TOP_N=1 (see score_candidates docstring): only drop
 # the #1 candidate when it's a real outlier vs #2 (score > this multiple of #2's score), not
 # unconditionally. None (default) = off, byte-identical. Unvalidated -- see V3_FINDINGS_LOG.md.
-_outlier_gap_env = os.environ.get("V3_SCORE_OUTLIER_GAP_MULT")
+_outlier_gap_env = os.environ.get("V4_SCORE_OUTLIER_GAP_MULT")
 SCORE_OUTLIER_GAP_MULT = float(_outlier_gap_env) if _outlier_gap_env else None
 # More surgical follow-up to the two flags above: caps the weekly_ma_spread component
 # specifically (not sector_rs_momentum, not the combined score) at its own within-day
 # quantile among qualifying candidates. See score_candidates docstring. None (default) = off.
-_weekly_cap_env = os.environ.get("V3_SCORE_WEEKLY_COMP_CAP_Q")
+_weekly_cap_env = os.environ.get("V4_SCORE_WEEKLY_COMP_CAP_Q")
 SCORE_WEEKLY_COMP_CAP_Q = float(_weekly_cap_env) if _weekly_cap_env else None
 # Train-derived-absolute follow-up to SCORE_WEEKLY_COMP_CAP_Q -- see simulate_window's
 # weekly_comp_abs_cap comment. Quantile of the TRAIN period's own w_comp distribution
 # (large, stable sample), not a per-day quantile of a tiny same-day pool. None = off.
-_weekly_abs_cap_env = os.environ.get("V3_SCORE_WEEKLY_COMP_ABS_CAP_Q")
+_weekly_abs_cap_env = os.environ.get("V4_SCORE_WEEKLY_COMP_ABS_CAP_Q")
 SCORE_WEEKLY_COMP_ABS_CAP_Q = float(_weekly_abs_cap_env) if _weekly_abs_cap_env else None
 # Realism check on a known, disclosed simplification: every fill so far
 # (backtest AND live paper engine) executes at the exact observed
@@ -647,7 +650,7 @@ SCORE_WEEKLY_COMP_ABS_CAP_Q = float(_weekly_abs_cap_env) if _weekly_abs_cap_env 
 # name's own volume. Off by default -- exists to test whether that
 # assumption is inflating the headline numbers, the same category of
 # bug as the survivorship/delisted-handling/liquidity-filter fixes
-# earlier this session. The live paper engine NEVER sets V3_SLIPPAGE
+# earlier this session. The live paper engine NEVER sets V4_SLIPPAGE
 # (not in any GitHub Actions workflow env), so this cannot change its
 # frozen behavior -- it only fires inside backtest/walk-forward runs.
 # Impact term uses sqrt(participation), not participation itself -- Cont,
@@ -661,13 +664,13 @@ SCORE_WEEKLY_COMP_ABS_CAP_Q = float(_weekly_abs_cap_env) if _weekly_abs_cap_env 
 # and "not recommended" versus their real OFI-based model. Used here anyway
 # because it's still a better-justified functional form than an unsourced
 # straight line, not because it's validated for this market.
-SLIPPAGE_ENABLED = os.environ.get("V3_SLIPPAGE", "0") == "1"
-SLIPPAGE_BASE_BPS = float(os.environ.get("V3_SLIPPAGE_BASE_BPS", "5"))  # always-on cost of crossing the spread
-SLIPPAGE_IMPACT_BPS = float(os.environ.get("V3_SLIPPAGE_IMPACT_BPS", "16"))  # bps at 100% of a stock's own ADTV taken (sqrt-scaled below that)
+SLIPPAGE_ENABLED = os.environ.get("V4_SLIPPAGE", "0") == "1"
+SLIPPAGE_BASE_BPS = float(os.environ.get("V4_SLIPPAGE_BASE_BPS", "5"))  # always-on cost of crossing the spread
+SLIPPAGE_IMPACT_BPS = float(os.environ.get("V4_SLIPPAGE_IMPACT_BPS", "16"))  # bps at 100% of a stock's own ADTV taken (sqrt-scaled below that)
 BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
 BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
-ATR_PRICE_RATIO_MAX = float(os.environ.get("V3_ATR_PRICE_RATIO_MAX", "0.10"))
+ATR_PRICE_RATIO_MAX = float(os.environ.get("V4_ATR_PRICE_RATIO_MAX", "0.10"))
                             # exclude entries where ATR_14/close > this -- PIPA/FUTR/ISAP-style
                             # hyperactive penny stocks slip through the Rupiah-value ADTV filter
                             # (huge share count, low price) despite genuinely extreme volatility;
@@ -713,8 +716,8 @@ ATR_PRICE_RATIO_MAX = float(os.environ.get("V3_ATR_PRICE_RATIO_MAX", "0.10"))
 # -- which is correct, because it also can't be mistaken for locked today.
 # The window is shifted by one day so today's own bar can never define the
 # limit today's bar is tested against.
-ARA_FILTER_ENABLED = os.environ.get("V3_ARA_FILTER", "0") == "1"
-ARB_EXIT_REALISM = os.environ.get("V3_ARB_EXIT_REALISM", "0") == "1"
+ARA_FILTER_ENABLED = os.environ.get("V4_ARA_FILTER", "0") == "1"
+ARB_EXIT_REALISM = os.environ.get("V4_ARB_EXIT_REALISM", "0") == "1"
 LIMIT_TOLERANCE = 0.95        # today's move counts as locked at >= 95% of the limit
 IDX_LIMIT_STEPS = (0.10, 0.20, 0.25, 0.35)
 LIMIT_SNAP_TOLERANCE = 0.035  # trailing max within 3.5pp of a step => that's the board's limit
@@ -800,7 +803,7 @@ def attach_board_limit(df: pd.DataFrame) -> pd.DataFrame:
 # no-hold-time baseline (zero CHECKPOINT exits) before being reported as
 # "tested." tp_target is a genuinely variable, stock/day-specific distance
 # unrelated to ATR by construction, matching what phase0f actually tested.
-ADAPTIVE_HOLDTIME = os.environ.get("V3_ADAPTIVE_HOLDTIME", "0") == "1"
+ADAPTIVE_HOLDTIME = os.environ.get("V4_ADAPTIVE_HOLDTIME", "0") == "1"
 HOLDTIME_MIN_DAYS = 5       # only gate positions whose own math says "slow"
 HOLDTIME_CAP_DAYS = 15      # matches phase0f's CHECKPOINT_CAP_DAYS
 HOLDTIME_MIN_CHECKPOINT = 3  # matches phase0f's MIN_CHECKPOINT_DAYS
@@ -1202,7 +1205,7 @@ def build_full_dataset(supabase):
     # Always attached, even with both auto-reject filters off: it is one
     # extra column derived from data already in memory, and computing it
     # unconditionally keeps the dataset (and its pickle cache) identical
-    # between sweep cells that differ only by V3_ARA_FILTER.
+    # between sweep cells that differ only by V4_ARA_FILTER.
     df = attach_board_limit(df)
 
     print("[FEATURE] Bandarmology concentration (local Parquet, see attach_bandarmology docstring) ...")
@@ -2427,8 +2430,8 @@ def main():
     df_equity.to_csv("backtest_v4_equity.csv", index=False)
     print(f"\n[OK] Saved backtest_v4_trades.csv ({len(df_trades)} rows), backtest_v4_equity.csv ({len(df_equity)} rows).")
 
-    if os.environ.get("V3_SKIP_SAVE", "0") == "1":
-        print("[SKIP] V3_SKIP_SAVE=1 -- not writing to Supabase (dev/sweep run).")
+    if os.environ.get("V4_SKIP_SAVE", "0") == "1":
+        print("[SKIP] V4_SKIP_SAVE=1 -- not writing to Supabase (dev/sweep run).")
     else:
         _save_to_supabase(supabase, df_trades, df_equity, regime_by_date, metrics)
 

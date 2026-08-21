@@ -16,8 +16,8 @@ Run:  python src/test_ara_filter.py
 
 import os
 
-os.environ.setdefault("V3_ARA_FILTER", "1")
-os.environ.setdefault("V3_ARB_EXIT_REALISM", "1")
+os.environ.setdefault("V4_ARA_FILTER", "1")
+os.environ.setdefault("V4_ARB_EXIT_REALISM", "1")
 
 import pandas as pd  # noqa: E402
 

@@ -23,7 +23,7 @@ Read-only: build_full_dataset() + score_candidates() only ever SELECT. This
 file never calls .insert()/.upsert()/.update() on anything.
 
 Uses walk_forward_v4.load_dataset()'s existing local-cache-first fetch (same
-helper the project's own sweep scripts use) instead of forcing V3_TEST_END to
+helper the project's own sweep scripts use) instead of forcing V4_TEST_END to
 today -- avoids a redundant live full-universe refetch of data this repo
 already has cached at .cache/walk_forward_data_2021-01-01_2026-06-30.pkl (the
 default bt.FETCH_START/bt.TEST_END window), so this only hits Supabase at all

@@ -3,7 +3,7 @@ default ON (docs/BANDARMOLOGY_DESIGN.md, "BANDAR_SIZING_ENABLED promoted to
 default ON"). Two things a broken default flip could silently get wrong:
 
   1. The env var still overrides in both directions -- V3_PAPER's live
-     workflows now pin V3_BANDAR_SIZING=0 explicitly to stay frozen; if the
+     workflows now pin V4_BANDAR_SIZING=0 explicitly to stay frozen; if the
      override stopped working, that pin would be a no-op and V3_PAPER's
      new-entry sizing would silently drift.
   2. compute_entry_fill() actually USES the flag -- a promoted default that
@@ -24,14 +24,14 @@ import subprocess
 import sys
 from datetime import date
 
-os.environ.setdefault("V3_TEST_END", "2026-06-30")
+os.environ.setdefault("V4_TEST_END", "2026-06-30")
 
 REPO_SRC = os.path.dirname(os.path.abspath(__file__))
 
 
 def _bandar_flag(env_overrides: dict) -> str:
     env = dict(os.environ)
-    env.pop("V3_BANDAR_SIZING", None)
+    env.pop("V4_BANDAR_SIZING", None)
     env.update(env_overrides)
     out = subprocess.run(
         [sys.executable, "-c", "import backtest_v4 as bt; print(bt.BANDAR_SIZING_ENABLED)"],
@@ -41,13 +41,13 @@ def _bandar_flag(env_overrides: dict) -> str:
     return out.stdout.strip()
 
 
-# No V3_BANDAR_SIZING set at all -- the actual shape of V4_PAPER's own
+# No V4_BANDAR_SIZING set at all -- the actual shape of V4_PAPER's own
 # workflow today (relies on the default, doesn't set the var explicitly).
 assert _bandar_flag({}) == "True", "default must be ON with the env var unset"
 # Explicit '0' -- the actual shape of V3_PAPER's pinned workflow post-promotion.
-assert _bandar_flag({"V3_BANDAR_SIZING": "0"}) == "False", "explicit '0' must still disable it"
+assert _bandar_flag({"V4_BANDAR_SIZING": "0"}) == "False", "explicit '0' must still disable it"
 # Explicit '1' -- unaffected either way, just confirms the override isn't one-directional.
-assert _bandar_flag({"V3_BANDAR_SIZING": "1"}) == "True", "explicit '1' must still enable it"
+assert _bandar_flag({"V4_BANDAR_SIZING": "1"}) == "True", "explicit '1' must still enable it"
 print("[PASS] BANDAR_SIZING_ENABLED defaults ON, env var still overrides both ways")
 
 # ---- compute_entry_fill actually applies bandar_mult when the flag is on ----

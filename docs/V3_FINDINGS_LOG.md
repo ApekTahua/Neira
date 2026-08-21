@@ -4203,3 +4203,80 @@ most likely a transient GitHub Actions hiccup (runner/network blip) rather than 
 regression -- but not confirmed, since the log itself was never inspected. User declined a
 monitoring/alert addition for this (Telegram ping if the EOD job doesn't post that day) --
 noted here instead, no code changed.
+
+## 2026-08-22: pure rename, `V3_*` env-var flags -> `V4_*` in `backtest_v4.py` and every dependent script -- zero intended behavior change
+
+Mechanical follow-up to the earlier `backtest_v3.py` -> `backtest_v4.py` file rename: every
+env var the module actually reads (`os.environ.get("V3_...")`) still carried the old `V3_`
+prefix. Re-derived the authoritative list via `grep -roE "V3_[A-Z_]+" src/ sql/` (~35 distinct
+flags: `TP1_MULT`/`TRAILING_PCT`/`VOL_BAND_MULT`/`TREND_DURATION_GATE`/`MAX_POSITIONS`/
+`REGIME_CONFIRM_DAYS`/`PARTICIPATION_GATE`/`SPIKE_*`/`ROTATION_*`/`*_SIZING`/`PYRAMID*`/
+`SCORE_*`/`SLIPPAGE*`/`ATR_PRICE_RATIO_MAX`/`ARA_FILTER`/`ARB_EXIT_REALISM`/
+`ADAPTIVE_HOLDTIME`/`BACKLOG_*`/`ENTRY_CLUSTER_WINDOW_DAYS`/`FETCH_START`/`TRAIN_END`/
+`TEST_START`/`TEST_END`/`QUANTILE_CUT`/`SKIP_SAVE`, plus two the enumeration missed on a first
+pass, `MAX_ROTATIONS_PER_DAY` and `FORCE_REFETCH`) across 30 files in `src/`+`sql/`. Applied via
+a protected regex (`V3_` -> `V4_` everywhere EXCEPT the literal tokens `V3_PAPER` and
+`V3_FINDINGS_LOG`, which are a historical run-identifier and this log's own title, not flag
+names -- left untouched) rather than a blind sed, then reviewed every diff by hand.
+
+**Two things the blanket pass got wrong, both caught before committing:**
+
+1. **Scope creep the regex derivation should have flagged and didn't**: `score_candidates()`
+   (`src/backtest_v4.py`) hardcodes `"trigger": "V3_regime_weekly_sector"` as a data LABEL on
+   every candidate dict -- persisted into `paper_positions`/trade records, not an env var. The
+   `grep -roE "V3_[A-Z_]+"` derivation step correctly never matched it (lowercase after the
+   prefix), but the actual substitution regex used a broader `V3_` match and caught it anyway.
+   Renaming it would have changed a real, persisted output value for every future trade --
+   a violation of this task's own "byte-identical before and after" bar. **Reverted, left as
+   `V3_regime_weekly_sector`.** Flagged, not decided unilaterally: this string is exactly the
+   kind of "still says v2/3" residue the broader rename request is trying to eliminate, but
+   changing it is a data-schema decision (does anything downstream match on this string? does a
+   frontend ever display it?), not a mechanical env-var rename, so it's a separate call for
+   whoever owns that request.
+2. **Two more live-production workflows than the task brief named.** The brief flagged
+   `paper_monitor_v4_trigger.yml`/`paper_signal_scan_v4_trigger.yml` (main branch) as the one
+   live-critical spot (`V3_BANDAR_SIZING` env key). Grepping `main`'s `.github/workflows/`
+   directly found FOUR more still-active files doing the same thing:
+   `paper_monitor_trigger.yml`/`paper_signal_scan_trigger.yml` (V3_PAPER, restored same-day
+   2026-08-22 after an earlier accidental deletion -- still has 3 OPEN positions) and
+   `paper_monitor_v31_trigger.yml`/`paper_signal_scan_v31_trigger.yml` (V3.1_PAPER, 6 OPEN
+   positions), pinning `V3_BANDAR_SIZING`/`V3_ARA_FILTER`/`V3_ATR_PRICE_RATIO_MAX`/
+   `V3_SCORE_WEEKLY_COMP_ABS_CAP_Q` respectively. All four check out
+   `ref: worktree-v2-hmm-screener` and run scripts that `import backtest_v4`. Left unrenamed,
+   these would have gone from "explicit pin" to "silent fallback to backtest_v4.py's own
+   default" the next time either workflow fires against 9 real open positions with real
+   (simulated) capital -- exactly the frozen-config-drift failure mode this project's own rules
+   exist to prevent, on runs that are still trading, not the two the brief was told about. Fixed
+   in lockstep (same env-key renames, no value changes) on `main`.
+
+**Verification, not just assertion:**
+- 8 targeted self-checks (`test_bandar_sizing_default.py`, `test_ara_filter.py`,
+  `test_spike_sizing.py`, `test_participation_gate.py`, `test_trend_duration_gate.py`,
+  `test_spike_confirm_gate.py`, `test_paper_trading_math.py`, `test_tp1_eod_reconcile.py`) ran
+  clean both before (`git stash`) and after the rename -- identical numbers throughout (e.g.
+  `test_spike_sizing.py`'s real out-of-sample slice: 103/98 trades, Rp57,222,420/Rp129,155,093
+  net profit, both runs, to the Rupiah), only the printed flag-name strings in `[PASS]` messages
+  changed from `V3_` to `V4_` as intended.
+- Full 9-window `walk_forward_v4.py` run (local `.cache/walk_forward_data_2021-01-01_2026-06-30
+  .pkl`, real `SUPABASE_URL`/`SUPABASE_KEY` from `.env` for the client construction only -- no
+  refetch, cache hit) before and after the rename: `walk_forward_v4_summary.csv` diffed
+  byte-identical, every window, full float precision (mean alpha +22.50%, mean PF 1.82, mean
+  max DD -15.46%/worst -22.41%, 6/9 beat bench, 4/9 win>50% -- both runs, to the last digit).
+- Confirmed round-trip for the one flag with an explicit non-default pin in a live workflow:
+  `BANDAR_SIZING_ENABLED = os.environ.get("V4_BANDAR_SIZING", "1") == "1"` still evaluates
+  `True` by default and the live workflows' explicit `'1'`/`'0'` pins still land correctly
+  post-rename.
+- Repo-wide grep confirms zero remaining `V3_` tokens in `src/`/`sql/` other than the three
+  intentionally-preserved ones (`V3_PAPER`, `V3.1_PAPER` via prose, `V3_FINDINGS_LOG`, and the
+  reverted `V3_regime_weekly_sector` label above).
+
+**Files touched**: `src/backtest_v4.py` plus 29 other `src/`/`sql/` files that read or
+`os.environ.setdefault()` these flags (sweep/test/trace/diagnose scripts, `paper_common.py`
+callers, sql schema comments) -- see the commit for the full list. On `main`: all 6 paper-
+trading trigger workflows (`paper_monitor_trigger.yml`, `paper_signal_scan_trigger.yml`,
+`paper_monitor_v31_trigger.yml`, `paper_signal_scan_v31_trigger.yml`,
+`paper_monitor_v4_trigger.yml`, `paper_signal_scan_v4_trigger.yml`) -- env-var KEYS only, no
+pinned VALUES changed. Also reworded one now-stale comment in `backtest_v4.py`
+(`BANDAR_SIZING_ENABLED`'s docstring) that described `V3_PAPER`'s own pin before it was retired
+2026-08-15 -- updated to describe `V4_PAPER`'s current pin instead, without losing the "why."
+No default value, threshold, or exit rule changed anywhere in this entry.
