@@ -5,6 +5,22 @@ name: Test (worktree-v2-hmm-screener)
 # via bridge workflows on main, but nothing checked whether a push here
 # actually kept the test suite green. Runs on every push/PR to this
 # branch; all tests here are pure/local (no Supabase credentials needed).
+#
+# WIDENED 2026-08-22 (audit finding: only 1 of 17 test_*.py scripts written
+# this session were ever running here -- the other 16, including exactly
+# the ones that would catch an env-var-rename mismatch or a TP1/SL-gate
+# regression, only ran when someone remembered to run them by hand).
+# Advisory only, not a deploy gate: this does NOT block
+# paper_signal_scan_v4_trigger.yml/paper_monitor_v4_trigger.yml on main
+# from running the same commit regardless of this job's outcome (that's a
+# separate, larger decision -- see docs/V3_FINDINGS_LOG.md 2026-08-22
+# entry). A failure here is a fast, loud signal, not a technical stop.
+#
+# Deliberately NOT included: test_daily_qualifying_signals.py (needs real
+# SUPABASE_URL/KEY -- this job intentionally stays credential-free) and
+# test_backlog_queue.py/test_diag_hook.py/test_rotation.py/
+# test_spike_sizing.py (need a local .cache/walk_forward_data_*.pkl that's
+# gitignored and won't exist on a fresh CI checkout). Run those by hand.
 on:
   push:
     branches: [worktree-v2-hmm-screener]
@@ -28,4 +44,28 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run test suite
-        run: python -m pytest src/test_paper_trading_math.py tests/ -v
+        run: |
+          python -m pytest tests/ -v
+          python src/test_paper_trading_math.py
+          python src/test_accdist_signal.py
+          python src/test_ara_filter.py
+          python src/test_bandar_sizing_default.py
+          python src/test_data_fetch_retry.py
+          python src/test_db_retry.py
+          python src/test_feature_test_harness.py
+          python src/test_participation_gate.py
+          python src/test_rotation_signal.py
+          python src/test_spike_confirm_gate.py
+          python src/test_tp1_eod_reconcile.py
+          python src/test_trend_duration_gate.py
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_USER_ID}" \
+            -d parse_mode="Markdown" \
+            -d text="🚨 *worktree-v2-hmm-screener test suite FAILED* on push $(date -u +'%Y-%m-%d %H:%M UTC') -- advisory only, live paper-trading workflows are NOT blocked by this. Check the GitHub Actions log before trusting the next scheduled run."
