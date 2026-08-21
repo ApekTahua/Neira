@@ -1,4 +1,4 @@
-name: Disclosure PDF Text Extraction (trigger)
+name: "[19:30 WIB] - Disclosure PDF Extraction"
 
 # `schedule` only ever fires from the default branch (main), but
 # disclosure_extract.py lives only on worktree-v2-hmm-screener. Originally

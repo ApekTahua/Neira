@@ -1,3 +1,12 @@
 __pycache__/
 *.pyc
 reports/
+
+# local MCP server scaffolding (shadcn MCP needs a local node_modules; Serena/Playwright
+# MCP write working dirs here) -- never meant to be committed, not source code
+node_modules/
+package.json
+package-lock.json
+.mcp.json
+.serena/
+.playwright-mcp/

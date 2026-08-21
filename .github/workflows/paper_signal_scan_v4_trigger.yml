@@ -1,4 +1,4 @@
-name: Paper Trading V4 -- Daily Signal Scan (trigger)
+name: "[18:10 WIB] - Paper Trading V4 Daily Signal Scan"
 
 # Third, independent, concurrent paper run alongside V3_PAPER and
 # V3.1_PAPER (see paper_signal_scan_trigger.yml for the

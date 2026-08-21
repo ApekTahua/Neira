@@ -1,6 +1,6 @@
 # Backtest Accumulation Detector
 # Trigger: manual (workflow_dispatch) dan terjadwal setiap Sabtu
-name: Backtest Accumulation Detector
+name: "[Sat 08:00 WIB] - Weekly Backtest Report"
 
 on:
   workflow_dispatch:

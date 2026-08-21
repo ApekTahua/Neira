@@ -1,4 +1,4 @@
-name: Run Quant Screener Daily
+name: "[18:00 WIB] - Quant Screener Daily Signal"
 
 on:
   schedule:

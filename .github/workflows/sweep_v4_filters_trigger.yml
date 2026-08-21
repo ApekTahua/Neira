@@ -1,4 +1,4 @@
-name: V3.1 Filter Sweep (research)
+name: "[Manual] - V4 Filter Sweep (Research)"
 
 # Manual only -- this is a research job, not part of the live pipeline. It
 # never writes to paper_positions/paper_account/backtest_runs; it only reads

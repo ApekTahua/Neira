@@ -1,4 +1,4 @@
-name: Paper Trading V4 -- Intraday Monitor (trigger)
+name: "[Every 15 Min] - Paper Trading V4 Intraday Monitor"
 
 # See paper_monitor_trigger.yml / paper_signal_scan_v4_trigger.yml. Same
 # script as V3_PAPER's monitor, only PAPER_VERSION + BANDAR_SIZING differ.
