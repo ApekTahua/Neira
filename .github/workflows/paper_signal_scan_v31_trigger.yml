@@ -1,0 +1,68 @@
+name: Paper Trading V3.1 -- Daily Signal Scan (trigger)
+
+# Second, independent, concurrent paper run alongside V3_PAPER (see
+# paper_signal_scan_trigger.yml for the schedule-must-run-from-default-branch
+# background). Same script, same run-id-lookup mechanism (paper_common.py's
+# get_paper_run_id) -- only PAPER_VERSION and the V3.1 filter env vars below
+# differ, so paper_signal_scan.py itself needed zero forking.
+#
+# RESTORED 2026-08-22 after a same-day accidental deletion: this run
+# (V3.1_PAPER) still has 6 OPEN positions in paper_positions as of the
+# restore. This job also processes CHECKPOINT/TIME exits and hold_days
+# once/day -- deleting it would have silently stopped those checks too.
+# "Retired" (2026-08-15) means no new candidates queued, NOT that existing
+# open positions stop being tended. Keep this alive until V3.1_PAPER's
+# open_positions count reaches 0, then it's safe to retire for real.
+on:
+  schedule:
+    - cron: '10 11 * * 1-5'  # same slot as V3_PAPER -- both need today's fresh ihsg_eod
+  workflow_dispatch:
+
+# Own concurrency group -- independent run, disjoint run_id-scoped rows, no
+# reason to queue behind V3_PAPER's own scan/monitor cycle.
+concurrency:
+  group: paper-trading-engine-v31
+  cancel-in-progress: false
+
+jobs:
+  signal-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ambil kode dari repository
+        uses: actions/checkout@v4
+        with:
+          ref: worktree-v2-hmm-screener
+
+      - name: Pasang Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Library Pendukung
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Jalankan Paper Trading Signal Scan (V3.1)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+          PAPER_VERSION: V3.1_PAPER
+          V3_ARA_FILTER: '1'
+          V3_ATR_PRICE_RATIO_MAX: '0.08'
+          V3_SCORE_WEEKLY_COMP_ABS_CAP_Q: '0.81'
+        run: python src/paper_signal_scan.py
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_USER_ID}" \
+            -d parse_mode="Markdown" \
+            -d text="🚨 *[V3.1_PAPER] Paper trading daily scan FAILED* — paper_signal_scan_v31_trigger.yml crashed on $(date -u +'%Y-%m-%d %H:%M UTC'). No signal scan ran today. Check the GitHub Actions log."

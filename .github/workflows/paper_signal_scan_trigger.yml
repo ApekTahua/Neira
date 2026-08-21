@@ -1,0 +1,80 @@
+name: Paper Trading -- Daily Signal Scan (trigger)
+
+# `schedule` only fires from the default branch (main), but
+# paper_signal_scan.py lives on worktree-v2-hmm-screener. Originally
+# bridged via `gh workflow run paper_signal_scan.yml --ref
+# worktree-v2-hmm-screener`, which 404'd -- GitHub only resolves
+# dispatch-by-filename against workflows indexed off the DEFAULT branch,
+# and this file was never indexed there. Fixed 2026-08-03: checkout the
+# worktree branch directly and run the script inline (same pattern
+# run_screener.yml uses for main) instead of dispatching to a separate
+# workflow file. No src/ changes, no cross-workflow dispatch, no ID lookup.
+#
+# RESTORED 2026-08-22 after a same-day accidental deletion: this run
+# (V3_PAPER) still has 3 OPEN positions in paper_positions as of the
+# restore. This job also processes CHECKPOINT/TIME exits and hold_days
+# once/day -- deleting it would have silently stopped those checks for
+# those 3 positions too, not just the intraday monitor's SL/TP1/trailing.
+# "Retired" (2026-08-15) means no new candidates queued, NOT that existing
+# open positions stop being tended. Keep this alive until V3_PAPER's
+# open_positions count reaches 0, then it's safe to retire for real.
+on:
+  schedule:
+    - cron: '10 11 * * 1-5'  # 18:10 WIB, right after run_screener.yml's 18:00 WIB slot
+  workflow_dispatch:
+
+# Shared across all 3 paper-trading/disclosure workflows -- they all
+# mutate paper_positions/paper_account, and a delayed schedule overlapping
+# a manual dispatch (exactly what happened 2026-08-03) could otherwise run
+# two instances at once, both reading last_signal_date before either
+# commits, both queuing candidates. Queues the second run instead of
+# canceling the first (which could be mid-write) or letting them race.
+concurrency:
+  group: paper-trading-engine
+  cancel-in-progress: false
+
+jobs:
+  signal-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ambil kode dari repository
+        uses: actions/checkout@v4
+        with:
+          ref: worktree-v2-hmm-screener
+
+      - name: Pasang Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Library Pendukung
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Jalankan Paper Trading Signal Scan
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+          # Pinned explicitly 2026-08-15 when BANDAR_SIZING_ENABLED's default
+          # flipped to ON in backtest_v4.py (docs/BANDARMOLOGY_DESIGN.md) --
+          # V3_PAPER is the frozen baseline V4_PAPER was split off from
+          # specifically to isolate this exact change; without this pin the
+          # default flip would silently change V3_PAPER's own new-entry
+          # sizing too. Existing OPEN positions are unaffected either way.
+          V3_BANDAR_SIZING: '0'
+        run: python src/paper_signal_scan.py
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_USER_ID}" \
+            -d parse_mode="Markdown" \
+            -d text="🚨 *Paper trading daily scan FAILED* — paper_signal_scan_trigger.yml crashed on $(date -u +'%Y-%m-%d %H:%M UTC'). No signal scan ran today. Check the GitHub Actions log."
