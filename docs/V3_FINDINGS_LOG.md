@@ -4280,3 +4280,109 @@ pinned VALUES changed. Also reworded one now-stale comment in `backtest_v4.py`
 (`BANDAR_SIZING_ENABLED`'s docstring) that described `V3_PAPER`'s own pin before it was retired
 2026-08-15 -- updated to describe `V4_PAPER`'s current pin instead, without losing the "why."
 No default value, threshold, or exit rule changed anywhere in this entry.
+
+## 2026-08-22: HATM V4_PAPER drawdown incident -- re-validated the three existing rank-1 outlier flags against the current (post-rename) baseline, plus a real-data check of whether any of them would even apply to HATM's specific case
+
+Triggered by a live V4_PAPER position: HATM entered 2026-08-20 at Rp635 after a +74%
+run in the prior 8 weeks, then dropped -12.3% the next session (single-day reversal
+candle). This traces to the gap `diagnose_score_power.py` diagnosed on 2026-08-07
+(rank-1 candidates run ~2x score magnitude / ~20% higher ATR% / 82-98% SL-hit rate --
+see that entry above) -- three candidate fixes exist in `score_candidates()`
+(`backtest_v4.py`), all off by default, none ever turned on for V4_PAPER. This entry
+re-validates them on the CURRENT code (post V3->V4 rename, post the 2026-08-18/08-21
+live-path bugfixes), not the stale 2026-08-07/08 numbers, which used a different
+baseline (+21.71% mean alpha then vs +22.50% now -- code has moved since).
+
+**Baseline reconfirmed first.** `python src/walk_forward_v4.py` off the existing
+`.cache/walk_forward_data_2021-01-01_2026-06-30.pkl` (no refetch) reproduces the
+2026-08-22 rename-verification numbers exactly: mean alpha +22.50%, mean PF 1.82,
+mean maxDD -15.46%/worst -22.41%, beat-bench 6/9, win>50% 4/9, 396 total trades.
+
+**All three flags run in isolation, one env var each, same 9-window schedule:**
+
+| config | mean alpha | mean PF | mean maxDD | worst maxDD | beat-bench | win>50% | trades |
+|---|---|---|---|---|---|---|---|
+| baseline (all off) | **+22.50%** | 1.82 | -15.46% | -22.41% | 6/9 | 4/9 | 396 |
+| `V4_SCORE_SKIP_TOP_N=1` | +11.31% | 2.02 | -15.26% | -22.80% | 6/9 | 4/9 | 363 |
+| `V4_SCORE_OUTLIER_GAP_MULT=1.5` | +15.64% | 1.75 | -16.00% | -22.41% | 6/9 | 4/9 | 384 |
+| `V4_SCORE_OUTLIER_GAP_MULT=2.0` | +22.50% (byte-identical to baseline) | 1.82 | -15.46% | -22.41% | 6/9 | 4/9 | 396 |
+| `V4_SCORE_WEEKLY_COMP_CAP_Q=0.90` | +9.98% | 1.39 | -14.59% | **-19.45%** | 5/9 | 3/9 | 340 |
+
+**`gap_mult=2.0` (the task-brief's own suggested default) is a no-op** -- confirmed
+byte-identical to baseline. The 2026-08-07 sweep already found the rank1/rank2 score
+ratio never exceeds ~1.93 across the sample (median 1.09x, 75th pct 1.36x); 2.0 is
+above every historical value, so the conditional gate never fires. `gap_mult=1.5`
+(a value the earlier sweep already touched, re-run here against the current code as
+the meaningful non-no-op point) hurts mean alpha (+22.50%->+15.64%) without improving
+drawdown at all (worst maxDD identical -22.41% -- it only fires in windows that don't
+change the tail outcome). `skip_top_n=1` (unconditional rank-1 drop) hurts mean alpha
+even more (+11.31%) and, notably, makes worst-case drawdown WORSE, not better
+(-22.41%->-22.80%) -- dropping the #1 candidate outright removes some of the best
+days (W8: 129%->76% profit) along with the bad ones. `weekly_comp_cap_q=0.90`
+reproduces the exact same two-part shape the 2026-08-07/08 entries already
+established (real drawdown improvement, real alpha/win-rate cost) independently on
+the current, post-rename code -- best worst-case drawdown of the four configs
+(-19.45%) but worst win-rate-consistency (3/9, vs baseline's 4/9) and lowest mean
+alpha (+9.98%) of everything tested. **None of the three, at these single default
+values, beats baseline on both mean alpha AND worst-case drawdown simultaneously --
+the project's own standing adoption bar (see LIQ_SIZING_ENABLED's own criterion,
+cited in the 2026-08-07 entry above). Baseline (all off) still wins that comparison.**
+
+**Whether any of the three would even have caught HATM: checked against real data,
+not just the mechanism description.** Pulled HATM's actual signal day
+(`paper_positions`: signal_date 2026-08-19, score 12.78) from `daily_qualifying_signals`
+and `daily_scoreboard` directly:
+
+- HATM was **rank 3 of 15** that day (score 12.78, well behind rank-1 EKAD's 20.61
+  and rank-2 WMPP's 19.38 -- rank1/rank2 ratio here is 20.61/19.38 = 1.06x, nowhere
+  close to even the loosest `outlier_gap_mult` tested in this project's history).
+  `SCORE_SKIP_TOP_N` and `SCORE_OUTLIER_GAP_MULT` are both structurally rank-1-only
+  mechanisms (`score_candidates`'s `pool.iloc[start:...]` only ever touches the
+  top of the ranked pool) -- **neither one can touch a rank-3 candidate, full stop,
+  regardless of what threshold value is chosen.** HATM's case would have sailed
+  through both unchanged even if either flag had been live that day.
+- HATM's ATR% that day (61.64/645 = 9.56%) WAS the highest of the day's top-15
+  qualifying pool (next highest: TAMA/GRIA at 8.40%) -- consistent with the task's
+  own description and with the diagnose_score_power rank-1 signature, just showing
+  up one rank later than the mechanism the flags were built around.
+- `SCORE_WEEKLY_COMP_CAP_Q`/`_ABS_CAP_Q` is different: it filters the whole
+  candidate pool by the `weekly_ma_spread` component BEFORE ranking, not by
+  post-rank position, so it CAN reach a rank-3 candidate. Checked directly:
+  HATM's `weekly_ma_spread`=38.73 sat at the **97.2th percentile** of that day's
+  144-candidate qualifying pool (`daily_scoreboard`, BUY/STRONG_BUY rows,
+  2026-08-19) -- above the cap threshold at every quantile tested, 0.95 down to
+  0.80 (cutoffs 29.86/23.68/20.32/17.69, all below HATM's 38.73). **This is the
+  only one of the three flags that would structurally have excluded HATM that day,
+  at any of the values tested.**
+
+**Read plainly: HATM is a real instance of the same overextension mechanism
+`diagnose_score_power.py` found at rank 1, just landing at rank 3 instead --
+which is exactly why the two rank-1-specific flags (`SCORE_SKIP_TOP_N`,
+`SCORE_OUTLIER_GAP_MULT`) cannot be the fix for this specific incident, no matter
+which threshold is chosen; they are the wrong shape of gate for a not-always-rank-1
+outlier.** `SCORE_WEEKLY_COMP_CAP_Q`/`_ABS_CAP_Q` is the right shape (rank-agnostic,
+targets the actual driver) and would have caught this specific case -- but per the
+walk-forward table above, at cap_q=0.90 it still costs more mean alpha and
+win-rate-consistency than it buys in drawdown protection, on this project's own
+adoption bar, tested in isolation. It has NOT been stacked here with
+`ARA_FILTER_ENABLED`+`ATR_PRICE_RATIO_MAX=0.08` the way the 2026-08-08 entry found
+it works when combined (that combination -- `ARA_FILTER_ENABLED=1` +
+`ATR_PRICE_RATIO_MAX=0.08` + `SCORE_WEEKLY_COMP_ABS_CAP_Q=0.81` -- is already live on
+V3.1_PAPER, a separate run, not V4_PAPER). Also worth noting directly: HATM's own
+ATR% (9.56%) would already have failed V3.1_PAPER's own live `ATR_PRICE_RATIO_MAX=0.08`
+ceiling (it's under V4_PAPER's current 0.10 ceiling, which is why it wasn't blocked
+there) -- a different, already-validated, already-deployed-elsewhere mechanism that
+also would have caught this case, distinct from the three flags this entry tested.
+
+**No flag turned on. This is a negative/inconclusive result for all three flags in
+isolation, at these defaults, not a validated fix** -- consistent with, and now
+reproducing on fresh post-rename code, the 2026-08-07/08 entries' original
+conclusion for `SCORE_SKIP_TOP_N`/`SCORE_OUTLIER_GAP_MULT`, and independently
+reconfirming `SCORE_WEEKLY_COMP_CAP_Q`'s known drawdown-real/alpha-noisy shape.
+**Next step if this gets picked back up:** either (a) stack
+`SCORE_WEEKLY_COMP_CAP_Q`/`_ABS_CAP_Q` with V4_PAPER's own other filters the way
+the 2026-08-08 stack entry did for V3.1_PAPER (untested here -- isolation was this
+entry's explicit brief), or (b) treat this as a case for tightening
+V4_PAPER's `ATR_PRICE_RATIO_MAX` specifically (already shown to matter for this
+exact stock/day) rather than the weekly-component cap. Neither decided here --
+reporting the numbers, not picking a deployment.
