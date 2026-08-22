@@ -50,6 +50,7 @@ jobs:
           python src/test_accdist_signal.py
           python src/test_ara_filter.py
           python src/test_bandar_sizing_default.py
+          python src/test_broker_sanity_filter.py
           python src/test_data_fetch_retry.py
           python src/test_db_retry.py
           python src/test_feature_test_harness.py

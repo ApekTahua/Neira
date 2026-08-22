@@ -106,7 +106,9 @@ def find_cluster_pairs(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def main():
-    raw = bf.load_raw()
+    # load_raw_clean(), not load_raw() -- see bandarmology_push_daily.py's
+    # identical comment (same corrupted-row filter, same reason).
+    raw = bf.load_raw_clean()
     print(f"raw rows: {len(raw)}, dates: {raw['trade_date'].min()} to {raw['trade_date'].max()}")
 
     result = find_cluster_pairs(raw)

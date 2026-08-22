@@ -37,7 +37,12 @@ def main():
     url = os.environ["SUPABASE_BROKER_URL"]
     key = os.environ["SUPABASE_BROKER_KEY"]
 
-    raw = bf.load_raw()
+    # load_raw_clean(), not load_raw() -- drops broker_summary rows that don't
+    # reconcile with real ihsg_eod price/volume (Nego/rights-issue leakage
+    # with no segment flag, see bandarmology_features.py's module comment;
+    # confirmed on PACK and ~100 other tickers 2026-08-22). This table feeds
+    # the live Bandarmology page's verdict badge directly.
+    raw = bf.load_raw_clean()
     broker_net = bf.per_broker_net(raw)
     daily = bf.daily_stock_features(broker_net)
     feats = bf.rolling_features(daily)

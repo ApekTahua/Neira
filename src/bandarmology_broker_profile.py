@@ -73,7 +73,9 @@ def candidate_movers(broker_daily: pd.DataFrame, fwd_ret: pd.DataFrame) -> pd.Da
 
 
 def main():
-    raw = bf.load_raw()
+    # load_raw_clean(), not load_raw() -- see bandarmology_push_daily.py's
+    # identical comment (same corrupted-row filter, same reason).
+    raw = bf.load_raw_clean()
     broker_daily = per_broker_daily(raw)
 
     stock_codes = broker_daily["stock_code"].unique().tolist()
