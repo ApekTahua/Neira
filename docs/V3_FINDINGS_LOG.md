@@ -4386,3 +4386,68 @@ entry's explicit brief), or (b) treat this as a case for tightening
 V4_PAPER's `ATR_PRICE_RATIO_MAX` specifically (already shown to matter for this
 exact stock/day) rather than the weekly-component cap. Neither decided here --
 reporting the numbers, not picking a deployment.
+
+## 2026-08-22 (follow-up): `ATR_PRICE_RATIO_MAX=0.08` tested in isolation against V4_PAPER's actual current frozen config -- clears the adoption bar
+
+Option (b) from the entry directly above, actually run. The 0.08 ceiling was already
+validated once (2026-08-08 entry, "V3.1 filters ... validated for the first time"), but
+that test's baseline was V3's config *as it stood that night* (ARA off, ATR<=0.10,
++21.71% mean alpha baseline then) -- not byte-identical to V4_PAPER's current frozen
+stack (`V4_BANDAR_SIZING=1` default-on, everything else V3_PAPER's exact config, per
+`paper_signal_scan_v4_trigger.yml`'s own comment). This entry closes that specific gap:
+one env var (`V4_ATR_PRICE_RATIO_MAX=0.08`), nothing else touched, same 9-window
+schedule, same cache
+(`.cache/walk_forward_data_2021-01-01_2026-06-30.pkl`, no refetch).
+
+**Baseline reconfirmed first** (env clean): mean alpha +22.50%, mean PF 1.82, mean maxDD
+-15.46%/worst -22.41%, beat-bench 6/9, win>50% 4/9, 396 trades -- byte-identical to the
+HATM entry above's own baseline reconfirmation, same session.
+
+| config | mean alpha | mean PF | mean maxDD | worst maxDD | beat-bench | win>50% | trades |
+|---|---|---|---|---|---|---|---|
+| baseline (ATR<=0.10) | +22.50% | 1.82 | -15.46% | -22.41% | 6/9 | 4/9 | 396 |
+| `V4_ATR_PRICE_RATIO_MAX=0.08` | **+26.17%** | **1.95** | **-14.26%** | **-21.10%** | **7/9** | 4/9 | 366 |
+
+**Clears this project's own adoption bar** (LIQ_SIZING_ENABLED's criterion, cited twice
+above: beats baseline on both mean alpha AND worst-case drawdown, simultaneously) --
+and does it with room to spare: also better on mean PF, mean maxDD, and beat-bench count.
+win>50% ties at 4/9 rather than improving. Not a lucky single point in isolation the way
+the hysteresis-band and weekly-comp sweeps turned out to be -- this exact ceiling was
+already neighbor-checked against 0.06/0.07/0.09/0.12/0.15 in the 2026-08-08 entry (0.08
+and 0.09 formed a plateau, 0.07 was the one dip) under a related-but-different baseline;
+not re-swept here since the brief was the single already-flagged value against the new
+baseline, not a fresh neighbor search.
+
+**HATM specifically: confirmed excluded, against fresh real data, not just arithmetic.**
+Pulled `daily_scoreboard` directly for 2026-08-19 (BUY/STRONG_BUY rows, ranked by score):
+HATM's atr_14/close_price = 9.56%, rank 3 of 20 candidates that day, above the 0.08
+ceiling (next-closest offender: KBLV at 9.44%, rank 18, also would have been excluded).
+`backtest_v4.py`'s ATR gate is a plain AND-ed boolean mask
+(`(day_slice["atr_14"]/day_slice["close_price"]) <= ATR_PRICE_RATIO_MAX`, lines
+1331/1407/1773) alongside the trend-strength/regime/participation gates, not something
+those other gates can override -- failing this one condition drops the candidate from
+the qualifying pool regardless of how it scores elsewhere. HATM would not have
+qualified that day under this ceiling.
+
+**The honest tradeoff: opportunity-set shrinkage is real, and it isn't spread evenly.**
+Total trades -7.6% (396->366) is a moderate, not catastrophic, cut -- and most windows
+either improved or held roughly flat (W1 win-rate/alpha both up on fewer trades, W8's
+132.88% vs baseline's 129.16% on 14 fewer trades, W5/W6/W7 all roughly a wash). But
+window 3 (2023 H1 -- already this project's known-weakest window, the false-start-
+regime-flip one the trend-strength-gate entries above spent real effort on) gets
+meaningfully worse under the tighter ceiling, not better: win rate 31.6%->17.6%, alpha
+-3.28%->-9.18%, profit factor 0.51->0.02 (17 trades, barely any gross profit at all).
+Tightening the vol ceiling removed more of window 3's few winners than its losers. This
+doesn't flip the aggregate verdict (window 3 was already net-negative both ways, and
+every aggregate metric still improves) but it's a real, not hidden, cost.
+
+**Verdict: a clear win by this project's own stated bar, not a mixed result** -- every
+one of mean alpha, mean PF, mean maxDD, worst maxDD, and beat-bench improves or ties;
+none regresses. Worth tightening V4_PAPER's `ATR_PRICE_RATIO_MAX` from 0.10 to 0.08 on
+these numbers. Caveats before calling it deployment-ready: (1) this is still one
+walk-forward pass, not the permutation/parameter-sensitivity double-check this log's own
+standard requires before "validated" -- the 2026-08-08 entry's neighbor sweep covered
+sensitivity under a different baseline, not this one; (2) window 3 gets worse, a real
+per-window cost the aggregate numbers don't surface on their own. Not deployed --
+V4_PAPER's live workflow env is unchanged; this is a validation report, the adoption
+decision is the user's.
