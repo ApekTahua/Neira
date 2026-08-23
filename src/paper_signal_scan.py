@@ -599,6 +599,31 @@ def main():
     initial_capital = float(run_res.data[0]["initial_capital"])
     net_profit_pct = (total_equity / initial_capital - 1) * 100
 
+    # alpha_pct was never computed here -- backtest_runs rows for every live
+    # paper run sat at their column default (0), rendered on the frontend as
+    # a flattering "+0.00%" (green) regardless of real performance vs IHSG.
+    # Same formula backtest_v4.py uses for completed backtests: bench_ret =
+    # IHSG's own % return over the identical period, alpha = strategy's
+    # return minus that. period_start is fixed at run creation and can land
+    # on a non-trading day (confirmed: V3_PAPER/V3.1_PAPER's period_start
+    # are both Saturdays -- the row was created ahead of the first real
+    # trading day) -- use the first real IHSG close ON OR AFTER period_start,
+    # not an exact-date match, or those runs would wrongly find no benchmark
+    # at all and stay null forever instead of just until their first trade.
+    period_start = date.fromisoformat(run_res.data[0]["period_start"])
+    bench_start_rows = idx_df[idx_df["trade_date"] >= period_start].sort_values("trade_date")
+    if not bench_start_rows.empty and bench_close is not None:
+        bench_start_close = float(bench_start_rows.iloc[0]["close"])
+        benchmark_pct = (bench_close / bench_start_close - 1) * 100
+        alpha_pct = net_profit_pct - benchmark_pct
+    else:
+        # No IHSG close on record for period_start or today -- leave both
+        # null rather than writing a silently-wrong 0 (the exact bug this
+        # fixes). paper-trading-client.tsx renders null as "--", not a fake
+        # 0.00% (updated alongside this fix, not a pre-existing guard).
+        benchmark_pct = None
+        alpha_pct = None
+
     prior_equity_res = _retry(lambda: supabase.table("backtest_equity").select("portfolio_value").eq("run_id", run_id).order("date").execute())
     prior_equity = [float(row["portfolio_value"]) for row in prior_equity_res.data]
     drawdown_pct, cvar_95 = pc.compute_drawdown_and_cvar(prior_equity, total_equity)
@@ -626,6 +651,7 @@ def main():
         "period_end": today.isoformat(), "final_capital": total_equity, "net_profit_pct": net_profit_pct,
         "total_trades": total_trades, "win_rate": win_rate, "profit_factor": profit_factor,
         "max_drawdown": running_max_dd, "cvar_95": cvar_95,
+        "benchmark_pct": benchmark_pct, "alpha_pct": alpha_pct,
     }).eq("id", run_id).execute())
     # Retry-safe: absolute overwrite keyed by this run's own id.
     _retry(lambda: supabase.table("paper_account").update({
