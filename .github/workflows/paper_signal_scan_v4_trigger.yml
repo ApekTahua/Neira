@@ -4,12 +4,16 @@ name: "[18:10 WIB] - Paper Trading V4 Daily Signal Scan"
 # V3.1_PAPER (see paper_signal_scan_trigger.yml for the
 # schedule-must-run-from-default-branch background). Same script, same
 # run-id-lookup mechanism (paper_common.py's get_paper_run_id) -- only
-# PAPER_VERSION and BANDAR_SIZING differ, so paper_signal_scan.py itself
-# needed zero forking. V4 = V3_PAPER's EXACT frozen config plus exactly
-# ONE change (BANDAR_SIZING_ENABLED=1, Bandarmology concentration-based
-# sizing) -- deliberately NOT combined with V3.1's filter changes, for
-# clean single-variable attribution. See docs/BANDARMOLOGY_DESIGN.md for
-# the full validation writeup.
+# PAPER_VERSION and the two env vars below differ, so paper_signal_scan.py
+# itself needed zero forking. V4 = V3_PAPER's frozen config plus two
+# changes, each validated in isolation before combining: BANDAR_SIZING_
+# ENABLED=1 (Bandarmology concentration-based sizing, see
+# docs/BANDARMOLOGY_DESIGN.md) and, added 2026-08-22, ATR_PRICE_RATIO_MAX
+# tightened 0.10->0.08 (9-window walk-forward beat baseline on every
+# metric -- mean alpha, PF, mean/worst maxDD, beat-bench count -- and would
+# have excluded HATM's 2026-08-20 entry, a real -10.2% next-day loss; see
+# docs/V3_FINDINGS_LOG.md 2026-08-22 entry for full numbers and the one
+# honest caveat, window 3 getting worse on n=17).
 on:
   schedule:
     - cron: '10 11 * * 1-5'  # same slot as V3_PAPER/V3.1_PAPER -- both need today's fresh ihsg_eod
@@ -49,6 +53,7 @@ jobs:
           TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
           PAPER_VERSION: V4_PAPER
           V4_BANDAR_SIZING: '1'
+          V4_ATR_PRICE_RATIO_MAX: '0.08'
         run: python src/paper_signal_scan.py
 
       - name: Alert on failure

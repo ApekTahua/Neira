@@ -39,6 +39,15 @@ jobs:
           TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
           PAPER_VERSION: V4_PAPER
           V4_BANDAR_SIZING: '1'
+          # Tightened from backtest_v4.py's own default (0.10) 2026-08-22 --
+          # isolated 9-window walk-forward against V4_PAPER's exact current
+          # config beat baseline on every metric (mean alpha +22.50%->+26.17%,
+          # mean PF 1.82->1.95, mean maxDD -15.46%->-14.26%, worst maxDD
+          # -22.41%->-21.10%, beat-bench 6/9->7/9) and would have excluded
+          # HATM (2026-08-20 entry, 9.56% ATR, -10.2% next-day loss) --
+          # see docs/V3_FINDINGS_LOG.md 2026-08-22 entry for the full numbers,
+          # including the one honest caveat (window 3 gets worse on n=17).
+          V4_ATR_PRICE_RATIO_MAX: '0.08'
         run: python src/paper_monitor.py
 
       # Deliberately no failure alert here -- same reasoning as
