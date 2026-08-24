@@ -1650,6 +1650,8 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
                 add_participation = (add_alloc / max(add_fill_price, 1e-6)) / max(pos.get("avg_vol_20", 1.0), 1.0)
                 add_cost_per_share = apply_slippage(add_fill_price, "buy", add_participation) * (1 + cfg.BUY_FEE)
                 add_lots = int(add_alloc / add_cost_per_share) // LOT_SIZE
+                add_liq_lots = int(pos.get("avg_vol_20", 1.0) * cfg.LIQ_CAP_PCT) // LOT_SIZE
+                add_lots = min(add_lots, add_liq_lots)
                 if add_lots >= cfg.ALLOC_MIN_LOTS:
                     add_qty = add_lots * LOT_SIZE
                     add_cost_basis = add_qty * add_cost_per_share
@@ -1703,6 +1705,8 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
                 add_participation = (add_alloc / max(exit_price, 1e-6)) / max(pos.get("avg_vol_20", 1.0), 1.0)
                 add_cost_per_share = apply_slippage(exit_price, "buy", add_participation) * (1 + cfg.BUY_FEE)
                 add_lots = int(add_alloc / add_cost_per_share) // LOT_SIZE
+                add_liq_lots = int(pos.get("avg_vol_20", 1.0) * cfg.LIQ_CAP_PCT) // LOT_SIZE
+                add_lots = min(add_lots, add_liq_lots)
                 if add_lots >= cfg.ALLOC_MIN_LOTS:
                     add_qty = add_lots * LOT_SIZE
                     add_cost_basis = add_qty * add_cost_per_share
