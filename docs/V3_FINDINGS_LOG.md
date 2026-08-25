@@ -4451,3 +4451,163 @@ sensitivity under a different baseline, not this one; (2) window 3 gets worse, a
 per-window cost the aggregate numbers don't surface on their own. Not deployed --
 V4_PAPER's live workflow env is unchanged; this is a validation report, the adoption
 decision is the user's.
+
+## Market-wide broker net-flow gate (council candidate, "does the crowd's own
+## money agree with the price-based regime read"): built, correlation-checked,
+## swept -- REJECTED, same failure signature as the two prior market-wide
+## day-level gates (2026-08-25)
+
+A council session proposed a market-wide aggregate broker-flow regime signal: on
+days brokers are net-buying across the whole market, maybe the existing entry rule
+works better (or worse on net-selling days) -- independent of the price-based
+regime/trend_strength gate already in use. The Contrarian advisor's standing
+warning going in: this could be a noisy proxy for what trend_strength already
+captures, or a data-engineering project in disguise. Both turned out to be
+partially right, in different ways than expected.
+
+**Data**: `data/bandarmology_history/**/*.parquet` (1489 files, 2020-06-02..
+2026-08-11, 18.8M raw broker-trade rows, 943 stock codes) -- a raw per-broker-per-
+stock-per-side trade log (`stock_code, broker_code, side, lot, val_rupiah,
+avg_price, trade_date`), NOT pre-netted. Units traced and confirmed before
+trusting anything: `val_rupiah` is real Rupiah (`lot * 100 shares/lot * avg_price`
+reconciles to within rounding on a sampled BBCA day, Rp 284.1B for one broker one
+day -- plausible for IDX's most liquid stock, not off by a factor of 1000 the way
+the frontend Rupiah-millions bug was). Read via a column-projected `pyarrow.dataset`
+scan (~3s for all 18.8M rows) instead of 1489 sequential `pd.read_parquet` calls.
+
+**Corrupt-row filter applied, no new network dependency.** `bandarmology_features.
+filter_corrupt_rows()` (already built 2026-08-22 for the live site, drops broker
+rows whose avg_price/lot can't reconcile with the real exchange print) normally
+needs a fresh per-stock Supabase fetch for its `ihsg_eod` reference. The walk-
+forward's own already-fetched `df` (cached locally, `.cache/walk_forward_data_
+2021-01-01_2026-06-30.pkl`) already carries `high`/`low`/`volume` for the exact
+same stocks/dates, so the reference was built from that in memory instead --
+same filter, zero extra Supabase calls. Only 0.32% of rows dropped (59,633/
+18,826,534), but this materially changed the tail: the single most extreme day in
+the raw liquid-universe ratio (2022-01-05, net_ratio=+0.389, ~3x every other day
+in the 1-99th percentile band) collapsed to +0.108 after filtering -- a corrupted-
+row artifact, not a real crowd-buying day. Skipping this filter would have let one
+bad day sit in the tail of a feature meant to describe genuine crowd behavior.
+
+**Feature**: `compute_market_broker_flow()` (`src/backtest_v4.py`) -- daily
+`(buy - sell) / (buy + sell)` Rupiah, summed across every `stock_code` that clears
+`cfg.ADTV_MIN` THAT DAY (same liquid universe `score_candidates()` itself screens
+to, using `df`'s own `adtv_20` column -- not literally every ticker; illiquid-
+penny-stock flow was excluded on the hypothesis it's mostly noise), smoothed with
+a trailing N-day mean (default 5) since the raw daily ratio is noisy (mean -0.003,
+std 0.018, 1st-99th pctile roughly [-0.05, +0.04] post-filter, healthy -- top-5
+|net| days are only 4.9% of total |net| across 1439 days, no 1-2-day domination).
+
+**Gate**: `V4_BROKER_FLOW_GATE_ENABLED` (default off) requires the rolling ratio
+`>= V4_BROKER_FLOW_MIN` (default 0.0) as an ADDITIONAL AND-ed condition on
+`regime_ok_today`, alongside (not replacing) the existing regime/trend_strength/
+REGIME_CONFIRM_DAYS gates -- same "gate on top of, not instead of" design the task
+called for. Applied ONLY at the live entry-check site, NOT folded into the TRAIN
+threshold-learning mask, matching `PARTICIPATION_GATE_ENABLED`'s own precedent and
+reasoning (a TRAIN-mask ripple did more damage than live-side filtering for the
+rejected duration gate). Missing/unknown dates default to "pass"
+(`.get(trade_date, BROKER_FLOW_MIN)` trivially satisfies its own `>=` check) --
+same "missing data never blocks" convention every gate in this module uses.
+Confirmed byte-identical to baseline with the flag off (`test_broker_flow_gate.py`
++ a full walk-forward rerun, diffed line-for-line against the pre-change run).
+
+**1. Independence check (is this just a price-regime proxy?): partially
+independent, not a clean proxy, not fully separate either.** Spearman rho vs
+`trend_strength` (IHSG's own ma50 distance) = +0.479 (p=3e-83, n=1434) -- a real,
+moderate positive correlation (~23% shared variance), not the near-zero a truly
+orthogonal signal would show, but far from the >0.8 that would make it redundant.
+Vs `market_participation` (the OTHER, already-REJECTED market-wide axis --
+turnover magnitude, unsigned): rho=+0.119 (p=5.7e-6) -- essentially uncorrelated,
+confirming the two market-wide axes are structurally different from each other as
+designed (one signed/directional, one unsigned/magnitude). On days
+`regime_ok_today` is ALREADY True (n=614), broker_flow still has real spread
+(mean +0.0013, std 0.0089) and 47.9% of those already-price-confirmed-bullish days
+show brokers net SELLING -- so the feature is not simply re-deriving "is the
+market up," it does distinguish within the existing gate's own "yes" population.
+
+**2. Trade-level base rate (366 baseline trades, `V4_ATR_PRICE_RATIO_MAX=0.08`,
+gate OFF so this reads the population unshaped by the gate under test): no
+significant relationship, and what pattern exists points the wrong way.** Spearman
+broker_flow(5d)-at-entry vs `pnl_pct`: rho=-0.035 (p=0.51). Vs win/loss: rho=-0.047
+(p=0.365). Quartile win rates: Q1 (most net-SELLING) 55.4%/mean pnl +6.06%, Q2
+48.4%/+3.95%, Q3 61.5%/+9.22%, Q4 (most net-BUYING) 42.4%/+1.80% -- non-monotonic,
+and the two tails go the OPPOSITE direction from the hypothesis (heaviest broker
+buying is the worst-performing quartile, not the best). Kruskal-Wallis across
+quartiles: H=5.39, p=0.146. Every one of these reads null-to-negative, before any
+walk-forward gate was even applied.
+
+**3. Full 9-window walk-forward, threshold sweep at window=5d (own baseline
+reconfirmed first, byte-identical across two independent runs -- 366 trades, mean
+alpha +26.17%, mean profit +25.31%, mean PF 1.95, mean maxDD -14.26%/worst
+-21.10%, beat-bench 7/9, win>50% 4/9, matching the 2026-08-22 ATR=0.08 validation
+exactly):**
+
+| `V4_BROKER_FLOW_MIN` | trades | beat-bench | win>50% | mean profit | mean alpha | mean PF | worst maxDD |
+|---|---|---|---|---|---|---|---|
+| OFF (baseline) | 366 | 7/9 | 4/9 | +25.31% | +26.17% | 1.95 | -21.10% |
+| -0.01 | 363 | 6/9 | 4/9 | +22.86% | +23.72% | 1.95 | -21.10% |
+| -0.005 | 353 | 6/9 | 6/9 | +18.03% | +18.89% | 1.63 | -27.69% |
+| 0.0 | 282 | 7/9 | 6/9 | +14.43% | +15.29% | 2.37 | -18.67% |
+| 0.005 | 208 | 6/9 | 2/9 | +7.69% | +8.55% | 1.80 | -23.55% |
+| 0.01 | 131 (8/9 windows traded) | 6/9 | 3/9 | +9.33% | +5.87% | 2.19 | -14.08% |
+| 0.02 | 47 (6/9 windows traded) | 2/9 | 1/9 | -0.11% | -5.74% | 0.75 | -12.70% |
+
+Mean profit and mean alpha decline at every single tightened threshold, monotonic
+with the trade-count collapse -- the mechanism is mostly acting as an opportunity-
+shrinking filter, not a selection-quality one. `win>50%` and (at 0.0/0.01/0.02)
+worst-case drawdown do improve over baseline at several points -- but this
+project's own adoption bar (beats baseline on BOTH mean alpha AND worst-case
+drawdown, simultaneously -- the exact bar `LIQ_SIZING_ENABLED` and the ATR=0.08
+tightening both cleared) is not met by ANY of the 7 thresholds tested. Best-
+looking single point (0.0: best PF, best drawdown, win>50% jumps to 6/9) still
+loses 11pp of mean alpha and 43% of mean profit versus baseline.
+
+**4. Window-days sensitivity (0.0 threshold, the most competitive point above,
+swept 3d/5d/10d): non-monotonic, confirms this is a noisy landscape, not a
+plateau -- same lesson this log already learned twice (hysteresis band,
+weekly-comp-cap).** 3d: mean profit +11.29%, mean alpha +12.15%, beat-bench 5/9,
+win>50% 4/9 (worse than 5d on every axis). 10d: mean profit +23.59%, mean alpha
++24.45%, beat-bench 6/9, win>50% 5/9, mean PF 7.94 -- closest to baseline on
+alpha/profit, but the PF number is a fragile-sample artifact: window 7 alone hit
+PF=56.84 on 14 trades/92.9% win rate (near-zero losers), the exact "small-N,
+suspiciously-perfect" signature already flagged for `PARTICIPATION_GATE`'s
+`ON_1.00` cell (6 trades) earlier in this log. None of 3d/5d/10d beats baseline's
+mean alpha (+26.17%); worst-case drawdown is also worse than baseline at 10d
+(-23.27% vs -21.10%). Across all 9 threshold/window cells tested this session,
+**zero clear the mean-alpha-AND-worst-drawdown adoption bar simultaneously.**
+
+**5. Single/dominant-window check.** Window 8 (2025 H2, baseline's standout:
++132.88% profit/+107.84% alpha) contributes ~46% of the SUM of baseline's 9
+window alphas on its own (107.84 of 235.51 total). At the best-looking gate
+setting (0.0/5d) it degrades to +46.69%/+21.65% and drops OUT of the win>50% club
+entirely (59.5%->44.4%) even as the aggregate win>50% COUNT rises 4/9->6/9 -- the
+apparent aggregate improvement is coming partly FROM suppressing the previously-
+best window, not purely in addition to it. But this cuts both ways, not simply
+"one window explains the whole verdict": excluding window 8 entirely, mean alpha
+across the remaining 8 windows is 15.96% at baseline vs 14.50% gated (0.0/5d) --
+still doesn't improve once the dominant window is set aside. Window 4 (baseline's
+2nd-best, +59.87%/+51.27% alpha) also degrades at every setting tested, worst at
+0.0/5d (+17.69%/+9.09%) and still below baseline even at the gentlest surviving
+setting, 0.0/10d (+44.43%/+35.82%).
+
+**Verdict: REJECTED, kept off by default (`V4_BROKER_FLOW_GATE=0`).** Three
+independent checks converge on the same conclusion from different angles: the
+trade-level base rate shows no significant relationship (and a wrong-signed
+quartile pattern at the tails), the walk-forward return metric never recovers to
+baseline at any of 7 thresholds x 3 window lengths tested, and the one axis where
+the feature does look most different from noise (its moderate correlation with
+trend_strength, rho=0.479) suggests part of what modest signal it has may already
+be captured by the existing price-based gate, not added on top of it -- exactly
+the Contrarian's "noisy proxy" concern, though not a clean 1:1 proxy either (77%
+of its variance is NOT explained by trend_strength, and it still varies inside the
+existing gate's own passing population). Unlike `PARTICIPATION_GATE` (which had a
+genuine, mechanistically-traced win for its target window before losing on
+aggregate) this feature never shows a clean win anywhere -- not at the trade
+level, not in any single walk-forward cell, not net of its own best-performing
+window. Code kept (inert, off by default): `compute_market_broker_flow()` +
+`_daily_liquid_net_ratio()` (`src/backtest_v4.py`), `test_broker_flow_gate.py`,
+and the research scripts (`src/scratch_market_flow_build.py`,
+`src/scratch_broker_flow_correlation.py`, `src/scratch_broker_flow_traderate.py`,
+`src/sweep_broker_flow_gate.py`) for reuse if a differently-shaped version of this
+idea comes up later (e.g. per-stock rather than market-wide, or restricted to a
+narrower "smart money" broker subset rather than the whole liquid universe).
