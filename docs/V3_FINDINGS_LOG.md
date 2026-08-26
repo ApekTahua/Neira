@@ -4611,3 +4611,147 @@ and the research scripts (`src/scratch_market_flow_build.py`,
 `src/sweep_broker_flow_gate.py`) for reuse if a differently-shaped version of this
 idea comes up later (e.g. per-stock rather than market-wide, or restricted to a
 narrower "smart money" broker subset rather than the whole liquid universe).
+
+## Per-stock "smart money divergence" gate (a real IHSG trader's own heuristic:
+## foreign net buying WHILE top-retail XL/XC/PD net sell, same stock same day):
+## built, independence-checked, base-rate-checked, swept -- REJECTED, same
+## single-dominant-window failure signature as the market-wide version above,
+## despite passing the independence check the market-wide version failed
+## (2026-08-26)
+
+Follow-up to the market-wide broker-flow rejection just above, testing the
+differently-shaped version its own closing note flagged for later: per-STOCK,
+not market-wide aggregate, and a DIVERGENCE between two specific named broker
+subsets rather than one aggregate direction. This is a real professional IHSG
+trader's own stated tell ("smart money buying into retail's own selling"), not
+a guess -- tested on that basis, not dismissed on priors.
+
+**Feature**: `compute_broker_divergence()` (`src/backtest_v4.py`) -- for each
+(stock, day), `(foreign_net - retail_net)` summed over a trailing N-day window,
+divided by that SAME stock's own total turnover (all brokers, both sides) over
+the same window. `foreign_net`/`retail_net` restrict to the exact broker codes
+`sql/brokers_schema.sql` names (32 Foreign-classified codes / XL+XC+PD only for
+retail -- not silently widened to other Local codes). Rolling SUM-then-ratio
+(not rolling mean-of-ratio, unlike the market-wide feature) -- more robust to a
+single stock's lumpier, thinner daily turnover. Same corrupt-row filter and
+graceful local-Parquet-only degrade as the market-wide feature. `V4_DIVERGENCE_
+GATE` (default off) requires the ratio `>= V4_DIVERGENCE_MIN` (default 0.0,
+window default 5d) as an additional AND-ed condition on `simulate_window`'s own
+candidate consumption -- NOT folded into `score_candidates()` itself, so the
+live paper-trading scan/monitor scripts cannot be affected regardless of the
+flag's state. Self-check (`test_broker_divergence_gate.py`) confirms the BUMN/
+other-Local leg cannot leak into either the foreign or retail leg, an unknown
+(stock, date) defaults to "pass," and the flag is off by default without
+touching any other gate's own default -- all pass.
+
+**1. Independence check: genuinely near-zero, unlike the market-wide axis.**
+Spearman rho vs `weekly_ma_spread` (score_candidates()'s own ranking input):
++0.06 to +0.14 across the four window lengths tested (1d/3d/5d/10d); vs
+`sector_rs_momentum`: +0.01; vs `trend_strength`: +0.02 to +0.03; vs the
+market-wide `market_flow_5d` axis itself: +0.02 to +0.03. All highly
+statistically significant only because n>410,000 (liquid-population rows) --
+practically, none of these share more than ~2% of variance with anything
+already live or already tested. This is a materially cleaner independence
+result than the market-wide feature got (rho=+0.479 vs `trend_strength` there)
+-- if this feature carried real edge, it would be genuinely additive
+information, not a repackaged price signal.
+
+**2. Trade-level base rate (same 366-trade baseline population, `V4_ATR_PRICE_
+RATIO_MAX=0.08`, gate OFF): null.** Spearman divergence-at-entry vs `pnl_pct`
+across the four window lengths: 1d rho=-0.026 (p=0.62), 3d rho=+0.112
+(p=0.032), 5d rho=+0.041 (p=0.44), 10d rho=+0.059 (p=0.26) -- one borderline
+significant result out of four, and it doesn't replicate at neighboring window
+lengths, consistent with one false positive among multiple comparisons rather
+than a real effect. Quartile win rates are non-monotonic at every window (e.g.
+3d: Q1 46.2%, Q2 45.6%, Q3 64.8%, Q4(most divergent) 51.1% -- the best quartile
+isn't the one the hypothesis predicts). Kruskal-Wallis across quartiles never
+clears p<0.05 (3d: p=0.06; others p=0.15-0.99). The binary `flag_Nd` ON-vs-OFF
+comparison shows no difference at any window (Mann-Whitney p from 0.25 to
+0.99). Single-leg attribution at 5d: neither `foreign_ratio_5d` alone
+(rho=+0.023, p=0.66) nor `retail_ratio_5d` alone (rho=-0.071, p=0.17) shows
+anything either -- the divergence isn't hiding a real one-leg effect that
+cancels out in the difference.
+
+**3. Full 9-window walk-forward, threshold sweep at window=5d (baseline
+reconfirmed byte-identical to the market-wide entry's own reconfirmed number --
+366 trades, mean alpha +26.17%, same run):**
+
+| `V4_DIVERGENCE_MIN` (5d) | trades | beat-bench | win>50% | mean profit | mean alpha | mean PF | worst maxDD | mean alpha, window 8 EXCLUDED |
+|---|---|---|---|---|---|---|---|---|
+| OFF (baseline) | 366 | 7/9 | 4/9 | +25.31% | +26.17% | 1.95 | -21.10% | +15.96% |
+| -0.10 | 355 | 6/9 | 5/9 | +32.17% | +33.03% | 2.28 | -21.10% | +15.61% |
+| -0.05 | 354 | 7/9 | 5/9 | +19.72% | +20.58% | 1.90 | -21.09% | +13.56% |
+| 0.0 | 349 | 6/9 | 3/9 | +18.86% | +19.73% | 1.44 | -22.76% | +8.22% |
+| 0.05 | 310 | 7/9 | 3/9 | +36.28% | +37.14% | 2.59 | -20.97% | +14.46% |
+| 0.10 | 262 | 6/9 | 2/9 | +9.94% | +10.80% | 1.61 | -18.97% | +8.49% |
+| 0.20 | 70 | 3/9 | 0/9 | -0.51% | +0.36% | 0.66 | -7.48% | +1.84% |
+
+At the extreme (0.20), the gate mechanically works as designed -- it starves
+the trade count from 366 to 70 (window 9 down to a single trade) and mean
+alpha collapses to near zero, confirming this isn't an inert filter. In the
+middle of the range, two cells (-0.10 and 0.05) nominally clear this project's
+own adoption bar (beats baseline on both mean alpha AND worst-case drawdown,
+simultaneously) -- but see #5.
+
+**4. Window-days sensitivity on the two nominally-passing cells (-0.10 and
+0.05, swept 3d/5d/10d): non-monotonic, same noisy-landscape signature this log
+has now hit four times (hysteresis band, weekly-comp-cap, the market-wide
+window sweep, and now this).** At `MIN=0.05`: 3d mean alpha +21.75% (below
+baseline), 5d +37.14% (the sweep's best-looking single cell), 10d +26.47%
+(back down near baseline) -- 5d sits as an isolated spike between two
+mediocre neighbors, not a plateau. At `MIN=-0.10`: 3d +42.84%, 5d +33.03%,
+10d +33.11% -- looks more consistent on its face, but the 3d cell shows the
+most extreme single-window concentration of the entire sweep (window 8 alone
+hits +250.04% alpha) and is also the one cell where window 4 (see #5) gets
+newly and badly damaged (-9.74% alpha, untouched at 5d/10d) -- the apparent
+"smoother" curve here is compatible with the same single-window artifact
+showing up more strongly, not with a cleaner signal.
+
+**5. Single-window check (window 8, 2025 H2, baseline's standout at
++132.88%/+107.84% alpha) -- decisive.** Window 8 contributes 107.84 of
+baseline's 235.51 total 9-window alpha sum (46%), same concentration already
+flagged for the market-wide gate. Recomputing mean alpha with window 8
+excluded for every cell tested (rightmost column above, plus the three
+window-days variants): baseline's own excl-window-8 mean is +15.96%. Every
+single tested cell's excl-window-8 mean is EITHER roughly flat (+15.25% to
++17.09%, the three `-0.10` variants) or clearly worse (+8.22% to +14.46%, the
+`0.0`/`0.05`/`0.10`/`0.20` cells) than that baseline. The two cells that
+nominally clear the full-aggregate adoption bar (`-0.10`@5d: 33.03% vs 26.17%;
+`0.05`@5d: 37.14% vs 26.17%) owe effectively all of that apparent gain to
+window 8 alone getting bigger (its alpha goes from 107.84% to 172.43% and
+218.59% respectively) -- excluding it, both cells sit at or below baseline
+(15.61% and 14.46% vs 15.96%). This is the exact pattern this log has now
+explicitly required checking for twice: an aggregate improvement that
+evaporates when the single best-performing window is set aside.
+
+Window 4 (baseline's 2nd-best, +51.27% alpha, 44 trades) -- the "does a
+previously-solid window get WORSE" check -- degrades at every setting except
+three (`-0.10`@5d, `-0.10`@10d, `-0.05`@5d, where the gate happens not to bind
+on that window's specific candidates and it stays exactly unchanged at
++51.27%). Everywhere else it declines monotonically as the gate tightens or
+shortens: `0.0`@5d +18.56%, `0.05`@5d +3.55%, `0.05`@3d +1.91%, `0.05`@10d
++0.93%, `0.10`@5d -4.88%, `-0.10`@3d -9.74%, `0.20`@5d -12.31%.
+
+**Verdict: REJECTED, kept off by default (`V4_DIVERGENCE_GATE=0`).** This is a
+genuinely different outcome from the market-wide rejection above in one real
+respect (the independence check is clean here -- this is not a repackaged
+price signal) but the same outcome in the ones that matter for whether to
+trade on it: no significant trade-level relationship at any of four window
+lengths, a non-monotonic and noisy walk-forward response to both its threshold
+and its own window-length parameter, and -- decisively -- every walk-forward
+cell's apparent aggregate improvement is fully explained by amplifying a
+single already-best window (2025 H2) while a previously-solid window (window
+4) gets damaged at every setting except where the gate doesn't bind at all.
+The professional trader's heuristic may well be real in some form (a genuinely
+orthogonal feature, cleanly independent of everything already tested, is not
+nothing) -- but this specific formulation (per-stock, N-day rolling net-value
+ratio, as a hard gate on entry) does not turn that independence into a
+detectable, robust trading edge in this backtest. Code kept (inert, off by
+default): `compute_broker_divergence()` + `_daily_stock_divergence_legs()`
+(`src/backtest_v4.py`), `test_broker_divergence_gate.py`, and the research
+scripts (`src/scratch_broker_divergence_build.py`,
+`src/scratch_broker_divergence_correlation.py`,
+`src/scratch_broker_divergence_traderate.py`,
+`src/sweep_broker_divergence_gate.py`) in case a differently-shaped version
+comes up later (e.g. as a continuous ranking input rather than a hard gate, or
+tested on a broker-classification cut the user hasn't specified yet).
