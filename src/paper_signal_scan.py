@@ -667,6 +667,15 @@ def main():
         f"Equity: Rp{total_equity:,.0f} ({net_profit_pct:+.2f}%)",
         f"Open positions: {len(still_open)} | Win rate: {win_rate:.1f}% ({total_trades} trades)",
     ]
+    # Real-capital readiness gate (docs/MASTERPLAN.md criterion A) -- surfaced
+    # daily so it can't quietly go stale in the roadmap docs again (2026-08-26
+    # council finding: a 9-day gap between real work and any visible record of
+    # it was the actual cause of a "no progress" feeling, not a lack of real
+    # progress). Only meaningful for the run real capital would actually
+    # follow -- a retired run's trade count isn't gating anything.
+    if pc.PAPER_VERSION == pc.PRIMARY_PAPER_VERSION:
+        days_elapsed = (today - period_start).days
+        lines.append(f"Gate: {total_trades}/25-30 closed trades · day {days_elapsed}/42-56")
     if new_candidates_notes:
         lines.append("New candidates queued for tomorrow's open: " + ", ".join(new_candidates_notes))
     # A retired run (pc.RETIRED_PAPER_VERSIONS) never has new_candidates_notes
