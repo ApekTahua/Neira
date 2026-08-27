@@ -4755,3 +4755,211 @@ scripts (`src/scratch_broker_divergence_build.py`,
 `src/sweep_broker_divergence_gate.py`) in case a differently-shaped version
 comes up later (e.g. as a continuous ranking input rather than a hard gate, or
 tested on a broker-classification cut the user hasn't specified yet).
+
+## "Long tight consolidation, then breakout" (the NICE pattern, real-trader-flagged):
+## population scan built, pre-registered bar not cleared, REJECTED -- null result robust
+## across an 8-point parameter sweep, not one unlucky value (2026-08-27)
+
+User flagged a real case: NICE traded sideways ~234-290 for 2.5 months (2026-06-08 to
+2026-08-24), then gained +25% (ARA) on 2026-08-26 and another +17% intraday the next
+session. A 5-advisor council session the same day converged on a narrow plan: (1) a cheap
+feasibility check on whether buying ON the breakout day or the day after is even fillable,
+(2) define a consolidation rule and a pass/fail bar BEFORE touching NICE's own numbers
+again, (3) run the population scan through the existing liquidity filter, (4) only if that
+clears the bar, test an actual entry-during-consolidation trade rule with real money math
+and the symmetric ARB-trap risk. Stopped at (3) -- did not clear the bar, so (4) was not
+run, per the plan's own explicit instruction not to invent a stage past a real "no."
+
+**Stage 1 -- ARA-lock feasibility (`src/scratch_consolidation_ara_feasibility.py`)**: reused
+the project's own board-limit-aware `is_ara_locked()` (`src/backtest_v4.py`) rather than a
+naive open==high==low check. On the exact 932-episode population the existing base-rate
+spike study used (volume>=10x trailing avg, move>=20%, ADTV_MIN, ATR/price<=10% -- n
+reproduced exactly, confirming the population matches), the spike day itself is ARA-locked
+(closed at the high, essentially the full board limit, no real offer to buy from) **53.1% of
+the time**. On the broader unfiltered population of all >=20% up-days, 58.6% locked;
+restricted to the liquid universe (existing `adtv_20 >= ADTV_MIN` + `atr_14/close <=
+ATR_PRICE_RATIO_MAX` filter), 48.5% locked. Of locked days, only 8.2% have essentially zero
+intraday range (truly untradeable all day) -- most locked days DO show real intraday range
+before pinning at the close (median 25% of previous close), meaning a fill was
+theoretically possible earlier in the day, just not at the closing price a naive backtest
+would assume. **Verdict: roughly a coin flip, not "almost always locked."** Doesn't kill
+variant (b) outright, but confirms the council's suspicion that it can't be honestly
+backtested with `ihsg_eod`'s daily-bar-only data -- half the time there's no real fill at
+all, and the other half needs an intraday fill-price assumption this dataset has no way to
+verify. Not pursued further (matches the plan: feasibility check, not a backtest, for
+variant b).
+
+**Stage 2 -- pre-registration (`src/scratch_consolidation_scan.py`'s own docstring, written
+and committed to before running Stage 3)**: "long tight consolidation" = per stock, per day,
+`range_pct_60` (rolling 60-trading-day high/low range as % of rolling 60-day median close)
+at or below the 10th percentile of that same metric across the WHOLE liquid population's
+history (population-relative threshold, not fit to NICE's own ~21% range), sustained for
+>=40 consecutive trading days. One episode per maximal qualifying run; episode date = the
+LAST day of the run (still "inside" the range, the honest entry day for a variant-(a)-style
+rule). **Pass bar, decided before running**: >=50 episodes, AND at +10 trading days
+population mean AND median return each beat IHSG's own mean/median return over the same
+episode dates by >=3 percentage points, AND win rate (return>0) >=55%. All three needed
+simultaneously; any one failing is a clean rejection.
+
+**Stage 3 -- population scan result**: 257 real episodes, 116 unique stocks (2020-11 to
+2026-06, roughly even 21-60/year across 2021-2025, not concentrated in one regime the way
+the spike study's 932 episodes were concentrated in COVID-recovery/2025-bull-run -- a
+genuinely better-spread sample). Dominated by real large/mid-cap names going through
+legitimate low-volatility periods (BBCA, BBRI, BJBR, BDMN, INDF, ICBP, CPIN, MGRO, BNGA),
+not dead/suspended stocks (the liquidity filter's ADTV floor already excludes those). 39
+stocks contribute >=3 episodes each (154/257 total) -- not independent across tickers, same
+caveat the base-rate spike study logged for its own population.
+
+| Horizon | n | stock mean/median | IHSG mean/median | alpha mean/median | win rate | up>=5% / flat / down<=5% |
+|---|---|---|---|---|---|---|
+| +5d | 257 | +0.59% / 0.00% | -0.13% / -0.07% | +0.72pp / +0.07pp | 49.0% | 14.8% / 72.0% / 13.2% |
+| +10d | 256 | +0.21% / 0.00% | +0.02% / +0.09% | +0.18pp / -0.09pp | 46.1% | 17.6% / 67.6% / 14.8% |
+| +20d | 254 | +1.08% / +0.57% | -0.28% / +0.03% | +1.36pp / +0.55pp | 52.0% | 27.2% / 50.8% / 22.0% |
+
+**Does not clear the pre-registered bar at any horizon.** At +10d (the bar's own horizon):
+alpha mean +0.18pp and median -0.09pp, both far under the +3pp bar; win rate 46.1%, under
+even 50% let alone the 55% bar. +20d is the closest to promising (win 52.0%, alpha
++1.36pp/+0.55pp) but still well short of +3pp/55% on every count. The full breakdown shows
+"flat" (-5%..+5%) is the dominant outcome at every horizon (51-72%), and up/down are roughly
+balanced (down-side is NOT small -- 13-22% of episodes break down at least 5%, the symmetric
+ARB-trap risk the council flagged is a real, non-trivial fraction of this population, not an
+edge case). This directly explains why NICE reads as a striking anecdote: dramatic
+breakouts happen, but the base rate says "goes nowhere" is far more common than either
+direction, and a real down-tail exists too.
+
+**Robustness check (`src/scratch_consolidation_sensitivity.py`)**: before accepting a null
+result at face value -- this project has been burned by trusting one lucky point before
+(the hysteresis-band sweep), so a one-point null deserves the same scrutiny. Swept the
+tightness percentile (5/10/15/20%) at the pre-registered 60-day/40-day-min-run, and the
+window length (40/60/90/120 trading days, min-run scaled ~2/3 of window) at the
+pre-registered 10th percentile, all at the +10d horizon:
+
+| win | min_run | pctile | n | mean ret | median ret | win rate | mean alpha | median alpha |
+|---|---|---|---|---|---|---|---|---|
+| 60 | 40 | 5% | 135 | -0.57% | -0.34% | 40.7% | -0.41pp | -0.64pp |
+| 60 | 40 | 10% (default) | 256 | +0.21% | 0.00% | 46.1% | +0.18pp | -0.19pp |
+| 60 | 40 | 15% | 393 | +0.30% | 0.00% | 46.1% | +0.46pp | -0.15pp |
+| 60 | 40 | 20% | 498 | +0.21% | 0.00% | 45.6% | +0.31pp | -0.17pp |
+| 40 | 25 | 10% | 449 | +0.28% | 0.00% | 47.7% | +0.17pp | -0.28pp |
+| 90 | 60 | 10% | 166 | -0.04% | +0.36% | 50.6% | -0.06pp | +0.08pp |
+| 120 | 80 | 10% | 115 | -1.03% | 0.00% | 47.0% | -0.59pp | +0.19pp |
+
+**Null holds everywhere tested** -- mean/median alpha stays within roughly -0.6pp to +0.5pp
+and win rate stays 40.7-50.6% (never once clearing 50%, let alone the 55% bar) across all 8
+cells. This is the opposite failure signature from the hysteresis-band episode: instead of
+"spectacular at one value, unstable elsewhere," this is "flat-to-negative everywhere," which
+is a much more trustworthy null than a single run would have been.
+
+**NICE's own position, checked last, for context only**: NICE does not appear as an episode
+in this scan at all -- not because the rule excludes it, but because its real consolidation
+(2026-06-08 to 2026-08-24) extends past this cached dataset's 2026-06-30 cutoff, and even at
+the cache's last available date its trailing 60-day range_pct (45.7%) is still far above the
+16.27% threshold, because that 60-day lookback also captures the sharp decline (280->216)
+that preceded the tight base -- a real, mechanical reason a rolling trailing-window measure
+takes time to "forget" a recent crash, not a flaw in the population result above.
+
+**Verdict: REJECTED. Stage 4 (entry-during-consolidation trade-rule backtest with real fees/
+slippage/sizing and the ARB-trap check) was not run** -- the plan's own pass bar was written
+before this scan ran, wasn't cleared, and stayed uncleared across an 8-point sensitivity
+sweep, so building the next stage on top of it would be re-litigating a real "no." The
+underlying pattern (long, genuinely tight consolidation predicting an eventual directional
+move) is not supported at the population level on this measure, on liquid IHSG stocks,
+2020-2026: the modal outcome is "stays flat," and the up/down split among the stocks that do
+move is close to symmetric -- not tilted toward the breakout NICE showed. Code kept
+(`src/scratch_consolidation_ara_feasibility.py`, `src/scratch_consolidation_scan.py`,
+`src/scratch_consolidation_sensitivity.py`, `.cache/consolidation_episodes.csv`) for reuse
+if a differently-shaped version of the idea comes up later (e.g. a volatility-compression
+measure instead of a fixed-window range, or conditioning on a specific catalyst rather than
+tightness alone -- neither attempted here). `backtest_v4.py` itself is unmodified by this
+entry; only new scratch scripts were added, none of them touch `simulate_window`,
+`score_candidates`, `compute_entry_fill`, or any live path.
+
+## Round 2 -- "long tight consolidation," volatility-compression version (14-day ATR/price
+## instead of 60-day high-low range): REJECTED, null is WORSE than Round 1's and negatively
+## tilted, not just flat. NICE-pattern research thread now CLOSED, both rounds (2026-08-27)
+
+Round 1's own writeup named a specific, concrete flaw: its 60-trading-day trailing
+high-low-range measure is slow to "forget" an old sharp move, and that's the literal reason
+NICE itself never showed up as an episode (its early-June crash kept the 60-day range wide
+for weeks after the stock had actually calmed down). This round tested the fix that flaw
+implies: swap the tightness metric for something that adapts fast, while holding everything
+else -- population, liquidity filter, the 40-day "long" persistence requirement, forward-
+return horizons, benchmark, pass bar -- exactly as Round 1 had it, so any pass/fail is
+attributable to that one change and nothing else.
+
+**Pre-registration (`src/scratch_consolidation_vol_scan.py`'s own docstring, written before
+running)**: tightness metric = `atr_14 / close_price`, where `atr_14` is the project's own
+existing 14-trading-day true-range average (`src/strategy.py`, already used by the live
+liquidity filter -- not a new metric invented for this test). "Tight" = <=10th percentile of
+that ratio across the whole liquid population's history (same percentile, same liquidity
+filter as Round 1). "Long" = tight for >=40 consecutive trading days, unchanged from Round 1.
+Episode date = last day of the run. Same pass bar as Round 1: >=50 episodes, AND at +10
+trading days population mean AND median return each beat IHSG's own by >=3pp, AND win rate
+>=55%, all three simultaneously.
+
+**Population scan result**: 206 episodes, 88 unique stocks (28 stocks contribute >=3
+episodes each, 129/206 -- same non-independence caveat as always). Result is not just short
+of the bar, it points the wrong way at every horizon:
+
+| Horizon | n | stock mean/median | IHSG mean/median | alpha mean/median | win rate | up>=5% / flat / down<=5% |
+|---|---|---|---|---|---|---|
+| +5d | 205 | -1.61% / -0.43% | -0.62% / -0.20% | -0.99pp / -0.23pp | 37.6% | 8.3% / 75.6% / 16.1% |
+| +10d | 205 | -0.93% / -0.56% | -0.68% / +0.01% | -0.26pp / -0.57pp | 39.5% | 11.7% / 69.3% / 19.0% |
+| +20d | 204 | -0.85% / 0.00% | -0.27% / +0.30% | -0.57pp / -0.30pp | 45.1% | 14.7% / 64.2% / 21.1% |
+
+Win rate never reaches even 50% at any horizon (Round 1's worst was 46.1%); alpha is
+negative at every horizon on both mean and median (Round 1 was at least weakly positive on
+the mean). A stock this quiet by 14-day ATR looks, if anything, mildly more likely to drift
+down over the next 5-20 days than a random liquid stock on a random day -- consistent with
+"already-quiet-by-this-measure" catching stocks in the early, indecisive stage of a
+distribution/decline rather than a coiled spring.
+
+**Sensitivity sweep (`src/scratch_consolidation_vol_sensitivity.py`)**: percentile threshold
+(5/10/15/20%) at the pre-registered 40-day min-run, and min-run length (25/40/60/80 days) at
+the pre-registered 10th percentile, all at +10d:
+
+| min_run | pctile | n | mean ret | median ret | win rate | mean alpha | median alpha |
+|---|---|---|---|---|---|---|---|
+| 40 | 5% | 80 | -0.44% | -0.16% | 43.8% | +0.03pp | -0.38pp |
+| 40 | 10% (default) | 205 | -0.93% | -0.56% | 39.5% | -0.26pp | -0.30pp |
+| 40 | 15% | 328 | -0.53% | -0.61% | 41.5% | -0.34pp | -1.05pp |
+| 40 | 20% | 462 | -1.11% | -0.66% | 41.3% | -1.10pp | -0.92pp |
+| 25 | 10% | 397 | -0.72% | -0.34% | 42.6% | -0.39pp | -0.57pp |
+| 60 | 10% | 92 | +0.20% | 0.00% | 44.6% | +0.52pp | +0.16pp |
+| 80 | 10% | 64 | -1.98% | -0.49% | 40.6% | -1.36pp | -0.42pp |
+
+Win rate stays 39.5-44.6% across all 7 cells -- never once above 50%, let alone the 55% bar
+-- and alpha stays roughly -1.4pp to +0.5pp. Same "flat-to-negative everywhere" signature
+Round 1 showed, one notch worse: this null is mildly negative rather than mildly positive-
+but-insufficient. Not a one-lucky-point artifact either way.
+
+**NICE's own reading under this metric, checked last, for context only**: as of the cache's
+last available date (2026-06-30), NICE's `atr_14/close_price` is 8.57% -- nowhere near the
+2.19% population threshold, despite the stock visibly trading in a bounded 234-284 band by
+this point. This is a DIFFERENT reason than Round 1's (a stale 60-day window still
+remembering the June crash): the 14-day ATR itself stays elevated because NICE's own
+day-to-day range stayed genuinely large even while its multi-week high-low band was
+narrowing -- a choppy, wide-daily-swing consolidation, not a smoothly calming one. Neither
+tested definition of "tight" would have flagged NICE ahead of its breakout, for two
+genuinely different mechanical reasons. That's informative on its own: NICE's actual
+pre-breakout behavior doesn't match either of the two most natural, standard ways to define
+"quiet."
+
+**Verdict: REJECTED. Both the direction-of-fix hypothesis (a faster-adapting measure would
+surface a real edge Round 1's slow measure was masking) and the underlying "long
+consolidation predicts breakout" hypothesis itself are not supported.** Fixing the specific,
+named flaw in Round 1's measure did not surface a hidden edge -- it produced a cleaner, more
+negative null. Per this session's explicit instruction, no third variant follows regardless
+of outcome.
+
+**NICE-pattern research thread, closed, both rounds**: a single striking real trade (NICE,
++25%/+17% off a 2.5-month base) does not generalize to a population-level edge on liquid
+IHSG stocks, 2020-2026, under either a slow (60-day range) or fast (14-day ATR) definition of
+"quiet." The modal outcome after genuine tightness, either way it's measured, is "keeps
+drifting sideways," and the up/down split among stocks that do move is not tilted toward the
+breakout direction -- if anything the fast measure leans slightly toward continued weakness.
+Code kept for reference (`src/scratch_consolidation_ara_feasibility.py`,
+`src/scratch_consolidation_scan.py`, `src/scratch_consolidation_sensitivity.py`,
+`src/scratch_consolidation_vol_scan.py`, `src/scratch_consolidation_vol_sensitivity.py`,
+`.cache/consolidation_episodes.csv`, `.cache/consolidation_vol_episodes.csv`) but this
+specific idea is not being pursued further. `backtest_v4.py` is unmodified by this entry.
