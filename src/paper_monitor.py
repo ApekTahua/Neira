@@ -69,11 +69,34 @@ BREADTH_CRASH_FRACTION = float(os.environ.get("V4_BREADTH_CRASH_FRACTION", "0.30
 
 def _detect_breadth_crash(supabase) -> tuple:
     """(is_crash, fraction_red, universe_size). Universe = tickers with a
-    real print today (volume > 0) -- excludes suspended/no-trade names so
-    a pile of frozen zero-volume rows can't dilute the fraction."""
-    res = _retry(lambda: supabase.table("ihsg_realtime").select("change_percentage, volume").execute())
-    rows = [r for r in (res.data or [])
-            if r.get("volume") and r["volume"] > 0 and r.get("change_percentage") is not None]
+    real print today (volume > 0) AND an updated_at within STALE_MINUTES of
+    the freshest row this same query returns -- excludes both suspended/
+    no-trade names (frozen zero-volume rows) and long-dead rows the daily
+    sync stopped touching. Found 2026-08-27, real data: 41 X-prefixed ETF
+    tickers (XBID, XIFE, XCEG, ...) sat frozen since 2026-06/07 with a
+    stale but nonzero volume and a stale change_percentage, and the old
+    unfiltered version counted every one of them -- both diluting the
+    denominator with mostly-flat dead rows (biasing the fraction down on an
+    ordinary day) and, worse, permanently counting 5 of them as "crashing"
+    forever since their frozen change_percentage happened to sit <=
+    BREADTH_CRASH_DROP_PCT (a false signal with no relationship to today's
+    market). ihsg_realtime is synced as one daily batch, not a per-ticker
+    trickle (confirmed: 963/965 genuinely-fresh rows on a real day shared
+    the identical microsecond timestamp) -- comparing each row's own
+    updated_at against the freshest row in the SAME query (not wall-clock
+    date.today(), which would need timezone reasoning) cleanly separates
+    "part of today's sync" from "orphaned" regardless of when this poll
+    happens to run."""
+    res = _retry(lambda: supabase.table("ihsg_realtime").select("change_percentage, volume, updated_at").execute())
+    data = res.data or []
+    freshest = max((r["updated_at"] for r in data if r.get("updated_at")), default=None)
+    if freshest is None:
+        return False, 0.0, 0
+    freshest_dt = _parse_timestamptz(freshest)
+    rows = [r for r in data
+            if r.get("volume") and r["volume"] > 0 and r.get("change_percentage") is not None
+            and r.get("updated_at")
+            and (freshest_dt - _parse_timestamptz(r["updated_at"])).total_seconds() / 60 <= STALE_MINUTES]
     if not rows:
         return False, 0.0, 0
     crashing = sum(1 for r in rows if float(r["change_percentage"]) <= BREADTH_CRASH_DROP_PCT)
