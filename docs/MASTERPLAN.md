@@ -26,8 +26,14 @@ section is the answer to the bigger one behind it.
 - [ ] **>= 25-30 CLOSED trades** on V4_PAPER (not open positions -- closed
       ones are what prove SL/TP1/trailing exits behave the way the backtest
       predicts against real fills, real slippage, a real live feed).
-      Status 2026-08-17: launched 2026-08-12, 5 trading days in, 2 OPEN, **0
-      CLOSED**. This is the real bottleneck, not a formality.
+      Status 2026-08-26: launched 2026-08-12, 10 trading days in, **3 CLOSED**,
+      5 OPEN, 1 PENDING, account +2.79% since launch. 3/25-30 -- still the
+      real bottleneck, not a formality. Council pressure-test 2026-08-26
+      (see `council-roadmap-verdict` artifact, this file's own catch-up entry
+      below) concluded this number cannot be moved faster by more algorithm
+      work -- it runs on the market's own clock. No further enhancement
+      testing planned as a way to "make progress" on this criterion; that's
+      not what it's for.
 - [ ] **>= 6-8 calendar weeks** of continuous live running, even if the trade
       count above is hit faster -- need to see the system survive ordinary
       operational reality (holidays, feed hiccups, a real regime wobble),
@@ -65,10 +71,19 @@ shared-function changes, so no 9-window walk-forward regression was
 triggered. "Found seven total across two days" is a stronger signal than
 "found two" that this surface hasn't been fully audited yet -- don't treat
 the clock reset as a formality.
+- **Clock reset again, 2026-08-24**: `evaluate_position_exit`'s two
+  pyramid-add sites (TP1-triggered add and the TP2 add-on) lacked the same
+  `liq_lots` liquidity cap `compute_entry_fill` already applies to initial
+  entries -- a real correctness gap in the shared live/backtest function,
+  fixed commit `9a1c05a`. Verified inert against the live config (full
+  9-window walk-forward, byte-identical aggregate numbers before/after --
+  the cap never actually bound under current settings, but the gap was
+  real and now closed). This resets the clock below to 2026-08-24, not
+  2026-08-18.
 - [ ] **>= 3-4 consecutive weeks with zero newly-discovered correctness
       bugs** in the live pipeline (`paper_monitor.py`/`paper_signal_scan.py`),
-      counted starting from 2026-08-18's fixes (the latest reset), not from
-      project start or from 2026-08-17.
+      counted starting from 2026-08-24's fix (the latest reset). Status
+      2026-08-26: 2 days in, not from project start or from 2026-08-17/18.
 
 ### C. Known structural risks -- each needs an explicit decision, not silence
 Don't need to be solved. Need to be consciously accepted or fixed --
@@ -129,15 +144,64 @@ changing your life -- not a number I can set for you, but not a step to
 skip either.
 
 ### Honest timeline read
-V4_PAPER is 5 trading days in with 2 open, 0 closed -- entry frequency looks
-moderate-to-sparse, consistent with today's own finding that the real entry
-gate returns zero qualifying candidates on 60% of days. Hitting 25-30 closed
-trades realistically takes longer than it sounds; this runs on the market's
-clock, not a sprint calendar. A genuinely honest earliest-case estimate for
-criterion A alone is **8-12+ weeks from now (into October-November 2026)**,
-and only if B and C also clear cleanly by then -- could easily run longer,
-and rushing this specific criterion is exactly the failure mode the rest of
-this section exists to prevent.
+V4_PAPER is 10 trading days in with 5 open, 3 closed, 1 pending (updated
+2026-08-26) -- entry frequency looks moderate-to-sparse, consistent with the
+finding that the real entry gate returns zero qualifying candidates on 60% of
+days. Hitting 25-30 closed trades realistically takes longer than it sounds;
+this runs on the market's clock, not a sprint calendar. A genuinely honest
+earliest-case estimate for criterion A alone is **8-12+ weeks from now (into
+October-November 2026)**, and only if B and C also clear cleanly by then --
+could easily run longer, and rushing this specific criterion is exactly the
+failure mode the rest of this section exists to prevent. Still on track with
+that original estimate 9 days later -- no new information changes it either
+direction.
+
+### Catch-up entry, 2026-08-26 (council pressure-test: "is this stuck?")
+
+Nine days without a masterplan update while real work kept happening is
+exactly the kind of gap this file exists to prevent -- flagged here, not
+silently backfilled as if it didn't happen. What actually occurred in that
+window, condensed:
+
+- **Three more algorithm-enhancement ideas tested with full walk-forward
+  rigor in the last 2 days, all honestly rejected** (full detail in
+  `docs/V3_FINDINGS_LOG.md`): a market-wide aggregate broker-flow regime
+  gate (failed 3 independent checks -- trade-level base rate, full
+  walk-forward, threshold sensitivity), and a per-stock foreign-vs-retail
+  broker divergence signal built from a real trader's own heuristic (passed
+  a clean independence check but showed no real predictive value, and its
+  apparent walk-forward improvement was traced to one window carrying
+  nearly all of it). Both kept off by default, nothing shipped to the live
+  path. This brings the project's lifetime rejected-and-kept-off count to
+  9+ -- see the council verdict below for why that's a *sign of a validated
+  design, not a stuck one*.
+- **The pyramid liquidity-cap fix** (2026-08-24, see criterion B above) --
+  a real correctness bug, fixed, verified inert.
+- **A real market stress-test, today**: IHSG composite closed -1.48%, but
+  31% of 831 liquid stocks were individually down 3%+ -- a genuine
+  breadth-crash day. The live breadth-crash guard (`paper_monitor.py`)
+  fired correctly, paused new fills and pyramid-adds, kept SL/trailing
+  exits active, and the account still ended the day up. Real evidence the
+  crash-handling design works, not a backtest claim.
+- **Frontend (newscraper.ai), same window**: 3 real user-facing trust bugs
+  fixed (a broker-flow-vs-badge contradiction on GIAA/PSAB/TEBE, a PnL
+  chart that rendered green even while losing money, a stale-EOD-price-
+  shown-as-live bug), a new "Repeat Pick" feature shipped, a looping hero
+  video added to the About page. None of this was in `docs/ROADMAP.md`
+  until today's catch-up pass there.
+
+**Council verdict (full report: `council-roadmap-verdict` artifact,
+2026-08-26)**: the rejection streak is not a dry well -- it's the expected
+shape of a system that already passed real validation and is being honestly
+re-checked. The actual problem was never a lack of real progress; it was
+that this file and `docs/ROADMAP.md` went 9 days without recording real
+work, making genuine progress invisible to the person running the project.
+Recommendation taken: stop testing new algorithm ideas as a default weekly
+activity (criterion A's clock cannot be moved faster by more code); don't
+build new "make the wait visible" tooling either (risks quietly blending
+backtest evidence into a gate that specifically requires live evidence);
+instead keep this file and the roadmap honestly current as work happens,
+so a 9-day blind spot can't quietly reopen.
 
 ## Repo housekeeping
 
