@@ -203,6 +203,30 @@ backtest evidence into a gate that specifically requires live evidence);
 instead keep this file and the roadmap honestly current as work happens,
 so a 9-day blind spot can't quietly reopen.
 
+**Candidate for future consideration, not started (2026-08-27)**: a
+competitor benchmark (idx.maxlong.my.id, external site, checked via its
+own public API/JS -- not a black-box guess) computes market regime as a
+weighted sum of 9 factors (EMA trend phase, price-vs-200MA, sector
+breadth, market breadth, Supertrend, foreign flow, volume, accum/dist
+count, longer-term trend breadth) landing on a continuous score across 6
+named buckets, instead of a single binary flag. Checked against their own
+live data for 2026-08-26 (our stress-test day): their EMA sub-signal read
+"BULL_RECOVERY" but their own full formula, run against their own numbers,
+lands at roughly -3 -- their own published thresholds put that in
+BEARISH, not bullish. Meanwhile our regime read a confirmed 24-day
+BULLISH streak straight through that same day. This is a genuinely
+different mechanism (weighted multi-factor score vs. a single HMM
+regime flag with a hysteresis-band hold), not a parameter tweak on an
+already-tuned lever -- worth a real look once this project reopens
+algorithm research (not now; today's council verdict above still holds).
+Explicitly NOT worth adopting from the same competitor: their actual
+stock-screener signal logic (Supertrend/RSI/volume-surge momentum
+confluence, several live top-picks flagged only after already running
+20-35% intraday) is the same species as this project's own already-proven-
+no-edge V1 entry, with no confirmation/hysteresis mechanism at all -- if
+anything, external confirmation that this project's confirmation-delay
+design choices were the right call, not something to change.
+
 ## Repo housekeeping
 
 `src/` audited 2026-08-11 (user asked to declutter, worried it was
