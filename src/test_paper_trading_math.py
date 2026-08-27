@@ -22,6 +22,7 @@ os.environ.setdefault("V4_TEST_END", "2026-07-31")
 
 import backtest_v4 as bt  # noqa: E402
 import paper_common as pc  # noqa: E402
+import paper_monitor as pm  # noqa: E402
 import config as cfg  # noqa: E402
 
 TOL = 1.0  # Rupiah tolerance for money amounts (float rounding)
@@ -100,6 +101,16 @@ def _base_position(**overrides):
         "hold_days": 5, "tp1_hit": False, "tp2_hit": False, "highest_price": 1000.0,
         "trigger": "TEST", "checkpoint_day": None, "target_price": 1200.0,
         "entry_price_original": 1000.0, "atr_at_entry": 20.0,
+        # Realistic mid-liquidity value, matching the sig-dict fixtures elsewhere in this
+        # file (1e7) -- found missing 2026-08-27 audit: evaluate_position_exit's
+        # pos.get("avg_vol_20", 1.0) fallback (same default compute_entry_fill uses) meant
+        # every pyramid-add liquidity cap added by commit 9a1c05a (int(1.0 * LIQ_CAP_PCT)
+        # // LOT_SIZE == 0) silently zeroed BOTH add_lots computations whenever this key
+        # was absent, breaking test_evaluate_position_exit_tp1_and_pyramid since that
+        # commit landed (test-fixture-only bug -- every real paper_positions row always
+        # carries a real avg_vol_20 in the tens-of-millions, confirmed against live
+        # run_id 32/35/36 data, so the live pipeline itself was never affected).
+        "avg_vol_20": 1e7,
     }
     pos.update(overrides)
     return pos
@@ -332,6 +343,68 @@ def test_looks_like_unadjusted_corporate_action():
     print("[OK] test_looks_like_unadjusted_corporate_action")
 
 
+class _FakeResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeTable:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def select(self, *_a, **_kw):
+        return self
+
+    def execute(self):
+        return _FakeResult(self._rows)
+
+
+class _FakeSupabase:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def table(self, _name):
+        return _FakeTable(self._rows)
+
+
+def test_detect_breadth_crash_ignores_stale_rows():
+    # Real incident this guard was found against (2026-08-27 audit): 41
+    # X-prefixed ETF tickers sat in ihsg_realtime frozen for weeks with a
+    # stale nonzero volume/change_percentage, unfiltered by the old version.
+    # 963 rows below share one fresh batch timestamp; a handful of dead rows
+    # sit weeks behind it -- some deep in "crashing" territory forever.
+    fresh = "2026-08-26T18:00:00.108428+07:00"
+    stale = "2026-06-25T17:55:09+07:00"  # ~2 months behind fresh, must be excluded
+    rows = (
+        [{"volume": 1000, "change_percentage": -1.0, "updated_at": fresh} for _ in range(60)]
+        + [{"volume": 1000, "change_percentage": -5.0, "updated_at": fresh} for _ in range(40)]
+        # Dead rows: nonzero volume, permanently "crashing" change_percentage,
+        # but weeks-stale -- must NOT count toward either the numerator or denominator.
+        + [{"volume": 100, "change_percentage": -9.77, "updated_at": stale} for _ in range(20)]
+    )
+    is_crash, fraction, universe = pm._detect_breadth_crash(_FakeSupabase(rows))
+    # Fresh-only universe: 100 rows, 40 crashing -> exactly 40%, well clear of the
+    # BREADTH_CRASH_FRACTION default (0.30) either way -- this fixture isolates
+    # whether the stale rows get counted at all, not the threshold itself.
+    assert universe == 100, f"stale rows leaked into the universe count: {universe}"
+    approx(fraction, 0.40, tol=1e-9)
+    assert is_crash is True
+
+    # Same fixture, but drop the fresh crashing rows below threshold and replace
+    # them with dead rows that WOULD tip it over 30% if wrongly counted -- proves
+    # the fix isn't just "stale rows happen not to matter in this fixture."
+    rows_calm = (
+        [{"volume": 1000, "change_percentage": -1.0, "updated_at": fresh} for _ in range(95)]
+        + [{"volume": 1000, "change_percentage": -5.0, "updated_at": fresh} for _ in range(5)]
+        + [{"volume": 100, "change_percentage": -9.77, "updated_at": stale} for _ in range(50)]
+    )
+    is_crash_calm, fraction_calm, universe_calm = pm._detect_breadth_crash(_FakeSupabase(rows_calm))
+    assert universe_calm == 100, f"stale rows leaked into the universe count: {universe_calm}"
+    approx(fraction_calm, 0.05, tol=1e-9)
+    assert is_crash_calm is False, "50 permanently-stale 'crashing' rows must not tip an otherwise-calm day over threshold"
+    print("[OK] test_detect_breadth_crash_ignores_stale_rows")
+
+
 def test_is_idx_trading_day():
     # Real incident this guard exists for: EKAD (V3_PAPER) filled 2026-08-17,
     # Hari Kemerdekaan -- IDX closed, ihsg_realtime updated anyway.
@@ -368,5 +441,6 @@ if __name__ == "__main__":
     test_score_full_universe()
     test_retired_paper_versions()
     test_looks_like_unadjusted_corporate_action()
+    test_detect_breadth_crash_ignores_stale_rows()
     test_is_idx_trading_day()
     print("\nAll paper-trading math checks passed.")
