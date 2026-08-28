@@ -2175,6 +2175,19 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
         remaining_positions = []
         for pos in positions:
             if pos["entry_date"] == trade_date:
+                # Same-day entry: still skip the SL/TP1/TRAILING/CHECKPOINT/TIME decision (a
+                # position shouldn't be evaluated against its own same-day fill) -- but DO
+                # capture today's real close into highest_price, same as the first thing
+                # evaluate_position_exit() itself does every OTHER day (`if close_price >
+                # pos["highest_price"]: pos["highest_price"] = close_price`). Without this, a
+                # same-day rally past the fill price is permanently invisible to the trailing-
+                # stop calc even after MIN_HOLD_DAYS/TP1 later activate it -- found 2026-08-28 via
+                # a live V4_PAPER position (FPNI: entry-day close 665, stayed pinned at its fill
+                # price 555 because this whole branch used to `continue` before ever looking at
+                # today's bar). Mirrored in paper_signal_scan.py's identical entry-day guard.
+                bar = get_bar(pos["stock_code"], trade_date)
+                if bar is not None and bar[1] > pos["highest_price"]:
+                    pos["highest_price"] = bar[1]
                 remaining_positions.append(pos)
                 continue
             bar = get_bar(pos["stock_code"], trade_date)

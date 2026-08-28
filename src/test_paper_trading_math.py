@@ -202,6 +202,54 @@ def test_evaluate_position_exit_tp1_allow_pyramid_false():
           f"cash_delta={cash_delta:+,.0f})")
 
 
+def test_entry_day_highest_price_capture():
+    """Regression guard for the 2026-08-28 live-position bug: an entry-day rally past the
+    fill price used to be permanently invisible to highest_price, because both callers
+    (backtest_v4.py's simulate_window loop and paper_signal_scan.py's EOD-reconcile loop)
+    `continue`d on a position's own entry day before ever looking at that day's bar --
+    skipping the exit-DECISION correctly, but also skipping the highest_price CAPTURE that
+    has nothing to do with the decision. Real numbers from the incident: FPNI filled at 555,
+    closed at 665 the same day (entry day) -- highest_price stayed 555 all day.
+
+    This test doesn't re-invoke the caller loops (those are two-line additions, not worth a
+    Supabase-double harness) -- it exercises the exact one-line fix
+    (`if bar_close > pos["highest_price"]: pos["highest_price"] = bar_close`) both callers now
+    run on entry day, then feeds the result into the REAL evaluate_position_exit() for the
+    next trading day to prove the fix changes a real exit decision, not just a stored number."""
+    pos = _base_position(tp1_hit=True, sl_price=500.0, highest_price=555.0, avg_price=555.0,
+                          total_lots=100, remaining_lots=100,
+                          cost_basis=100 * bt.LOT_SIZE * 555.0 * (1 + cfg.BUY_FEE))
+    entry_day_close = 665.0  # the rally this bug used to lose
+
+    # BUGGY behavior (pre-fix): entry day `continue`s before ever looking at the bar --
+    # highest_price never moves off the fill price.
+    buggy_highest = pos["highest_price"]
+    assert buggy_highest == 555.0
+
+    # FIXED behavior: the one line both callers now run on entry day.
+    if entry_day_close > pos["highest_price"]:
+        pos["highest_price"] = entry_day_close
+    assert pos["highest_price"] == 665.0, "fix should capture the entry-day close as the new peak"
+
+    # Next trading day: a real pullback to 520 -- above the original sl_price(500), below the
+    # CORRECT trailing stop derived from 665, above the stop the BUG would have computed from 555.
+    day2_bar = (600.0, 520.0, 610.0, 515.0)
+    buggy_trailing_stop = buggy_highest * (1 - cfg.TRAILING_PCT)
+    fixed_trailing_stop = pos["highest_price"] * (1 - cfg.TRAILING_PCT)
+    assert 520.0 > buggy_trailing_stop, "fixture assumption broken -- bug should NOT have exited here"
+    assert 520.0 <= fixed_trailing_stop, "fixture assumption broken -- fix SHOULD exit here"
+
+    trade, cash_delta = bt.evaluate_position_exit(pos, day2_bar, "BULLISH", 0.02, date(2026, 7, 28),
+                                                    100_000_000.0, 20_000_000.0)
+    assert trade is not None and trade["exit_reason"] == "TRAILING", (
+        "with the corrected highest_price, day 2's pullback should trigger a real trailing exit "
+        "that the bug would have silently missed"
+    )
+    approx(trade["exit_price"], 520.0, tol=0.01)
+    print(f"[OK] test_entry_day_highest_price_capture (buggy stop={buggy_trailing_stop:.2f}, "
+          f"fixed stop={fixed_trailing_stop:.2f})")
+
+
 def test_evaluate_position_exit_trailing():
     pos = _base_position(tp1_hit=True, sl_price=1000.0, highest_price=1100.0, avg_price=1015.0,
                           total_lots=373, remaining_lots=373,
@@ -434,6 +482,7 @@ if __name__ == "__main__":
     test_compute_entry_fill_below_min_lots()
     test_evaluate_position_exit_sl()
     test_evaluate_position_exit_tp1_and_pyramid()
+    test_entry_day_highest_price_capture()
     test_evaluate_position_exit_trailing()
     test_evaluate_position_exit_no_trigger()
     test_compute_drawdown_and_cvar()

@@ -229,6 +229,27 @@ def main():
     had_exit_today = False
     for row in open_positions:
         if row["entry_date"] == today.isoformat():
+            # Filled today by paper_monitor.py -- still don't exit-check same-day (matches
+            # backtest_v4.py's own guard), but DO capture today's real close into highest_price,
+            # same as the first thing evaluate_position_exit() itself does every OTHER day.
+            # Without this, a same-day rally past the fill price is permanently invisible to the
+            # trailing-stop calc even after MIN_HOLD_DAYS/TP1 later activate it -- found
+            # 2026-08-28: FPNI (entry-day close 665, stayed pinned at fill price 555) and PACK
+            # (entry-day close 466, stayed pinned at fill price 448). Same had_real_trade check
+            # as the rest of this loop (close>0 and volume>0) to avoid a fabricated/frozen close.
+            had_real_trade_today = (
+                row["stock_code"] in today_bars.index
+                and float(today_bars.loc[row["stock_code"]]["close_price"]) > 0
+                and float(today_bars.loc[row["stock_code"]]["volume"] or 0) > 0
+            )
+            if had_real_trade_today:
+                close_today = float(today_bars.loc[row["stock_code"]]["close_price"])
+                prior_highest = float(row["highest_price"]) if row["highest_price"] is not None else float(row["avg_price"])
+                if close_today > prior_highest:
+                    rid = row["id"]
+                    _retry(lambda rid=rid, close_today=close_today: (
+                        supabase.table("paper_positions").update({"highest_price": close_today}).eq("id", rid).execute()
+                    ))
             continue  # filled today by paper_monitor.py -- don't exit-check same-day, matches backtest_v4.py's own guard
 
         # A suspended stock still gets an EOD row on some feeds -- open=high=low=0 with
