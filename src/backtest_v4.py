@@ -62,6 +62,68 @@ if os.environ.get("V4_TRAILING_PCT"):
 # the same coincidence, reusing TP1_MULT for its SL estimate too). Named here so a
 # future TP1_MULT sweep can't silently drag SL along with it.
 SL_MULT = float(os.environ.get("V4_SL_MULT", "1.5"))
+# RESEARCH CANDIDATE (2026-08-30, real-trader critique), UNVALIDATED -- SL_MULT above is a
+# single FLAT ATR multiplier applied to every candidate regardless of signal quality. Same
+# "ratio-and-clip" pattern SCORE_SIZING_ENABLED/LIQ_SIZING_ENABLED/etc. already use for
+# POSITION SIZE (see those flags a few hundred lines down), applied here to the STOP WIDTH
+# instead: sl_mult_effective = SL_MULT * confidence_adjustment, where confidence_adjustment
+# = clip(score_p90 / sig["score"], SL_CONFIDENCE_MIN, SL_CONFIDENCE_MAX) -- the SAME
+# score/score_p90 ratio size_mult already uses, INVERTED (higher score -> smaller adjustment
+# -> tighter stop; lower score -> larger adjustment, up to current-width). Signal choice is
+# NOT a free pick: SCORE_SIZING_ENABLED (below) already tested this exact ratio for SIZING
+# and was REJECTED ("no demonstrated value for sizing" -- high score means already-extended
+# momentum, not more runway). Reused here anyway because the mechanism this flag targets is
+# different: diagnose_score_power.py's 2026-08-07 finding (see V3_FINDINGS_LOG.md) showed a
+# same-day statistical-outlier score DOES carry real information -- rank-1-by-score
+# candidates hit their stop at 82-98% across both halves of a 4.5-year out-of-sample split
+# (survives the split, not a fluke) -- it just doesn't help to size UP into that outcome.
+# Tightening the STOP on the exact subgroup already shown prone to fast reversal is a
+# different, and more mechanistically direct, use of the same signal -- see this flag's own
+# base-rate re-check (trade-level, not diagnose_score_power's full-candidate-pool level)
+# before trusting this premise. trend_strength was considered and rejected as the signal:
+# it is one IHSG-wide scalar shared by every candidate on the same day, so it cannot tell
+# apart which of TODAY's candidates has the shakier thesis -- only score and Bandarmology
+# concentration are per-candidate. concentration (BANDAR_SIZING_ENABLED's own signal) was
+# considered too but not chosen as the primary axis: real broker data has material coverage
+# gaps in the early walk-forward windows (bandar_mult silently stays neutral when missing),
+# which would make this flag's effective sample size and its analogue smaller and uneven
+# across the 9-window schedule versus score's near-universal coverage.
+SL_CONFIDENCE_ENABLED = os.environ.get("V4_SL_CONFIDENCE", "0") == "1"
+SL_CONFIDENCE_MIN = float(os.environ.get("V4_SL_CONFIDENCE_MIN", "0.7"))
+SL_CONFIDENCE_MAX = float(os.environ.get("V4_SL_CONFIDENCE_MAX", "1.3"))
+# RESEARCH CANDIDATE (2026-08-30, idea #3 of a three-idea SL-width thread this
+# session -- SL_CONFIDENCE_ENABLED above is idea #2, REJECTED; see
+# docs/V3_FINDINGS_LOG.md for both prior entries before touching this one),
+# UNVALIDATED -- a side-finding while rejecting idea #2: Bandarmology
+# `concentration` (BANDAR_SIZING_ENABLED's own signal, top1_broker_|net_lot| /
+# sum(all_brokers_|net_lot|)) correlates with REAL trade outcomes in the OPPOSITE
+# direction idea #2 needed: on 250 real historical trades, win rate by
+# concentration tercile was 19.1%/29.0%/42.9% (low/mid/high), rho=+0.246 (p=0.001)
+# vs win, rho=-0.222 (p=0.002) vs SL-hit rate. High concentration -> better
+# outcome -> should get a WIDER stop (let it run); low concentration -> tighter
+# stop (cut faster) -- the REVERSE polarity from idea #2 (which shrank the
+# multiplier for high-signal candidates). NOT inverted here: same ratio-and-clip
+# shape BANDAR_SIZING_ENABLED's own bandar_mult already uses below
+# (concentration / concentration_p90, clipped), applied to SL width instead of
+# size, sign unchanged.
+#
+# The 250-trade correlation above is NOT validation -- it's the same in-sample
+# base rate that would be circular if re-used as the deciding test; the only bar
+# that counts is the full 9-window walk-forward (see docs/V3_FINDINGS_LOG.md for
+# that result). It is also NOT independent of BANDAR_SIZING_ENABLED: concentration
+# already drives position SIZE via bandar_mult a few hundred lines down: MUST be
+# checked with BANDAR_SIZING_ENABLED forced off too, structurally the same
+# confound idea #2's own `wide (0.5,1.5)` cell turned out to be (SL width feeds
+# `risk_per_share`, which feeds `lots_risk = prev_equity*RISK_PCT/risk_per_share`
+# -- a WIDER stop here means FEWER shares for the same risk budget, the opposite
+# leverage direction from idea #2's tighter-stop-more-shares artifact, but still
+# an interaction with sizing, not a clean isolated SL-width effect, unless tested
+# with sizing held fixed). Coverage gap noted going in, same as idea #2's part 2:
+# ~75% of admitted candidates have real concentration data (bandar_mult/this
+# adjustment both silently stay neutral -- 1.0 -- when missing, never blocks).
+SL_CONCENTRATION_ENABLED = os.environ.get("V4_SL_CONCENTRATION", "0") == "1"
+SL_CONCENTRATION_MIN = float(os.environ.get("V4_SL_CONCENTRATION_MIN", "0.8"))
+SL_CONCENTRATION_MAX = float(os.environ.get("V4_SL_CONCENTRATION_MAX", "1.3"))
 from strategy import add_features
 from phase0c_rrg_validation import fetch_sector_indices, fetch_sector_map, compute_rs_momentum
 from phase0d_multitimeframe_validation import attach_weekly_trend
@@ -189,6 +251,179 @@ def compute_market_participation(df: pd.DataFrame) -> dict:
     turnover_ma20 = turnover.rolling(20, min_periods=20).mean()
     ratio = (turnover / turnover_ma20).fillna(1.0)
     return ratio.to_dict()
+
+
+_broker_flow_ratio_cache: dict = {}  # keyed by id(df) -- see BROKER_FLOW_GATE_ENABLED's
+                                       # docstring; simulate_window is called once per
+                                       # walk-forward window against the SAME df object, and
+                                       # this does a real file read (~3s), so memoize the raw
+                                       # (pre-rolling, window_days-independent) daily ratio
+                                       # instead of re-reading the archive every window/sweep
+                                       # point. Rolling itself is cheap, kept OUT of the cache
+                                       # key so a window_days sweep doesn't need a fresh read.
+
+
+def _daily_liquid_net_ratio(df: pd.DataFrame) -> pd.Series:
+    """{trade_date: net_ratio} pre-rolling, window_days-independent -- see
+    compute_market_broker_flow's docstring for the full definition."""
+    if id(df) in _broker_flow_ratio_cache:
+        return _broker_flow_ratio_cache[id(df)]
+    try:
+        raw = bf.load_raw()
+    except SystemExit as e:
+        print(f"[BROKER_FLOW] local archive not found ({e}) -- gate stays inert regardless of the flag.")
+        _broker_flow_ratio_cache[id(df)] = pd.Series(dtype=float)
+        return _broker_flow_ratio_cache[id(df)]
+
+    eod_ref = df[["stock_code", "trade_date", "high", "low", "volume"]].drop_duplicates(
+        ["stock_code", "trade_date"]).copy()
+    eod_ref["high"] = eod_ref["high"].where(eod_ref["high"] > 0, df["close_price"])
+    eod_ref["low"] = eod_ref["low"].where((eod_ref["low"] > 0) & (eod_ref["low"] <= eod_ref["high"]), df["close_price"])
+    raw = bf.filter_corrupt_rows(raw, eod_ref, verbose=False)
+
+    g = raw.groupby(["trade_date", "stock_code", "side"])["val_rupiah"].sum().unstack("side", fill_value=0.0)
+    net_val = g.get("buy", 0.0) - g.get("sell", 0.0)
+    turnover_val = g.get("buy", 0.0) + g.get("sell", 0.0)
+    per_stock = pd.DataFrame({"net_val": net_val, "turnover_val": turnover_val}).reset_index()
+
+    adtv = df[["trade_date", "stock_code", "adtv_20"]].drop_duplicates(["trade_date", "stock_code"])
+    merged = per_stock.merge(adtv, on=["trade_date", "stock_code"], how="left")
+    liquid = merged[merged["adtv_20"] >= cfg.ADTV_MIN]
+
+    daily = liquid.groupby("trade_date").agg(net=("net_val", "sum"), turnover=("turnover_val", "sum")).sort_index()
+    ratio = daily["net"] / daily["turnover"].replace(0, np.nan)
+    _broker_flow_ratio_cache[id(df)] = ratio
+    return ratio
+
+
+def compute_market_broker_flow(df: pd.DataFrame, window_days: int = 5) -> dict:
+    """Returns {trade_date: rolling_N-day_mean_net_ratio} -- see
+    BROKER_FLOW_GATE_ENABLED's module-level docstring for the full design.
+    Daily net_ratio = (buy - sell) Rupiah / (buy + sell) Rupiah, summed across
+    every stock_code that clears cfg.ADTV_MIN THAT DAY (df's own adtv_20
+    column -- the same liquid universe score_candidates() screens to, not
+    literally every ticker in the archive; illiquid-penny-stock flow is
+    plausibly just noise, see docs/V3_FINDINGS_LOG.md for the exploratory
+    check this was tested against). Smoothed with a trailing `window_days`
+    mean since the raw daily ratio is noisy day-to-day (see
+    src/scratch_market_flow_build.py's own sanity check for the raw
+    distribution: mean ~-0.003, std ~0.018, 1-99th pctile roughly
+    [-0.05, +0.04] after the corrupt-row filter below).
+
+    Local-Parquet-only, same graceful degrade as attach_bandarmology: if the
+    archive isn't present, returns {} -- BROKER_FLOW_MIN's lookup site
+    defaults an unknown date to "pass" (see regime_ok_today), same "missing
+    data never blocks" convention every other gate in this module uses."""
+    ratio = _daily_liquid_net_ratio(df)
+    if ratio.empty:
+        return {}
+    rolling = ratio.rolling(window_days, min_periods=window_days).mean()
+    return rolling.dropna().to_dict()
+
+
+_broker_divergence_raw_cache: dict = {}  # keyed by id(df) -- same reasoning as
+                                          # _broker_flow_ratio_cache above: memoize the raw
+                                          # (pre-rolling, window_days-independent) per-STOCK
+                                          # daily foreign_net/retail_net/total_turnover so a
+                                          # window_days sweep, or a re-run against the same df
+                                          # across the 9 walk-forward windows, doesn't re-read
+                                          # the archive every time.
+
+# From sql/brokers_schema.sql (2026-08-09, user-confirmed authoritative list). Static, so
+# hardcoded here rather than re-parsed from the .sql file or fetched from Supabase at
+# runtime -- see src/scratch_broker_divergence_build.py for the same constant with the
+# assertion this matches the documented count.
+_DIVERGENCE_FOREIGN_CODES = frozenset({
+    "AK", "ZP", "YP", "CP", "BK", "YU", "RX", "HD", "KK", "BQ", "DR", "XA", "KZ", "TP",
+    "AG", "AI", "LS", "RB", "FS", "DP", "DU", "GI", "AH", "BW", "CG", "CS", "DB", "FG",
+    "GW", "LH", "ML", "MS",
+})
+# The user named these three explicitly ("XL XC PD Top retail brokers") -- not silently
+# expanded to other Local codes (e.g. Mandiri/Sinarmas/Panin are Local but not retail-app
+# brokers). A wider-Local variant would be a separate thing to test, not this.
+_DIVERGENCE_RETAIL_CODES = frozenset({"XL", "XC", "PD"})
+
+
+def _daily_stock_divergence_legs(df: pd.DataFrame) -> pd.DataFrame:
+    """{stock_code, trade_date, foreign_net, retail_net, total_turnover} pre-rolling,
+    window_days-independent -- see compute_broker_divergence's docstring for the full
+    definition. One row per (stock_code, trade_date) already present in df."""
+    if id(df) in _broker_divergence_raw_cache:
+        return _broker_divergence_raw_cache[id(df)]
+    try:
+        raw = bf.load_raw()
+    except SystemExit as e:
+        print(f"[DIVERGENCE] local archive not found ({e}) -- gate stays inert regardless of the flag.")
+        _broker_divergence_raw_cache[id(df)] = pd.DataFrame()
+        return _broker_divergence_raw_cache[id(df)]
+
+    eod_ref = df[["stock_code", "trade_date", "high", "low", "volume"]].drop_duplicates(
+        ["stock_code", "trade_date"]).copy()
+    eod_ref["high"] = eod_ref["high"].where(eod_ref["high"] > 0, df["close_price"])
+    eod_ref["low"] = eod_ref["low"].where((eod_ref["low"] > 0) & (eod_ref["low"] <= eod_ref["high"]), df["close_price"])
+    raw = bf.filter_corrupt_rows(raw, eod_ref, verbose=False)
+
+    def _net_turnover(sub, prefix):
+        g = sub.groupby(["trade_date", "stock_code", "side"])["val_rupiah"].sum().unstack("side", fill_value=0.0)
+        return pd.DataFrame({
+            f"{prefix}_net": g.get("buy", 0.0) - g.get("sell", 0.0),
+            f"{prefix}_turnover": g.get("buy", 0.0) + g.get("sell", 0.0),
+        }).reset_index()
+
+    total = _net_turnover(raw, "total")  # every broker, all investor types -- the per-stock normalizer
+    foreign = _net_turnover(raw[raw["broker_code"].isin(_DIVERGENCE_FOREIGN_CODES)], "foreign")
+    retail = _net_turnover(raw[raw["broker_code"].isin(_DIVERGENCE_RETAIL_CODES)], "retail")
+
+    panel = df[["stock_code", "trade_date"]].drop_duplicates().copy()
+    panel = panel.merge(total[["trade_date", "stock_code", "total_turnover"]], on=["trade_date", "stock_code"], how="left")
+    panel = panel.merge(foreign[["trade_date", "stock_code", "foreign_net"]], on=["trade_date", "stock_code"], how="left")
+    panel = panel.merge(retail[["trade_date", "stock_code", "retail_net"]], on=["trade_date", "stock_code"], how="left")
+    # A (stock,day) with no matching rows in one of these subsets is a genuine zero (that
+    # broker subset traded nothing in that stock that day), not missing data.
+    for c in ("total_turnover", "foreign_net", "retail_net"):
+        panel[c] = panel[c].fillna(0.0)
+
+    panel = panel.sort_values(["stock_code", "trade_date"]).reset_index(drop=True)
+    _broker_divergence_raw_cache[id(df)] = panel
+    return panel
+
+
+def compute_broker_divergence(df: pd.DataFrame, window_days: int = 5) -> dict:
+    """Returns {(stock_code, trade_date): divergence_ratio} -- see DIVERGENCE_GATE_ENABLED's
+    module-level docstring for the full design. PER-STOCK (unlike compute_market_broker_flow,
+    which aggregates the whole liquid universe into one market-wide number per day): for each
+    stock on each day, divergence = (foreign_net - retail_net) summed over the trailing
+    `window_days` trading days, divided by that SAME stock's own total turnover (all brokers,
+    both sides) over the same window -- scale-free, bounded roughly [-2, 2], comparable across
+    stocks of very different size. foreign_net/retail_net use the SAME Rupiah-value
+    buy-minus-sell definition compute_market_broker_flow uses, restricted to the user-named
+    broker subsets (32 Foreign-classified codes / XL+XC+PD specifically for retail -- see
+    sql/brokers_schema.sql, not silently widened to other Local codes).
+
+    Positive = foreign net buying exceeds retail's own net position, relative to the stock's
+    own turnover -- the user's "smart money buying into retail's own selling" tell. Rolling
+    SUM of value first, THEN ratio (unlike compute_market_broker_flow's rolling MEAN of daily
+    ratios) -- a single stock's daily turnover is far lumpier than the whole liquid universe's
+    aggregate, so summing value before dividing is more robust to a thin/zero-activity single
+    day than averaging that day's own noisy ratio would be (see
+    src/scratch_broker_divergence_build.py's docstring for the same reasoning spelled out).
+
+    Local-Parquet-only, same graceful degrade as attach_bandarmology/compute_market_broker_flow:
+    if the archive isn't present, returns {} -- DIVERGENCE_MIN's lookup site defaults an
+    unknown (stock, date) to "pass", same "missing data never blocks" convention every gate in
+    this module uses."""
+    panel = _daily_stock_divergence_legs(df)
+    if panel.empty:
+        return {}
+    g = panel.groupby("stock_code", sort=False)
+    fn_sum = g["foreign_net"].transform(lambda s: s.rolling(window_days, min_periods=window_days).sum())
+    rn_sum = g["retail_net"].transform(lambda s: s.rolling(window_days, min_periods=window_days).sum())
+    tt_sum = g["total_turnover"].transform(lambda s: s.rolling(window_days, min_periods=window_days).sum())
+    divergence = (fn_sum - rn_sum) / tt_sum.replace(0, np.nan)
+    out = pd.DataFrame({
+        "stock_code": panel["stock_code"], "trade_date": panel["trade_date"], "divergence": divergence,
+    }).dropna(subset=["divergence"])
+    return dict(zip(zip(out["stock_code"], out["trade_date"]), out["divergence"]))
 
 
 def compute_spike_confirm_gate(df: pd.DataFrame, vol_mult: float, move_pct: float,
@@ -382,6 +617,64 @@ TREND_DURATION_MIN_DAYS = int(os.environ.get("V4_TREND_DURATION_MIN_DAYS", "3"))
 # touch V4_TREND_DURATION_GATE's own default or behavior.
 PARTICIPATION_GATE_ENABLED = os.environ.get("V4_PARTICIPATION_GATE", "0") == "1"
 PARTICIPATION_MIN = float(os.environ.get("V4_PARTICIPATION_MIN", "0.95"))
+# RESEARCH CANDIDATE (2026-08-25 council session), UNVALIDATED -- a market-wide
+# broker-flow gate: an N-day trailing mean of the day's aggregate net Rupiah
+# broker buy-sell flow (bandarmology_history parquet archive) across the SAME
+# liquid universe score_candidates() already screens to (adtv_20 >= cfg.ADTV_MIN),
+# divided by that day's total turnover so it's scale-free and comparable across
+# a 2020-2026 archive where overall market turnover has grown a lot. Structurally
+# different from PARTICIPATION_GATE_ENABLED above (that one is unsigned -- how
+# much traded, regardless of direction; this one is signed -- which direction
+# brokers were net-leaning) and from trend_strength/regime (both price-based,
+# this is order-flow-based). The Contrarian advisor's council warning going in:
+# this could turn out to be a noisy proxy for what price-based regime detection
+# already captures -- see the correlation check in docs/V3_FINDINGS_LOG.md before
+# trusting this as independent information.
+#
+# compute_market_broker_flow() applies the SAME corrupt-row filter
+# bandarmology_features.filter_corrupt_rows() uses for the live site
+# (load_raw_clean()), but sourced from df's own already-fetched close/high/low/
+# volume instead of a fresh per-stock Supabase round trip -- no new network
+# dependency. Local-Parquet-only, same graceful degrade as attach_bandarmology:
+# if the archive isn't present, returns {} and the gate lookup below defaults to
+# "pass" (see BROKER_FLOW_MIN's own comment at the lookup site).
+#
+# Applied ONLY at the live day-by-day entry check (regime_ok_today below), NOT
+# folded into the TRAIN threshold-learning mask -- same deliberate deviation
+# PARTICIPATION_GATE_ENABLED documents above, same reasoning (a TRAIN-mask
+# ripple already did more damage than live-side filtering itself for the
+# rejected duration gate). Off by default; new, isolated flag -- does not touch
+# PARTICIPATION_GATE_ENABLED/TREND_DURATION_GATE_ENABLED/TREND_STRENGTH_MIN/
+# REGIME_CONFIRM_DAYS's own defaults.
+BROKER_FLOW_GATE_ENABLED = os.environ.get("V4_BROKER_FLOW_GATE", "0") == "1"
+BROKER_FLOW_WINDOW_DAYS = int(os.environ.get("V4_BROKER_FLOW_WINDOW_DAYS", "5"))
+BROKER_FLOW_MIN = float(os.environ.get("V4_BROKER_FLOW_MIN", "0.0"))
+# RESEARCH CANDIDATE (2026-08-25, follow-up to the REJECTED market-wide BROKER_FLOW_GATE
+# above), UNVALIDATED -- a PER-STOCK "smart money divergence" eligibility filter, from a real
+# professional trader's own heuristic (not a guess): on a given candidate stock, is FOREIGN
+# money net buying WHILE the top RETAIL brokers (XL/XC/PD specifically -- Stockbit/Ajaib/Indo
+# Premier, the user's own named "top retail brokers", not silently expanded to other Local
+# codes) are net selling, at the same time. Theory: that divergence is a smart-money tell
+# distinct from either flow alone -- structurally different from BROKER_FLOW_GATE_ENABLED
+# above (per-STOCK not market-wide, and a DIVERGENCE between two named broker subsets, not
+# one aggregate direction).
+#
+# compute_broker_divergence() applies the SAME corrupt-row filter/graceful-degrade convention
+# as compute_market_broker_flow -- see that function's docstring, and
+# src/scratch_broker_divergence_build.py for the standalone feature build + sanity check, and
+# src/scratch_broker_divergence_traderate.py for the trade-level base-rate check.
+#
+# Applied ONLY as a filter on simulate_window's OWN consumption of score_candidates()'s
+# return value (same site/pattern as SPIKE_CONFIRM_GATE_ENABLED below) -- score_candidates()
+# itself is UNCHANGED, so paper_signal_scan.py/paper_monitor.py (which call it directly,
+# never simulate_window) cannot be affected by this flag regardless of its state. Off by
+# default; new, isolated flag -- does not touch BROKER_FLOW_GATE_ENABLED/
+# PARTICIPATION_GATE_ENABLED/TREND_DURATION_GATE_ENABLED/TREND_STRENGTH_MIN/
+# REGIME_CONFIRM_DAYS's own defaults. UNVALIDATED until the walk-forward + sensitivity sweep
+# exists -- see docs/V3_FINDINGS_LOG.md.
+DIVERGENCE_GATE_ENABLED = os.environ.get("V4_DIVERGENCE_GATE", "0") == "1"
+DIVERGENCE_WINDOW_DAYS = int(os.environ.get("V4_DIVERGENCE_WINDOW_DAYS", "5"))
+DIVERGENCE_MIN = float(os.environ.get("V4_DIVERGENCE_MIN", "0.0"))
 # A genuinely different follow-up, off a genuinely different diagnostic: the "TEBE
 # gorengan base-rate research" (docs/V3_FINDINGS_LOG.md, 2026-08-16) found that stocks
 # matching a "breakout spike" profile (single-day volume >=10x trailing avg_vol_20,
@@ -452,6 +745,50 @@ MAX_ENTRIES_PER_CLUSTER_WINDOW = int(os.environ.get("V4_MAX_ENTRIES_PER_CLUSTER_
 # UNVALIDATED until its own walk-forward + sweep exists in V3_FINDINGS_LOG.md.
 BACKLOG_QUEUE_ENABLED = os.environ.get("V4_BACKLOG_QUEUE_ENABLED", "0") == "1"
 BACKLOG_EXPIRY_DAYS = int(os.environ.get("V4_BACKLOG_EXPIRY_DAYS", "3"))
+# RESEARCH CANDIDATE (2026-08-30), UNVALIDATED -- pullback-to-buy-area fill instead of
+# always paying a queued candidate's raw next-day open. Real-trader critique this
+# answers: the signal already implies a fair ATR-based pullback zone (used for TP1/SL
+# sizing) -- why buy the open blindly if price dips into a better zone shortly after,
+# and if it never dips at all, isn't that itself a signal the setup already broke?
+#
+# Buy area = [signal_close - PULLBACK_HIGH_MULT*ATR, signal_close - PULLBACK_LOW_MULT*ATR]
+# (a pullback zone below the signal day's close). Backtest-only approximation (no true
+# intraday tick data, only daily OHLC): a limit order resting at the area's UPPER
+# (shallow/near) edge is treated as filled the moment the day's real LOW reaches or
+# crosses it -- fill_price = min(day_open, area_upper), clamped to >= day_low so a fill
+# is never fabricated below what the day actually printed. PULLBACK_HIGH_MULT (the
+# area's deep/lower edge) is NOT read by the fill test or price below -- a resting limit
+# order fills the instant price first touches it, however much further it continues
+# past that afterward, so only the near edge (PULLBACK_LOW_MULT) matters for a
+# single-order backtest fill; see the sweep entry in V3_FINDINGS_LOG.md for whether that
+# makes PULLBACK_HIGH_MULT an empirical no-op.
+#
+# Carries a same-day miss (price never touched the area) forward using
+# PULLBACK_EXPIRY_SESSIONS -- deliberately mirroring paper_signal_scan.py's
+# PENDING_EXPIRY_SESSIONS=2 (2 sessions before a stale PENDING order is cancelled), NOT
+# BACKLOG_QUEUE_ENABLED's own carry-forward above: that mechanism was tested and
+# REJECTED (see "backlog/priority queue ... REJECTED" in V3_FINDINGS_LOG.md) specifically
+# because merging survivors with fresh candidates and re-sorting the WHOLE pool by score
+# every day reshuffles who wins a scarce MAX_POSITIONS slot in ways unrelated to the
+# thing being tested, producing large single-window swings unrelated to the actual
+# mechanism. This carries forward ONLY a candidate that specifically missed on the
+# buy-area touch test (not one dropped by MAX_POSITIONS/cooldown/cluster-cap/gap-limit,
+# which stay dropped exactly like the unconditional-reset baseline), keeps it in its
+# existing queue position (no re-sort), and appends fresh candidates after -- also
+# matching paper_monitor.py's own fill loop, which has no score-based reprioritization.
+PULLBACK_FILL_ENABLED = os.environ.get("V4_PULLBACK_FILL_ENABLED", "0") == "1"
+PULLBACK_LOW_MULT = float(os.environ.get("V4_PULLBACK_LOW_MULT", "0.3"))
+PULLBACK_HIGH_MULT = float(os.environ.get("V4_PULLBACK_HIGH_MULT", "1.0"))  # see docstring above -- not read by the fill logic itself
+PULLBACK_EXPIRY_SESSIONS = int(os.environ.get("V4_PULLBACK_EXPIRY_SESSIONS", "2"))
+# Research instrumentation only, PULLBACK_FILL_ENABLED-gated -- a sweep script reads/
+# clears this directly (bt.PULLBACK_FILL_LOG) instead of threading a new field through
+# diag/simulate_window's return contract for a scratch metric, same "module-level
+# accumulator" pattern _broker_flow_ratio_cache above already uses in this file. One
+# dict appended per resolved (stock_code, origin_day_idx) signal instance: either
+# {"outcome": "FILLED", ...} the day the buy-area touch test passes, or
+# {"outcome": "EXPIRED_UNFILLED", ...} the day it ages out of PULLBACK_EXPIRY_SESSIONS
+# without ever touching. Never appended when the flag is off.
+PULLBACK_FILL_LOG: list = []
 # Cross-day position ROTATION -- the "one thing to do first" the 2026-08-17 council
 # session's own peer review flagged, after BOTH other scarce-MAX_POSITIONS-slot fixes
 # above (widen the cap; the bounded backlog queue) were rejected on real evidence
@@ -1475,6 +1812,32 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
     "checking one live candidate"). Returns None if the fill doesn't clear ALLOC_MIN_LOTS,
     else a dict with lots/cost_basis/tp1_price/sl_price/checkpoint_day/expected_hold_days.
     """
+    # concentration extracted here (rather than only down at bandar_mult below) so
+    # SL_CONCENTRATION_ENABLED can read it before the SL price is computed; bandar_mult
+    # below reuses these same two locals, not a second lookup.
+    concentration = sig.get("concentration")
+    has_concentration = concentration is not None and np.isfinite(concentration)
+
+    # SL_CONFIDENCE_ENABLED / SL_CONCENTRATION_ENABLED only -- see each flag's own
+    # module-level comment for the full design/justification. Both default off and stack
+    # multiplicatively if ever both enabled at once (same convention as size_mult *
+    # liq_mult * ... below). No effect on the no-ATR fallback branch below (SL_PCT flat %,
+    # a rare edge case with no ATR data at all -- out of scope for both flags, the ATR-
+    # scaled SL_MULT formula the real critique was about).
+    sl_mult_effective = SL_MULT
+    if SL_CONFIDENCE_ENABLED:
+        confidence_adjustment = min(SL_CONFIDENCE_MAX, max(
+            SL_CONFIDENCE_MIN, score_p90 / max(sig.get("score", score_p90), 1e-6)))
+        sl_mult_effective = sl_mult_effective * confidence_adjustment
+    if SL_CONCENTRATION_ENABLED and has_concentration:
+        # REVERSED polarity from SL_CONFIDENCE_ENABLED above: higher concentration ->
+        # LARGER multiplier -> WIDER stop (let it run), lower concentration -> SMALLER
+        # multiplier -> TIGHTER stop (cut faster) -- see this flag's own module-level
+        # comment for the base-rate finding this is built on.
+        concentration_sl_adjustment = min(SL_CONCENTRATION_MAX, max(
+            SL_CONCENTRATION_MIN, concentration / concentration_p90))
+        sl_mult_effective = sl_mult_effective * concentration_sl_adjustment
+
     atr_val = sig["atr"]
     if atr_val is None or (isinstance(atr_val, float) and (np.isnan(atr_val) or atr_val <= 0)):
         tp1_price = entry_price * 1.02
@@ -1483,7 +1846,7 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
         atr_val = None
     else:
         tp1_price = entry_price + atr_val * cfg.TP1_MULT
-        sl_price = entry_price - atr_val * SL_MULT
+        sl_price = entry_price - atr_val * sl_mult_effective
         tp1_price = max(tp1_price, entry_price * 1.01)
         sl_price = min(sl_price, entry_price * 0.99)
         expected_hold_days = abs(sig["tp_target"] - entry_price) / atr_val
@@ -1499,8 +1862,8 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
     size_mult = min(2.0, max(0.5, sig.get("score", score_p90) / score_p90)) if SCORE_SIZING_ENABLED else 1.0
     liq_mult = min(LIQ_SIZING_MAX, max(LIQ_SIZING_MIN, np.log(max(sig.get("adtv_20", 1.0), 1.0)) / log_adtv_p90)) if LIQ_SIZING_ENABLED else 1.0
     trend_mult = min(TREND_SIZING_MAX, max(TREND_SIZING_MIN, trend_strength / trend_strength_p90)) if TREND_SIZING_ENABLED else 1.0
-    concentration = sig.get("concentration")
-    has_concentration = concentration is not None and np.isfinite(concentration)
+    # concentration/has_concentration already extracted above, before the SL_CONCENTRATION
+    # block -- reused here, not re-looked-up.
     bandar_mult = (
         min(BANDAR_SIZING_MAX, max(BANDAR_SIZING_MIN, concentration / concentration_p90))
         if BANDAR_SIZING_ENABLED and has_concentration else 1.0
@@ -1751,6 +2114,21 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
     # above for what this is and why it's applied only at the live entry-check site below,
     # not folded into the TRAIN mask the way the other three gates are.
     market_participation_by_date = compute_market_participation(df)
+    # RESEARCH CANDIDATE, off by default -- see BROKER_FLOW_GATE_ENABLED above. Unlike the
+    # three gates above (pure in-memory df ops), this does a real Parquet archive read, so
+    # it's only computed when the flag is actually on (guarded, not unconditional-but-cheap
+    # like the others) -- zero cost added to the default/live path when off.
+    market_broker_flow_by_date = (
+        compute_market_broker_flow(df, BROKER_FLOW_WINDOW_DAYS) if BROKER_FLOW_GATE_ENABLED else {}
+    )
+    # RESEARCH CANDIDATE, off by default -- see DIVERGENCE_GATE_ENABLED above. Per-STOCK
+    # (unlike market_broker_flow_by_date above, which is keyed by trade_date alone), so this
+    # dict is keyed by (stock_code, trade_date) and consumed as a candidate filter below --
+    # same "only computed when the flag is actually on" discipline as market_broker_flow_by_date
+    # (a real archive read, not free).
+    broker_divergence_by_stock_date = (
+        compute_broker_divergence(df, DIVERGENCE_WINDOW_DAYS) if DIVERGENCE_GATE_ENABLED else {}
+    )
     # Per-STOCK, not per-day -- see SPIKE_CONFIRM_GATE_ENABLED above. Vectorized per
     # stock (no per-row Python loop for the state machine), still unconditional for the
     # same reason as the two above: keeps the gate site below a plain dict lookup.
@@ -2021,6 +2399,8 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                  or trend_duration_streak_by_date.get(trade_date, 0) >= TREND_DURATION_MIN_DAYS)
             and (not PARTICIPATION_GATE_ENABLED
                  or market_participation_by_date.get(trade_date, 1.0) >= PARTICIPATION_MIN)
+            and (not BROKER_FLOW_GATE_ENABLED
+                 or market_broker_flow_by_date.get(trade_date, BROKER_FLOW_MIN) >= BROKER_FLOW_MIN)
         )
         prev_equity = equity_curve[-1]["total"] if equity_curve else float(INITIAL_CAPITAL)
 
@@ -2035,11 +2415,26 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
         if BACKLOG_QUEUE_ENABLED:
             pending_entries = [s for s in pending_entries
                                 if day_idx - s.get("origin_day_idx", day_idx - 1) <= 1 + BACKLOG_EXPIRY_DAYS]
+        if PULLBACK_FILL_ENABLED:
+            _pullback_survivors, _pullback_expired = [], []
+            for s in pending_entries:
+                (_pullback_survivors if day_idx - s.get("origin_day_idx", day_idx - 1) <= PULLBACK_EXPIRY_SESSIONS
+                 else _pullback_expired).append(s)
+            for s in _pullback_expired:
+                PULLBACK_FILL_LOG.append({
+                    "stock_code": s["stock_code"], "origin_day_idx": s.get("origin_day_idx"),
+                    "outcome": "EXPIRED_UNFILLED", "signal_close": s["signal_close"], "atr": s.get("atr"),
+                })
+            pending_entries = _pullback_survivors
         new_entries_today = 0
         rotations_today = 0  # ROTATION_ENABLED only -- bounds the blast radius of one day's decisions, same
                               # reasoning MAX_NEW_ENTRIES_PER_DAY already applies to fresh entries
         prev_trade_date = trading_days[day_idx - 1] if day_idx > 0 else None  # ROTATION_ENABLED only, see below
         _admitted_codes_today = set()
+        _pullback_retry_codes_today = set()  # PULLBACK_FILL_ENABLED only -- stock codes that missed
+                                              # today's buy-area touch test and should survive the
+                                              # end-of-day reset below (everything else that wasn't
+                                              # admitted stays dropped, same as the baseline)
         _diag_admitted = [] if diag is not None else None  # additive-only, see simulate_window docstring
         _diag_rotated = [] if diag is not None else None  # additive-only, ROTATION_ENABLED only
         _diag_break_reason, _diag_break_idx = None, None
@@ -2100,12 +2495,37 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
             if pd.isna(entry_day_volume) or entry_day_volume <= 0:
                 continue  # zero-volume day: stale carried-forward print, no real fill possible
             o, c, h, l = bar
-            entry_price = o if o is not None else c
+            raw_open = o if o is not None else c
             sc_price = sig["signal_close"]
             tick = 1 if sc_price < 200 else 2 if sc_price < 500 else 5 if sc_price < 2000 else 10 if sc_price < 5000 else 25
             gap_limit = max(cfg.GAP_MAX, 2 * tick / sc_price)
-            if abs(entry_price / sc_price - 1) > gap_limit:
+            # Sanity-checked against the day's REAL raw open (not whatever PULLBACK_FILL_ENABLED
+            # may substitute below) -- this guard exists to catch a corporate-action-scale bad
+            # print in today's actual data, orthogonal to where we choose to fill within a sane day.
+            if abs(raw_open / sc_price - 1) > gap_limit:
                 continue
+            entry_price = raw_open
+
+            if PULLBACK_FILL_ENABLED:
+                atr_val = sig.get("atr")
+                has_atr = atr_val is not None and not (isinstance(atr_val, float) and np.isnan(atr_val)) and atr_val > 0
+                if has_atr:
+                    area_upper = sc_price - PULLBACK_LOW_MULT * atr_val
+                    if l > area_upper:
+                        _pullback_retry_codes_today.add(sig["stock_code"])
+                        continue  # never dipped into the buy area today -- retried next session
+                                  # (up to PULLBACK_EXPIRY_SESSIONS), else expires like any other miss
+                    entry_price = max(min(raw_open, area_upper), l)  # limit-fill at the area ceiling
+                                                                      # (or the real open, if it already
+                                                                      # gapped there), never below the
+                                                                      # day's real low
+                    PULLBACK_FILL_LOG.append({
+                        "stock_code": sig["stock_code"], "origin_day_idx": sig.get("origin_day_idx"),
+                        "outcome": "FILLED", "age": day_idx - sig.get("origin_day_idx", day_idx - 1),
+                        "raw_open": raw_open, "fill_price": entry_price, "signal_close": sc_price,
+                    })
+                # else: no usable ATR for this candidate -- falls back to filling at today's real
+                # open, same as the baseline path (fail open, not closed).
 
             # Sizing/fee/TP1-SL math extracted to compute_entry_fill() so the live
             # paper-trading monitor (src/paper_monitor.py) fills entries through the exact
@@ -2138,6 +2558,12 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                     "stock_code": sig["stock_code"], "score": sig.get("score"),
                     "age": day_idx - sig.get("origin_day_idx", day_idx - 1),  # 1 == normal same-cycle fill, >1 == backlog fill
                     "is_spike": sig.get("is_spike", False), "cost_basis": fill["cost_basis"],  # SPIKE_SIZING_ENABLED research hook, additive only
+                    # SL_CONFIDENCE_ENABLED research hook, additive only -- lets a caller join
+                    # this admitted-candidate record against df_trades's own exit outcome by
+                    # (stock_code, trade_date==entry_date) for the base-rate check that flag's
+                    # own comment calls for (does score/score_p90 actually predict SL-hit rate?).
+                    "trade_date": trade_date, "score_p90": score_p90, "sl_price": fill["sl_price"],
+                    "concentration": sig.get("concentration"), "concentration_p90": concentration_p90,
                 })
         if diag is not None and pending_entries:
             # Queue is about to be reset (see module docstring) whether or not it was fully
@@ -2156,16 +2582,23 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                 "break_reason": _diag_break_reason, "admitted": _diag_admitted, "dropped": dropped,
                 "rotated": _diag_rotated,
             })
-        # Baseline (flag off): unconditional reset, byte-identical to pre-backlog behavior --
-        # any candidate not admitted today is gone. BACKLOG_QUEUE_ENABLED: carry forward
-        # whatever wasn't admitted (expiry was already applied above, before this loop ran, so
-        # anything left here is still within its bounded backlog window) -- these get merged
-        # with tomorrow's freshly-scored candidates and re-sorted by score at the extension
-        # site below (question 3: pure score comparison across both pools).
-        pending_entries = (
-            [s for s in pending_entries if s["stock_code"] not in _admitted_codes_today]
-            if BACKLOG_QUEUE_ENABLED else []
-        )
+        # Baseline (both flags off): unconditional reset, byte-identical to pre-backlog
+        # behavior -- any candidate not admitted today is gone. BACKLOG_QUEUE_ENABLED: carry
+        # forward whatever wasn't admitted (expiry was already applied above, before this loop
+        # ran, so anything left here is still within its bounded backlog window) -- these get
+        # merged with tomorrow's freshly-scored candidates and re-sorted by score at the
+        # extension site below (question 3: pure score comparison across both pools).
+        # PULLBACK_FILL_ENABLED: carry forward ONLY the buy-area-touch misses tagged above --
+        # everything else not admitted today (MAX_POSITIONS/cooldown/cluster-cap/gap-limit/
+        # no-data) stays dropped, same as the baseline -- kept in existing queue position, no
+        # re-sort (see PULLBACK_FILL_ENABLED's own module-level docstring for why not
+        # BACKLOG_QUEUE_ENABLED's mechanism).
+        if BACKLOG_QUEUE_ENABLED:
+            pending_entries = [s for s in pending_entries if s["stock_code"] not in _admitted_codes_today]
+        elif PULLBACK_FILL_ENABLED:
+            pending_entries = [s for s in pending_entries if s["stock_code"] in _pullback_retry_codes_today]
+        else:
+            pending_entries = []
 
         # ---- Exit check (identical to backtest_v2.py, plus a forced exit
         # for stocks that stop reporting data mid-position -- delisting or
@@ -2278,6 +2711,14 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
             if SPIKE_CONFIRM_GATE_ENABLED:
                 new_candidates = [c for c in new_candidates
                                   if spike_confirm_gate.get((c["stock_code"], trade_date), True)]
+            # DIVERGENCE_GATE_ENABLED only -- same "filters simulate_window's OWN consumption,
+            # not score_candidates() itself" pattern as SPIKE_CONFIRM_GATE_ENABLED just above.
+            # An unknown (stock, date) defaults to DIVERGENCE_MIN itself, trivially satisfying
+            # its own >= check -- missing data never blocks, same convention every gate here uses.
+            if DIVERGENCE_GATE_ENABLED:
+                new_candidates = [c for c in new_candidates
+                                  if broker_divergence_by_stock_date.get((c["stock_code"], trade_date), DIVERGENCE_MIN)
+                                  >= DIVERGENCE_MIN]
             # BACKLOG_QUEUE_ENABLED reads this to know how many days a dropped
             # candidate has been waiting (see the entry-consumption loop above and
             # the reset/carry-forward logic below). Tagged unconditionally (one

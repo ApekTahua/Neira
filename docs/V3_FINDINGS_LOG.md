@@ -4963,3 +4963,634 @@ Code kept for reference (`src/scratch_consolidation_ara_feasibility.py`,
 `src/scratch_consolidation_vol_scan.py`, `src/scratch_consolidation_vol_sensitivity.py`,
 `.cache/consolidation_episodes.csv`, `.cache/consolidation_vol_episodes.csv`) but this
 specific idea is not being pursued further. `backtest_v4.py` is unmodified by this entry.
+
+## 2026-08-30: pullback-to-buy-area entry fill -- execution-quality mechanism (not a new
+## signal), tested, NOT VALIDATED. Mechanical claim confirmed (fills 0.8-1.5% cheaper than
+## raw open when they happen); aggregate walk-forward effect is not robust -- driven by the
+## same single-window admission-order fragility this log has already used to reject two
+## other mechanisms, and one currently-solid window (W9) gets consistently worse.
+
+**Where this came from**: a real trader's structural critique of the live fill mechanism.
+Today, a PENDING candidate queued the day before fills unconditionally at tomorrow's real
+open (`paper_monitor.py`: `entry_price = float(r["open"])`, `backtest_v4.py`'s
+`simulate_window`: `entry_price = o if o is not None else c`), subject only to a gap-sanity
+check. The signal already implies a fair pullback zone via ATR (used for TP1/SL sizing) --
+why pay the open blindly if price dips into a better zone shortly after, and if it never
+dips at all, isn't that itself a sign the setup already broke? This is purely about
+execution quality on an already-validated entry signal -- it does not touch WHICH candidate
+gets picked, only WHERE it fills once picked.
+
+**Pre-registered success criteria (written down before running the sweep, not moved
+afterward)**: (1) average entry price should improve almost by construction when a fill
+happens -- a near-mechanical check, not the interesting question; (2) the fraction of
+candidates that never fill within the retry window is a real opportunity cost and must be
+reported honestly, not glossed over; (3) the deciding test is the full 9-window walk-forward
+aggregate (mean alpha, PF, drawdown, worst window) against the current at-the-open baseline
+-- if a meaningful fraction of real winners get missed and the aggregate meaningfully
+worsens, that is a genuine rejection, not just "did the average fill price improve"; (4) no
+window that is currently solid may get meaningfully worse, same bar every other change this
+project has tested is held to.
+
+**Design**: buy area = `[signal_close - PULLBACK_HIGH_MULT*ATR, signal_close -
+PULLBACK_LOW_MULT*ATR]`. In the backtest (only daily OHLC, no true intraday data), a fill is
+assumed the moment the day's real LOW reaches the area's upper (near) edge --
+`fill_price = min(day_open, area_upper)`, clamped to `>= day_low` so a fill is never
+fabricated below what the day actually printed. Confirmed by direct code reading and then
+empirically (`test_pullback_fill.py`, check 4): `PULLBACK_HIGH_MULT` (the area's deep/lower
+edge) is **not read anywhere in the fill test or price** -- a resting limit order fills the
+instant price first touches it, however much further it continues past that afterward, so
+only the near edge (`PULLBACK_LOW_MULT`) can matter for a single-order backtest fill. Swept
+anyway (0.7 vs 1.5 at fixed `LOW_MULT=0.3`) to confirm the no-op directly rather than just
+assert it from the code -- byte-identical trade lists, confirmed.
+
+A miss (price never touches the area) is carried forward for `PULLBACK_EXPIRY_SESSIONS=2`
+sessions total, matching `paper_signal_scan.py`'s live `PENDING_EXPIRY_SESSIONS=2` exactly
+-- **deliberately NOT reusing `BACKLOG_QUEUE_ENABLED`'s own carry-forward mechanism**, even
+though it already exists in this file and does something superficially similar. That
+mechanism was tested and **REJECTED earlier this project** (see "backlog/priority queue ...
+REJECTED" above) specifically because merging survivors with fresh candidates and
+re-sorting the WHOLE pending pool by score every day reshuffles who wins a scarce
+`MAX_POSITIONS` slot in ways unrelated to the thing actually being tested, producing large
+single-window swings (W4, W8 both damaged). Reusing it here would have baked that known
+confound directly into this test. Instead: only a candidate that specifically missed the
+buy-area touch test survives to tomorrow (everything else not admitted today --
+`MAX_POSITIONS`/cooldown/cluster-cap/gap-limit/no-data -- stays dropped exactly like the
+baseline unconditional reset), kept in its existing queue position with **no re-sort**, and
+fresh candidates appended after -- also matching `paper_monitor.py`'s own fill loop, which
+has no score-based reprioritization either. The existing gap-sanity check
+(`abs(entry_price/signal_close - 1) > gap_limit`) was moved to check the day's **real raw
+open**, not the substituted pullback price -- checking it against the intentionally-offset
+area price would have falsely flagged legitimate pullback fills as bad data (a real bug
+caught before it produced a misleading miss-rate number: `PULLBACK_LOW_MULT=1.5` at
+`ATR_PRICE_RATIO_MAX=0.08` implies offsets up to 12% below close, above `cfg.GAP_MAX=10%`).
+
+Implementation: `V4_PULLBACK_FILL_ENABLED`/`V4_PULLBACK_LOW_MULT`/`V4_PULLBACK_HIGH_MULT`/
+`V4_PULLBACK_EXPIRY_SESSIONS` in `backtest_v4.py`, all new, isolated, off by default --
+`score_candidates()`, `compute_entry_fill()`, `paper_signal_scan.py`, `paper_monitor.py` are
+byte-for-byte unchanged (confirmed by grep: zero references to `PULLBACK` outside
+`backtest_v4.py` and the new research scripts). `PULLBACK_FILL_LOG` (module-level list,
+same "read/clear it directly" pattern `_broker_flow_ratio_cache` already uses in this file)
+logs one row per resolved (stock_code, origin_day_idx) signal instance -- `FILLED` (with
+`raw_open`/`fill_price`/`age`) or `EXPIRED_UNFILLED` -- for the miss-rate diagnostic below,
+without threading a new field through `simulate_window`'s return contract.
+
+**Self-check** (`src/test_pullback_fill.py`, same real 2025-07-01..2025-08-31 slice as
+`test_backlog_queue.py`/`test_diag_hook.py`): flag OFF reproducible and byte-identical to
+baseline, flag ON actually differs (not a dead flag); every logged fill price `<=` the
+day's real raw open (never fabricated better than what the day offered); every admitted
+pullback fill's age `<= PULLBACK_EXPIRY_SESSIONS` (expiry genuinely enforced, ages observed
+1 and 2, never 3); `PULLBACK_HIGH_MULT` confirmed a no-op as above; diag hook stays purely
+additive under pullback mode too. All 5 checks pass.
+
+**Baseline reconfirmed first**, live `V4_PAPER` config (`V4_BANDAR_SIZING` default-on,
+`V4_ATR_PRICE_RATIO_MAX=0.08`, matching `paper_signal_scan_v4_trigger.yml`), off the
+existing `.cache/walk_forward_data_2021-01-01_2026-06-30.pkl`: mean alpha +26.17%, mean PF
+1.95, mean/worst maxDD -14.26%/-21.10%, beat-bench 7/9, win>50% 4/9, 366 trades --
+byte-identical to the 2026-08-22 `ATR_PRICE_RATIO_MAX=0.08` entry's own numbers.
+
+**Full 9-window sweep** (`src/sweep_pullback_fill.py`; full per-window CSV at
+`.cache/pullback_fill_sweep_full.csv`, agg at `.cache/pullback_fill_sweep_agg.csv`,
+miss-rate diagnostic at `.cache/pullback_fill_miss_rate.csv`). `PULLBACK_HIGH_MULT` pinned
+at 1.0 for the main grid (already shown to be a no-op above -- running the full 4x4=16 cells
+would have been 12 fully redundant re-runs of the same 4 outcomes; disclosed here rather
+than silently reporting a narrower grid than requested):
+
+| LOW_MULT | trades | beat bench | win>50% | win% mean | alpha% mean | alpha% median | PF mean | DD% mean/worst | avg concurrent positions |
+|---|---|---|---|---|---|---|---|---|---|
+| **OFF (baseline)** | 366 | 7/9 | 4/9 | 49.8 | **+26.17** | +17.79 | 1.95 | -14.26/-21.10 | 2.71 |
+| 0.0 | 350 | 8/9 | 6/9 | 52.9 | +20.33 | +15.14 | 2.05 | -14.37/**-27.82** | 2.73 |
+| 0.2 | 358 | 7/9 | 7/9 | 54.8 | +25.97 | +17.01 | 2.18 | -11.53/-16.46 | 2.76 |
+| 0.3 | 343 | 7/9 | 5/9 | 53.3 | **+30.02** | +11.86 | 2.17 | -13.60/-20.17 | 2.88 |
+| 0.5 | 354 | 7/9 | 5/9 | 50.4 | +20.38 | +17.23 | 2.18 | -13.63/-25.77 | 2.89 |
+
+Trade count drops modestly at every tested value (343-358 vs 366, 2-6% fewer) -- the
+expected opportunity-cost mechanism, some candidates genuinely expire unfilled. Profit
+factor improves at **every single tested value** (1.95 -> 2.05-2.18), and per-window
+win-rate-consistency (win>50% count) improves at 3 of 4 cells -- a real, not-fabricated
+secondary effect, the same "typical window looks more consistent" shape this log's own
+`BACKLOG_QUEUE_ENABLED` entry found for a structurally different mechanism. But mean alpha
+is **not monotonic** in `LOW_MULT` (20.33 -> 25.97 -> 30.02 -> 20.38, worse at both tested
+extremes than in the middle) and the two extremes (0.0, 0.5) both show a meaningfully worse
+**worst-case drawdown** than baseline (-27.82%, -25.77% vs -21.10%) -- a real regression at
+the boundaries of the grid, not just noise cancelling out in the mean.
+
+**Per-window trace explains why, and it is the same fragility signature this log has
+already used to reject two other mechanisms** (`BACKLOG_QUEUE_ENABLED`'s own carry-forward,
+`MAX_POSITIONS` widening) -- reached via yet another different route (fill-price/fill-day
+shifting, not queue-widening or resorting):
+
+| Window | OFF/baseline | LOW=0.0 | LOW=0.2 | LOW=0.3 | LOW=0.5 |
+|---|---|---|---|---|---|
+| W1 | +2.23% | +5.01% | +5.51% | +11.86% | +2.78% |
+| W2 | -3.01% | +0.09% | -0.52% | -14.35% | -12.03% |
+| W3 | -9.18% | -3.23% | -2.58% | -4.41% | -3.02% |
+| W4 | +51.27% | +54.40% | **+100.20%** | +74.91% | +52.32% |
+| W5 | +17.79% | +15.14% | +17.01% | +7.15% | +25.54% |
+| W6 | +6.98% | +5.64% | +4.83% | +10.71% | +17.23% |
+| W7 | +20.83% | +21.73% | +17.35% | +24.54% | +19.06% |
+| **W8** | **+107.84%** | **+47.44%** | **+64.61%** | **+131.60%** | **+65.24%** |
+| W9 | +40.76% | +36.72% | +27.32% | +28.20% | +16.26% |
+
+**W8** (the single largest alpha contributor at baseline, already flagged in this log's
+`BACKLOG_QUEUE_ENABLED`/`MAX_POSITIONS` entries as the window that absorbs this strategy's
+scarce-slot fragility) swings wildly and non-monotonically across the grid: -60pp at
+LOW=0.0, -43pp at LOW=0.2, **+24pp at LOW=0.3**, -43pp at LOW=0.5. **Recomputing mean alpha
+with W8 excluded flips which cell looks best**: baseline 15.96%, LOW=0.0 16.94%, **LOW=0.2
+21.14%** (the best cell once W8's single draw is removed, not LOW=0.3), LOW=0.3 only
+17.33%, LOW=0.5 14.77%. The full-sample "LOW=0.3 is best" result is substantially a
+one-window artifact, not a broad, consistent improvement -- concrete, not just asserted by
+analogy to the earlier rejections.
+
+**W9** (2026 H1, a currently solid window that beats a brutal -35.49% benchmark decline by
++40.76% at baseline) gets **consistently, monotonically worse at every single tested
+value** as the required pullback deepens (+40.76% -> +36.72% -> +27.32% -> +28.20% ->
++16.26%) -- unlike W8's noisy swings, this one moves smoothly with the parameter, which
+makes it a more trustworthy signal of a real cost, not noise: in a fast, violent-recovery
+regime, waiting for a pullback that a genuine winner may never give back means missing more
+real winners, exactly the risk criterion (4) above was written down to catch. This is the
+clearest evidence in this sweep of "a meaningful fraction of real winners get missed."
+
+**Miss-rate / fill-quality diagnostic** (pooled across all 9 windows, `PULLBACK_FILL_LOG`):
+
+| LOW_MULT | signal instances seen | filled | expired unfilled | miss rate | avg price improvement when filled |
+|---|---|---|---|---|---|
+| 0.0 | 406 | 391 | 15 | 3.7% | 0.84% |
+| 0.2 | 362 | 315 | 47 | 13.0% | 1.13% |
+| 0.3 | 383 | 298 | 85 | 22.2% | 1.53% |
+| 0.5 | 654 | 387 | 267 | 40.8% | 1.46% |
+
+Criterion (1) holds cleanly: when a fill happens, the average price is 0.8-1.5% better than
+the raw open, growing roughly with how deep a pullback is required. Criterion (2) also
+holds, honestly reported: miss rate rises sharply with `LOW_MULT`, from ~4% (barely any
+pullback required) to ~41% (a full ATR of pullback required) -- a real, substantial
+opportunity cost at the deeper end of the grid. One caveat on the denominator, checked
+directly rather than assumed (`(stock_code, origin_day_idx)` key collision count = 0, no
+double-logging bug): "signal instances seen" counts distinct signal-days, not distinct
+stocks -- a stock that stays qualifying while an earlier attempt is still pending can get
+freshly re-tagged with a new `origin_day_idx` (7 stocks did this within one 2-month slice
+alone, e.g. WIRG 3x), which is part of why LOW=0.5's denominator (654) is much larger than
+LOW=0.3's (383): a stricter bar creates more distinct attempts overall, not just a lower
+per-attempt hit rate.
+
+**Why a real, mechanically-guaranteed price improvement doesn't translate into a robust
+portfolio-level improvement**: this strategy's edge is concentrated (6 slots, `ALLOC_PCT`
+sizing, `MAX_POSITIONS` binds on the large majority of candidate-days per the Phase 1
+diagnostic already in this log) -- WHICH stock gets the scarce slot on WHICH day dominates
+the aggregate outcome far more than a ~1% entry-price difference does, and shifting fill
+day/price (even without touching admission order or re-sorting) is enough to move who ends
+up filling versus expiring, and therefore which trades exist in the sample at all. A small,
+real, mechanical win on execution quality gets swamped by the same admission-order
+sensitivity this log has now documented under three structurally different mechanisms
+(temporal backlog reordering, concurrent-capacity widening, and now fill-price/fill-day
+shifting).
+
+**No Monte Carlo permutation check run**, per this log's own established bar (used
+identically for `BACKLOG_QUEUE_ENABLED` and `REGIME_CONFIRM_DAYS=2`): an MC check is for a
+candidate that looks genuinely better and more robust on the sweep itself. No `LOW_MULT`
+value here clears that bar -- mean alpha is non-monotonic, the two grid extremes show a
+meaningfully worse worst-case drawdown than baseline, one currently-solid window (W9)
+degrades consistently at every value, and the apparent best cell is shown directly (not
+just suspected) to be substantially a single-window artifact.
+
+**Verdict: NOT VALIDATED.** The mechanical claim behind the idea is correct and confirmed
+(pullback fills genuinely cost less, 0.8-1.5% on average, when they happen), and profit
+factor improves at every tested value -- a real secondary signal worth keeping in mind. But
+the deciding test (full walk-forward aggregate, pre-registered before running) does not
+clear this project's own adoption bar: no `LOW_MULT` value beats baseline on both mean alpha
+and worst-case drawdown simultaneously, the ranking across the grid is not robust to
+dropping a single window, and a currently solid window (W9) gets consistently worse as the
+required pullback deepens. **Do not deploy to any live paper run.** Direction (better entry
+prices are mechanically real) holds up; net portfolio effect does not.
+
+**Honest scope note**: this is one plausible, carefully-scoped implementation of "wait for
+a pullback" (fill at the near edge the instant it's touched, expire after 2 sessions,
+carried forward without re-sorting). It is not proof no version of this idea could ever
+work -- e.g., a design that widens `MAX_POSITIONS`/loosens concentration specifically to
+give a waiting order room without displacing today's fresh candidates was not tested here
+and might behave differently, though the two prior widening/reordering attempts in this log
+both failed for related reasons. **Next step if this gets picked back up**: isolate whether
+the instability is really "which stock gets today's scarce slot changing" (per the Phase 1
+diagnostic playbook this log already built for `BACKLOG_QUEUE_ENABLED`/`MAX_POSITIONS`) by
+tracing W8's specific admitted-candidate list cell-by-cell, the same concrete-trace
+discipline that explained those two rejections instead of stopping at the aggregate table.
+
+Code kept: `src/test_pullback_fill.py` (self-check, same pattern as `test_backlog_queue.py`),
+`src/sweep_pullback_fill.py` (this sweep, reusable the same way `sweep_backlog_queue.py`/
+`sweep_rotation.py` are for the next numeric-grid parameter). `backtest_v4.py` gained the
+`PULLBACK_FILL_ENABLED`/`PULLBACK_LOW_MULT`/`PULLBACK_HIGH_MULT`/`PULLBACK_EXPIRY_SESSIONS`/
+`PULLBACK_FILL_LOG` mechanism inside `simulate_window`'s day loop, regression-verified
+byte-identical at defaults (`test_diag_hook.py`, `test_backlog_queue.py` both still pass).
+`score_candidates()`, `compute_entry_fill()`, `evaluate_position_exit()`,
+`paper_signal_scan.py`, and `paper_monitor.py` are all unchanged. Raw sweep outputs saved at
+`.cache/pullback_fill_sweep_full.csv`/`_agg.csv`/`_miss_rate.csv`.
+
+## 2026-08-30: score-confidence-scaled stop-loss width -- real-trader critique (GIAA -10.81%,
+## WMPP -13.89%, HATM -14.96% real closed-trade SL distances this week), tested, REJECTED at
+## the task's own suggested bounds and non-robust everywhere else. Base-rate check shows the
+## chosen signal is a weak, inconsistent predictor of "will this trade hit its stop" --
+## weaker than the same-day-rank effect `diagnose_score_power.py` already found. The one
+## sweep cell that looks good is a single-window (W8) leverage artifact, the same failure
+## signature this log has rejected repeatedly.
+
+**Hypothesis** (a real trader's structural critique, not a guess): `SL_MULT` (`compute_entry_fill()`,
+`backtest_v4.py`) is a single FLAT 1.5x-ATR multiplier applied to every candidate regardless
+of signal quality. A high-confidence signal moving against you by a lot, soon, plausibly
+means the entry thesis itself was wrong ("false entry") and should be cut faster; a weaker/
+noisier signal might reasonably need more room. Architecturally this is the exact
+"ratio-and-clip" pattern `SCORE_SIZING_ENABLED`/`LIQ_SIZING_ENABLED`/`TREND_SIZING_ENABLED`/
+`BANDAR_SIZING_ENABLED` already use for POSITION SIZE -- this test applies the same pattern
+to the STOP WIDTH instead: `sl_mult_effective = SL_MULT * confidence_adjustment`, where
+`confidence_adjustment = clip(score_p90 / sig["score"], SL_CONFIDENCE_MIN, SL_CONFIDENCE_MAX)`
+-- the SAME score/score_p90 ratio `size_mult` already uses, INVERTED (higher score -> smaller
+adjustment -> tighter stop; lower score -> larger adjustment, up to the current width).
+
+**Signal choice, argued before testing (the task asked for this explicitly, not just a free
+pick of `score`)**: `trend_strength` was rejected as the axis because it is one IHSG-wide
+scalar shared by every candidate admitted on the same day -- it cannot tell apart which of
+TODAY's candidates has the shakier thesis, only whether today-in-general is a strong regime
+day. `concentration` (Bandarmology, `BANDAR_SIZING_ENABLED`'s own signal) was considered and
+is revisited below -- not chosen as the PRIMARY axis going in because of a real coverage gap
+(see base-rate check, part D). `score` was chosen anyway, over `SCORE_SIZING_ENABLED`'s own
+prior REJECTED verdict for SIZING ("no demonstrated value for sizing... likely already-
+extended momentum, not more runway"), because the rejection reason doesn't obviously transfer
+to STOP WIDTH: `diagnose_score_power.py`'s 2026-08-07 finding (same log, above) showed a
+same-day statistical-outlier score (specifically extreme `weekly_ma_spread`) DOES carry real
+information -- rank-1-by-score hits its stop 82-98% of the time across both halves of a
+4.5-year out-of-sample split (survives the split). It just doesn't help to size UP into that
+outcome; tightening the STOP on the same known-bad subgroup is a different, and more
+mechanistically direct, use of the same signal. **That premise gets checked directly below,
+not assumed.**
+
+**Implementation**: `V4_SL_CONFIDENCE`/`V4_SL_CONFIDENCE_MIN`(default 0.7)/
+`V4_SL_CONFIDENCE_MAX`(default 1.3) in `backtest_v4.py`, off by default, applied inside
+`compute_entry_fill()` right before the existing `sl_price = entry_price - atr_val * SL_MULT`
+line (now `sl_mult_effective`) -- both the backtest and `paper_monitor.py`'s live fills go
+through this one function, so the live paper-trading path picks this up automatically the
+moment the flag is set, same as every other `*_SIZING_ENABLED` flag in this file. No effect
+on the rare no-ATR fallback branch (flat `SL_PCT`) -- out of scope, not what the real-trade
+critique was about. Regression-verified inert at default (`test_diag_hook.py`,
+`test_paper_trading_math.py`, `test_bandar_sizing_default.py`, `test_spike_sizing.py` all
+still pass byte-for-byte) and a `(SL_CONFIDENCE_MIN, MAX) = (1.0, 1.0)` sanity cell in the
+sweep below reproduces the OFF baseline exactly (forces `confidence_adjustment == 1.0`
+regardless of score, as it should).
+
+**Also added, purely additive**: `_diag_admitted`'s existing research hook (see
+`test_diag_hook.py`'s own "zero side effects" guarantee) gained `trade_date`, `score_p90`,
+`sl_price`, `concentration`, `concentration_p90` fields -- lets an admitted candidate be
+joined against its own real `df_trades` outcome by `(stock_code, trade_date==entry_date)`
+for the base-rate check below, without touching any trading logic.
+
+**Baseline reconfirmed first**, live `V4_PAPER` config (`V4_ATR_PRICE_RATIO_MAX=0.08`,
+`V4_BANDAR_SIZING` default-on), off the existing
+`.cache/walk_forward_data_2021-01-01_2026-06-30.pkl`: mean alpha +26.17%, mean PF 1.95,
+mean/worst maxDD -14.26%/-21.10%, beat-bench 7/9, win>50% 4/9, 396->366 trades --
+byte-identical to the 2026-08-22 `ATR_PRICE_RATIO_MAX=0.08` entry's own numbers.
+
+**1. Base-rate check FIRST (the task's own required step, done before trusting the
+mechanism): does score/score_p90 actually predict which ADMITTED, REAL trades get stopped
+out?** Ran the real 9-window schedule with `SL_CONFIDENCE_ENABLED=False` and `diag={}`,
+joined every admitted candidate to its own eventual trade outcome (`src/
+scratch_sl_confidence_baserate.py`, raw output `src/scratch_sl_confidence_baserate_raw.csv`,
+n=250 matched admissions across all 9 windows):
+
+| score/score_p90 tercile | n | win rate | SL-hit rate | mean pnl (Rp) |
+|---|---|---|---|---|
+| low (mean ratio 1.21) | 84 | 32.1% | 60.7% | 1,522,129 |
+| mid (mean ratio 2.36) | 83 | 28.9% | 60.2% | 288,820 |
+| high (mean ratio 4.14) | 83 | 28.9% | 63.9% | 914,830 |
+
+Not a clean gradient -- `mid` has the WORST mean pnl of the three buckets, not something in
+between `low` and `high`. Top-decile-by-score (n=25, the closest analogue to
+`diagnose_score_power`'s "rank 1") vs the rest: win rate 28.0% vs 30.2%, SL-hit 64.0% vs
+61.3%, mean pnl actually HIGHER for the top decile (Rp1,208,732 vs Rp877,971) -- the direction
+the mechanism needs, reversed. Spearman correlations on the full n=250: score_ratio vs net
+pnl rho=-0.169 (p=0.008, real but weak), score_ratio vs win (binary) rho=-0.036 (p=0.573,
+NOT significant), score_ratio vs SL-hit (binary) rho=+0.035 (p=0.586, NOT significant). Per-
+window breakdown (block C, script output) shows the SL-hit-rate-rises-with-score pattern in
+some windows (W2, W9) and the OPPOSITE in others (W7: high-score bucket has the LOWEST
+SL-hit rate, 16.7%, and the BEST win rate, 66.7%) -- not a consistent direction.
+
+**Read plainly: `score`/`score_p90` (the ratio `compute_entry_fill()` actually computes) is a
+much weaker and noisier predictor of "will this specific trade get stopped out" than
+`diagnose_score_power.py`'s same-day-RANK-based finding.** The likely reason: `score_p90` is
+a TRAIN-derived aggregate threshold, not a same-day comparison -- a day where the whole
+qualifying pool's scores happen to sit far from the historical `score_p90` inflates or
+deflates every candidate's ratio together, diluting the specific "this candidate is today's
+own outlier" signal that rank captured cleanly. The premise this flag leans on is real at the
+rank level and much weaker at the ratio level it actually uses.
+
+**2. A candidate NOT chosen as primary (concentration/Bandarmology) turns out cleaner in this
+same check -- worth recording even though it wasn't this test's chosen axis:**
+
+| concentration/concentration_p90 tercile | n | win rate | SL-hit rate |
+|---|---|---|---|
+| low | 63 | 19.1% | 68.3% |
+| mid | 62 | 29.0% | 62.9% |
+| high | 63 | 42.9% | 47.6% |
+
+Clean, monotonic, and statistically real (rho=+0.246 vs win, p=0.001; rho=-0.222 vs SL-hit,
+p=0.002; n=188/250 admitted candidates have real concentration data, 75.2% coverage -- the
+coverage gap flagged going in, real but not disqualifying). **The direction argues AGAINST
+this test's "high confidence -> tighter stop" mapping if concentration were substituted in
+directly**: high-concentration trades already have the BEST win rate and LOWEST SL-hit rate
+of the three buckets -- tightening their stop would target the group already least likely to
+need it, while low-concentration trades (SL-hit 68.3%, the group that actually IS failing
+most) would keep today's un-tightened width under a naive same-shaped mapping. Concentration
+is a better-behaved signal for trade quality in general terms but not a drop-in replacement
+for this specific "penalize overconfidence" design without inverting the mapping -- a
+different test, not this one. Flagged for a future session, not built here.
+
+**3. Full 9-window walk-forward at the task's own suggested default bounds
+(`SL_CONFIDENCE_MIN=0.7`, `MAX=1.3`)** (`src/test_sl_confidence.py`):
+
+| Metric | OFF | ON (0.7, 1.3) |
+|---|---|---|
+| Windows beating benchmark | 7/9 | 7/9 |
+| Windows win-rate > 50% | 4/9 | 4/9 |
+| Win rate (mean / median) | 49.8% / 50.0% | 42.4% / 45.5% |
+| Profit (mean / median) | +25.31% / +6.15% | +20.34% / +5.12% |
+| Alpha (mean / median) | +26.17% / +17.79% | +21.20% / +7.41% |
+| Profit factor (mean / median) | 1.95 / 1.29 | 1.55 / 1.28 |
+| Max drawdown (mean / worst) | -14.26% / -21.10% | -14.45% / -19.85% |
+
+Every profit/win-rate/PF metric gets WORSE, not mixed. Mean drawdown is essentially flat
+(slightly worse); only the single worst-case window's drawdown improves (-21.10% ->
+-19.85%). Does not clear this project's own adoption bar (best mean alpha AND best
+worst-case drawdown together) -- on this evidence alone, plain tightening of high-score
+trades' stops looks like the disclosed risk this task asked to check honestly for: more
+premature stop-outs on ordinary volatility (whipsaw), without a compensating benefit,
+consistent with part 1's weak/null base-rate finding.
+
+**4. Bounds sensitivity sweep** (`src/sweep_sl_confidence.py`, in-process, same
+`.cache` dataset, ATR<=0.08 pinned; full CSV `src/sweep_sl_confidence_summary.csv`):
+
+| (MIN, MAX) | beat-bench | win>50% | win mean | profit mean | alpha mean | PF mean | maxDD mean | maxDD worst |
+|---|---|---|---|---|---|---|---|---|
+| OFF (baseline) | 7/9 | 4/9 | 49.8% | +25.31% | +26.17% | 1.95 | -14.26% | -21.10% |
+| sanity (1.0, 1.0) | 7/9 | 4/9 | 49.8% | +25.31% | +26.17% | 1.95 | -14.26% | -21.10% |
+| tighten-only (0.7, 1.0) | 7/9 | 4/9 | 42.9% | +21.33% | +22.19% | 1.59 | -14.22% | -19.85% |
+| widen-only (1.0, 1.3) | 7/9 | 3/9 | 49.3% | +24.62% | +25.48% | 1.92 | -14.97% | -21.10% |
+| narrow (0.85, 1.15) | 7/9 | 3/9 | 45.8% | +22.38% | +23.24% | 1.98 | -15.10% | **-23.14%** |
+| default (0.7, 1.3) | 7/9 | 4/9 | 42.4% | +20.34% | +21.20% | 1.55 | -14.45% | -19.85% |
+| wide (0.5, 1.5) | **8/9** | 3/9 | 40.9% | **+34.07%** | **+34.93%** | **2.06** | **-13.13%** | **-17.26%** |
+| size_mult-scale (0.5, 2.0) | **8/9** | 3/9 | 41.1% | **+34.41%** | **+35.27%** | **2.08** | -13.12% | -17.26% |
+
+The sanity cell reproduces OFF exactly (implementation check passes). Everything else is
+**non-monotonic, not a smooth dose-response**: `tighten-only`, `widen-only`, `narrow`, and
+`default` -- four cells spanning the task's own suggested range and its two pure halves --
+are all flat-to-worse than baseline on every profit metric, and `narrow` (a GENTLER version
+of the same idea) has the single WORST worst-case drawdown of the whole table (-23.14%,
+worse than even doing nothing). Only the two most extreme cells tested, well past the task's
+own suggested guardrails, look attractive in aggregate.
+
+**Traced `wide`'s aggregate improvement to a single window, the same failure signature this
+log has already used to reject three other mechanisms this project (`ROTATION_MARGIN_MULT`,
+spike sizing, the divergence gate)**: per-window profit deltas vs baseline for `wide` are
+w1 +0.24, w2 +6.52, w3 +0.08, w4 -5.88, w5 -3.31, w6 +0.15, w7 -8.21, **w8 +86.68**, w9 +2.61
+-- summing to +78.9pp total, of which window 8 alone supplies +86.68pp (110% of the whole
+aggregate gain; every OTHER window nets slightly NEGATIVE, -7.8pp combined). **And window 8's
+own exit breakdown gets a HIGHER SL-hit fraction under `wide` (38.7%) than baseline (34.5%),
+not lower** -- so the profit gain is demonstrably not "avoiding bad stop-outs." The likely
+real mechanism: `SL_MULT`/`sl_mult_effective` feeds `risk_per_share` in
+`compute_entry_fill()`'s own `lots_risk = prev_equity * RISK_PCT / risk_per_share` cap --
+tightening the stop shrinks `risk_per_share`, which mechanically ALLOWS MORE SHARES for the
+same 4%-of-equity risk budget. On a genuinely strong window (W8 already the single largest
+contributor to the whole 9-window schedule's profit in every prior entry that's checked
+this), that extra leverage amplifies the winners already there -- "amplifies whichever
+direction a window is already going," the exact phrase this log used for pyramiding, here
+showing up as a side effect nobody asked for rather than the intended one.
+
+**Verdict: REJECTED, both at the task's own suggested bounds and at every other value tested
+that isn't a single-window leverage artifact.** The premise check (part 1) shows `score` is a
+weak, inconsistent predictor of which admitted trades actually hit their stop -- weaker than
+the same-day-rank effect this signal is theoretically riding on. The walk-forward at the
+suggested default bounds is a net negative on every profit/win-rate/PF metric with only a
+marginal worst-case-drawdown consolation. The sweep's one genuinely good-looking region
+(MIN<=0.5) doesn't decompose into "tightening helps" under any honest accounting -- it is a
+single window's leverage effect via the existing `RISK_PCT` risk-sizing cap, mechanistically
+traced, not guessed at. Consistent with the pre-registered honesty bar: **this is the "just
+causes more whipsaw without a compensating benefit" outcome the task asked to watch for
+explicitly, at the parameterization actually suggested.** `SL_CONFIDENCE_ENABLED` stays off
+by default; kept in the code (same convention as every other unvalidated-but-available flag
+in this file) for a future attempt with a different signal, not this one's score/score_p90
+ratio.
+
+**Next step if this gets picked back up**: (1) concentration/Bandarmology (part 2) is the
+more evidence-backed axis for "does this candidate's setup actually look real" -- but needs
+its own differently-shaped design (tighten the LOW-concentration group, not the high one, or
+size DOWN low-concentration entries instead of touching their stop) rather than porting this
+test's score-shaped mapping onto it unchanged; (2) if `score` is revisited, use a same-day
+comparison (percentile within that day's own qualifying pool, closer to what
+`diagnose_score_power.py` actually validated) instead of the TRAIN-derived `score_p90` ratio
+`compute_entry_fill()` happens to already have on hand -- part 1 suggests that's where the
+signal got diluted; (3) any SL-width change should be walk-forward-tested with `RISK_PCT`'s
+own sizing interaction explicitly held constant (e.g. size off the ORIGINAL `SL_MULT`
+distance, not the confidence-adjusted one) before trusting an aggregate number, so a genuine
+loss-cutting effect can't hide behind a leverage effect again.
+
+Code touched: `backtest_v4.py` (`SL_CONFIDENCE_ENABLED`/`SL_CONFIDENCE_MIN`/
+`SL_CONFIDENCE_MAX`, `compute_entry_fill()`'s `sl_mult_effective`, `_diag_admitted`'s five new
+additive fields -- all off/no-op by default, regression-verified). New: `src/
+test_sl_confidence.py` (isolated OFF/ON check via `feature_test_harness.py`), `src/
+sweep_sl_confidence.py` (bounds grid, in-process), `src/scratch_sl_confidence_baserate.py`
+(the base-rate check, part 1/2 above) + its raw CSV output. `score_candidates()`,
+`evaluate_position_exit()`, `paper_signal_scan.py`, and `paper_monitor.py` are unchanged.
+Left uncommitted for review, same pattern as this session's other entries.
+
+## 2026-08-30: concentration-scaled stop-loss width -- idea #3 of this session's three-idea
+## SL-width thread (reversed polarity vs idea #2, a council-escalated side-finding from that
+## rejection), tested, REJECTED. Same single/double-window-driven fragility signature this
+## log has now used to reject three different mechanisms, and the mandated
+## sizing-interaction isolation check (council correction #2) found a case where the
+## IDENTICAL bounds flip the sign of the aggregate result depending on whether
+## BANDAR_SIZING_ENABLED is on or off -- concrete evidence of the exact confound the check
+## was designed to catch, not just a failure to rule it out.
+
+**Where this came from**: while rejecting idea #2 (score-confidence-scaled SL, see entry
+directly above), a side-check of Bandarmology `concentration` (`BANDAR_SIZING_ENABLED`'s own
+signal, top1_broker_|net_lot| / sum(all_brokers_|net_lot|)) on the same 250 real historical
+trades found it correlates with outcomes in the OPPOSITE direction idea #2 needed: win rate
+by concentration tercile 19.1%/29.0%/42.9% (low/mid/high), rho=+0.246 (p=0.001) vs win,
+rho=-0.222 (p=0.002) vs SL-hit rate. High concentration -> better outcome -> should get a
+WIDER stop (let it run); low concentration -> tighter stop (cut faster) -- reversed polarity
+from idea #2 (which shrank the multiplier for high-signal candidates). Escalated to a
+5-advisor + 3-peer-review council given the "treadmill" risk of a third consecutive test on
+the same SL-width lever; council said yes, conditionally, with two mandatory corrections the
+peer-review round caught (missed by all 5 original advisors): **(1) the 250-trade
+correlation above is not validation, it is only what earns this a test slot -- the ONLY bar
+that counts is the full 9-window walk-forward below, decided by this project's standard
+methodology, not by re-looking at the correlation; (2) `concentration` already drives
+position SIZE via `BANDAR_SIZING_ENABLED` elsewhere in `compute_entry_fill()` -- any
+walk-forward improvement from also using it for SL WIDTH must be checked against that
+existing sizing interaction, not assumed separable.** Both corrections are applied literally
+below, not just referenced.
+
+**Implementation**: `V4_SL_CONCENTRATION`/`V4_SL_CONCENTRATION_MIN` (default 0.8)/
+`V4_SL_CONCENTRATION_MAX` (default 1.3) in `backtest_v4.py`, off by default, same
+ratio-and-clip shape `BANDAR_SIZING_ENABLED`'s own `bandar_mult` already uses
+(`concentration / concentration_p90`, clipped) -- applied to `sl_mult_effective` instead of
+`alloc`, sign UNCHANGED (not inverted, unlike idea #2's `confidence_adjustment`): higher
+concentration -> larger multiplier -> wider stop; lower concentration -> smaller multiplier
+-> tighter stop. Stacks multiplicatively with `SL_CONFIDENCE_ENABLED` if both were ever
+turned on (neither is). `concentration`/`has_concentration` extraction was moved earlier in
+`compute_entry_fill()` (was previously only computed at the `bandar_mult` site) so this
+block can read it before the SL price is computed -- `bandar_mult` now reuses those same two
+locals rather than a second lookup; behavior of `bandar_mult` itself is unchanged (confirmed
+by the idea #2 regression re-run below, byte-identical to its own recorded numbers, so this
+refactor introduced no side effect on the existing flag).
+
+**Self-check** (`src/test_sl_concentration.py`, 5 direct assertions on `compute_entry_fill()`
+itself -- no walk-forward needed for the polarity claim, entry_price/atr/concentration are
+all plain inputs to one pure function): OFF is neutral regardless of concentration (sl_price
+identical at concentration=1.3/0.1/None); ON with high concentration (ratio clipped to MAX)
+widens the stop (lower sl_price than OFF); ON with low concentration (ratio clipped to MIN)
+tightens it (higher sl_price than OFF); missing concentration stays neutral even with the
+flag on (no crash, matches OFF); sl_price is unaffected by `BANDAR_SIZING_ENABLED`'s own
+on/off state AT THE PRICE-COMPUTATION LEVEL (the two multipliers are computed independently
+and never multiply each other directly) -- explicitly NOT claimed to rule out the deeper
+LOTS-level interaction via `risk_per_share`/`lots_risk`, which is what the walk-forward
+isolation pass below actually checks. All 5 checks pass.
+
+**Baseline reconfirmed first, both configurations**, off the existing
+`.cache/walk_forward_data_2021-01-01_2026-06-30.pkl`, `V4_ATR_PRICE_RATIO_MAX=0.08`
+(matching every other entry this session): with `BANDAR_SIZING_ENABLED=True` (live default)
+-- mean alpha +26.17%, mean PF 1.95, mean/worst maxDD -14.26%/-21.10%, beat-bench 7/9,
+win>50% 4/9, 366 trades, byte-identical to every prior entry's own recorded numbers. With
+`BANDAR_SIZING_ENABLED=False` (the isolation configuration) -- mean alpha +29.82%, mean PF
+1.98, mean/worst maxDD -15.97%/-23.13%, beat-bench 7/9, win>50% 4/9, 374 trades (a different,
+but internally consistent, baseline -- turning `BANDAR_SIZING_ENABLED` off changes which
+candidates clear `ALLOC_MIN_LOTS`, so trade count shifts on its own, unrelated to this
+flag). The idea #2 (`SL_CONFIDENCE_ENABLED`) isolated test was also re-run in full after this
+session's code changes and reproduced its own recorded table exactly (mean alpha +26.17% OFF
+/ +21.20% ON, mean PF 1.95/1.55) -- confirms the `compute_entry_fill()` refactor above (moving
+the `concentration` extraction earlier) introduced no regression.
+
+**Full 9-window sweep, PASS A -- `BANDAR_SIZING_ENABLED=True` (live default)**
+(`src/sweep_sl_concentration.py`, full CSV `sweep_sl_concentration_bandar_on.csv`):
+
+| (MIN, MAX) | trades | beat bench | win>50% | win% mean | alpha% mean | PF mean | DD% mean/worst |
+|---|---|---|---|---|---|---|---|
+| **OFF (baseline)** | 366 | 7/9 | 4/9 | 49.8 | +26.17 | 1.95 | -14.26/-21.10 |
+| sanity (1.0, 1.0) | 366 | 7/9 | 4/9 | 49.8 | +26.17 | 1.95 | -14.26/-21.10 |
+| tighten-only (0.8, 1.0) | 394 | 7/9 | 5/9 | 46.7 | +28.25 | 1.77 | -15.53/-25.24 |
+| widen-only (1.0, 1.3) | 364 | 7/9 | 5/9 | 50.3 | +28.41 | **2.06** | **-14.04**/**-19.14** |
+| **default (0.8, 1.3)** | 394 | 7/9 | 4/9 | 45.5 | +29.61 | 1.69 | -15.54/**-25.54** |
+| narrow (0.9, 1.15) | 369 | 7/9 | 3/9 | 47.6 | +25.50 | 1.91 | -14.76/-18.50 |
+| wide (0.5, 2.0) | 412 | 7/9 | 4/9 | 44.1 | **+29.97** | 1.78 | **-13.65**/-18.84 |
+
+The sanity cell reproduces OFF exactly (implementation check passes through the full
+pipeline, not just the unit-level self-check). `default (0.8, 1.3)` -- the flag's own coded
+default, the "reasonable default" this test was asked to try first -- shows the single WORST
+profit factor (1.69) and single WORST worst-case drawdown (-25.54%) in the entire grid,
+alongside win>50% unchanged from baseline (4/9). Only `widen-only` (1.0, 1.3) looks clean
+on every metric simultaneously (best PF, best mean AND worst-case drawdown, win>50%
+improved to 5/9) -- examined in the per-window trace below.
+
+**Full 9-window sweep, PASS B -- `BANDAR_SIZING_ENABLED=False` (isolation, council
+correction #2)** (same script, full CSV `sweep_sl_concentration_bandar_off.csv`):
+
+| (MIN, MAX) | trades | beat bench | win>50% | win% mean | alpha% mean | PF mean | DD% mean/worst |
+|---|---|---|---|---|---|---|---|
+| **OFF (baseline)** | 374 | 7/9 | 4/9 | 50.1 | +29.82 | 1.98 | -15.97/-23.13 |
+| sanity (1.0, 1.0) | 374 | 7/9 | 4/9 | 50.1 | +29.82 | 1.98 | -15.97/-23.13 |
+| tighten-only (0.8, 1.0) | 392 | 7/9 | 4/9 | 46.7 | +33.40 | 1.64 | -16.94/**-31.08** |
+| widen-only (1.0, 1.3) | 370 | 7/9 | 5/9 | 51.0 | +32.79 | **2.12** | -15.76/-23.13 |
+| **default (0.8, 1.3)** | 385 | 7/9 | 5/9 | 47.2 | +35.32 | 1.90 | -16.62/**-31.26** |
+| narrow (0.9, 1.15) | 363 | 7/9 | 4/9 | 50.3 | +34.73 | **2.32** | -15.91/-23.46 |
+| wide (0.5, 2.0) | 414 | 7/9 | 4/9 | 45.1 | +34.92 | 1.78 | **-14.84**/**-21.81** |
+
+Sanity again reproduces OFF exactly. Every cell's mean alpha looks better here than in Pass
+A -- but that is mostly `BANDAR_SIZING_ENABLED`'s own baseline shift (+29.82% vs +26.17%,
+already present at `sanity`/OFF before `SL_CONCENTRATION_ENABLED` does anything), not a
+bigger effect from this flag. The two worst-drawdown cells (`tighten-only`, `default`, both
+touching the MIN<1.0 side) get WORSE in this configuration, not better (-31.08%/-31.26% vs
+-25.24%/-25.54% in Pass A) -- tightening the low-concentration side is not rescued by
+removing the sizing interaction.
+
+**Per-window trace: every cell's aggregate "improvement" is 1-2 windows carrying the entire
+result, the same fragility signature this log has already used to reject the pullback-fill
+entry mechanism (W8/W9) and idea #2's own `wide` cell (W8)** -- reached here via a third,
+structurally different route (SL width feeding `risk_per_share`, not entry timing or
+size_mult):
+
+| Cell | Pass A: window(s) responsible | Pass B: window(s) responsible |
+|---|---|---|
+| widen-only (1.0,1.3) | W4 +23.58pp of net +20.17pp (117%); all others net -3.41pp | W4 +27.36pp of net +26.77pp (102%); all others net -0.59pp |
+| tighten-only (0.8,1.0) | W8 +21.02pp of net +18.69pp (112%); W5 -9.86, W7 -6.16 | W8 +30.12pp of net +32.29pp (93%) |
+| default (0.8,1.3) | W8 +39.40pp of net +31.0pp (127%); W5 -9.86, W7 -6.23 | **W4 +40.17pp AND W8 +19.58pp** of net +49.51pp; others net -10.24pp |
+| wide (0.5,2.0) | W8 +27.65pp, W4 +12.94pp; **W7 -13.70pp** | W8 +37.20pp, W4 +14.79pp; **W7 -11.24pp** |
+| narrow (0.9,1.15) | W4 +4.26pp; net mean delta **-0.67pp (WORSE than baseline)** | W4 +33.93pp; net mean delta **+4.91pp (BETTER than baseline)** |
+
+`widen-only`'s apparent cleanliness holds up across both configurations in the same
+direction and roughly the same magnitude (W4 responsible for essentially all of it either
+way) -- not a `BANDAR_SIZING` artifact, but still a single-window result: 6 of 9 windows show
+**exactly zero** change in either configuration (W1, W2, W3, W5, W9 -- these candidates'
+concentration ratios never cross above 1.0, so `widen-only`'s own MIN=1.0 floor makes it a
+literal no-op for them), and the one window it does touch beyond W4 (W7) moves slightly
+negative in both passes.
+
+**`narrow (0.9, 1.15)` is the concrete confound the isolation pass was built to catch, not
+just a failure to rule one out**: the IDENTICAL bounds produce a net mean-alpha delta of
+-0.67pp with `BANDAR_SIZING_ENABLED` on and +4.91pp with it off -- opposite signs, same
+inputs, same SL-width formula. `BANDAR_SIZING`'s own `alloc` scaling and this flag's own
+`risk_per_share`-mediated `lots_risk` cap are landing on different sides of some rounding/cap
+boundary for W4's specific admitted trades depending on which multiplier the position size
+already carries -- exactly the kind of two-multiplier interaction council correction #2
+named as the risk to check for, now shown directly rather than merely not-ruled-out.
+
+**A second, narrower sizing interaction survives even with `BANDAR_SIZING_ENABLED` off,
+worth being explicit about rather than claiming a clean isolation**: trade counts change in
+BOTH passes (Pass A: 364-412 vs 366 baseline; Pass B: 363-414 vs 374 baseline) purely from
+this flag, in both configurations -- `sl_mult_effective` feeds `risk_per_share`, which feeds
+`lots_risk = prev_equity*RISK_PCT/risk_per_share` and then `ALLOC_MIN_LOTS`, so a wider stop
+can push a marginal candidate's lots below the minimum (dropped -- `widen-only` trades
+364/370, both below baseline) while a tighter stop allows more lots for the same risk budget
+(admitted where it previously wasn't -- `tighten-only`/`default`/`wide` trades all above
+baseline in both passes). This is the SAME `RISK_PCT`/`lots_risk` channel idea #2's own
+`wide (0.5,1.5)` cell was traced to -- forcing `BANDAR_SIZING_ENABLED` off isolates the
+concentration-drives-SIZE confound specifically, but does not by itself hold sizing
+completely fixed, because SL width has always fed sizing through this cap regardless of
+`BANDAR_SIZING`'s state. A fully sizing-fixed test would need to compute `lots_risk` off the
+ORIGINAL `SL_MULT` distance while still moving the ACTUAL `sl_price` -- not built here,
+flagged for the record rather than glossed over.
+
+**No Monte Carlo permutation check run**, per this log's own established bar (used
+identically for `BACKLOG_QUEUE_ENABLED`, `REGIME_CONFIRM_DAYS=2`, and the pullback-fill
+entry above): an MC check is for a candidate that looks genuinely better and more robust on
+the sweep itself. No cell here clears that bar -- the flag's own coded default
+(`0.8, 1.3`) has the worst PF and worst drawdown in the grid in both configurations; the one
+cell that looks clean everywhere (`widen-only`) is a single-window (W4) result with 6 of 9
+windows entirely unaffected; and `narrow` demonstrates a direct sign-flip under the mandated
+sizing-isolation check, not just a magnitude wobble.
+
+**Verdict: REJECTED.** The base-rate correlation that earned this a test slot (19.1%/29.0%/
+42.9% win rate by tercile) does not translate into a robust walk-forward improvement at the
+task's own suggested default, and the sweep's more attractive-looking cells decompose into
+either a single window (W4 for `widen-only`, W8 for `tighten-only`) or, in `default`'s case,
+two windows compounding in a way that is NOT reproducible in sign or magnitude once the
+mandated `BANDAR_SIZING_ENABLED` isolation check is run (`narrow` flips from -0.67pp to
++4.91pp). Council correction #2's concern was not merely unconfirmed -- it is directly
+demonstrated at at least one grid cell. `SL_CONCENTRATION_ENABLED` stays off by default,
+kept in the code (same convention as every other unvalidated-but-available flag in this
+file) for a future attempt, not this one's direct ratio-and-clip mapping.
+
+**This closes the three-idea SL-width thread for this session** (pullback-fill entry
+mechanism, score-confidence-scaled SL, concentration-scaled SL) -- all three tested,
+none validated, per explicit instruction no fourth follow-on idea is proposed here. One
+footnote genuinely worth recording rather than pursuing: `widen-only` (raise the ceiling
+only, leave the floor at 1.0 so low-concentration trades are never touched) is the one shape
+across all three ideas' sweeps that never showed a worse worst-case drawdown than baseline
+in either `BANDAR_SIZING` configuration -- a different, narrower question ("does widening
+help at all, on its own, independent of any tightening") than anything tested here, not
+answered by this entry.
+
+Code touched: `backtest_v4.py` (`SL_CONCENTRATION_ENABLED`/`SL_CONCENTRATION_MIN`/
+`SL_CONCENTRATION_MAX`, `compute_entry_fill()`'s `concentration`/`has_concentration`
+extraction moved earlier + the new SL-width block -- all off/no-op by default,
+regression-verified against idea #2's own recorded numbers). New: `src/
+test_sl_concentration.py` (5-assertion self-check, no dataset required), `src/
+sweep_sl_concentration.py` (two-pass bounds sweep, in-process) + its two CSV outputs
+(`sweep_sl_concentration_bandar_on.csv`, `sweep_sl_concentration_bandar_off.csv`).
+`score_candidates()`, `evaluate_position_exit()`, `paper_signal_scan.py`, and
+`paper_monitor.py` are unchanged. Left uncommitted for review, same pattern as this
+session's other entries.
