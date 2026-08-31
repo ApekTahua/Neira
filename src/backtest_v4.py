@@ -1052,6 +1052,66 @@ ACCDIST_SIZING_MAX = float(os.environ.get("V4_ACCDIST_SIZING_MAX", "2.0"))
 ROTATION_SIZING_ENABLED = os.environ.get("V4_ROTATION_SIZING", "0") == "1"
 ROTATION_SIZING_MIN = float(os.environ.get("V4_ROTATION_SIZING_MIN", "0.5"))
 ROTATION_SIZING_MAX = float(os.environ.get("V4_ROTATION_SIZING_MAX", "2.0"))
+# RESEARCH CANDIDATE (2026-08-31 council session), UNVALIDATED -- a hard admit/reject
+# VETO, categorically different from every Bandarmology mechanism above (all of which are
+# CONTINUOUS multipliers on size or SL width; this drops a candidate that already passed
+# every other gate, entirely, before it ever reaches compute_entry_fill). Also different
+# from today's three earlier SL-width ideas (all rejected, see V3_FINDINGS_LOG.md) --
+# those changed SL PLACEMENT for admitted trades; this changes the admission set itself.
+#
+# Condition, built from the two features that are actually a per-(stock, day) READING (not
+# a rolling/lagged construct needing its own validation): `concentration` (top-1 broker's
+# share of total |net_lot| that day -- the one Bandarmology feature Layer 1 validated
+# cleanly, 7/9 both full-range and 2024+-restricted, survives winsorizing, not concentrated
+# in the illiquid tail -- see docs/BANDARMOLOGY_DESIGN.md) and `net_lot`'s SIGN (daily
+# net buy-sell across all brokers, summed at the stock level). `concentration` is UNSIGNED
+# by construction (abs_net.max()/total, see bandarmology_features.daily_stock_features) --
+# a low reading alone can't tell "broadly distributed ACCUMULATION" from "broadly
+# distributed DISTRIBUTION," it only says no single broker dominates that day's flow.
+# `net_lot`'s sign supplies the missing direction. VETO fires when BOTH: concentration is
+# in the low tail (ratio to the train-derived concentration_p90 below
+# BANDAR_VETO_CONCENTRATION_MAX) AND net_lot is negative (net selling, below
+# BANDAR_VETO_NET_LOT_MIN, default 0.0 -- a pure sign check, not a magnitude threshold:
+# net_lot's raw units are stock-specific lot counts, not comparable across tickers without
+# further normalization that wasn't built here) -- operationalizes the design doc's own
+# 4-quadrant "distributing net-sell while price is up = warning, bearish despite a green
+# candle" read, at the single-day level score_candidates() already screens candidates on.
+# BANDAR_VETO_CONCENTRATION_MAX defaults well BELOW BANDAR_SIZING_ENABLED's own MIN floor
+# (0.5) deliberately -- at 0.5 the veto would just be a harder version of what sizing
+# already does (floor to 0.5x instead of dropping); at 0.3 it only fires on the clearly
+# low tail sizing's own floor doesn't distinguish from "somewhat low."
+#
+# `net_lot` itself has NOT been through Layer 1's own forward-return validation (only its
+# rolling-normalized cousin net_flow_norm was tested there, and flagged fragile to
+# winsorizing) -- used here for its SIGN only, as a directional disambiguator for the
+# validated `concentration` magnitude, not claimed as an independently validated predictor.
+# compute_bandar_net_lot() below reads the SAME local-Parquet per-broker-net aggregation
+# attach_bandarmology() already uses for `concentration` (net_lot is a byproduct of that
+# exact computation, just never merged into df there -- see that function's own docstring:
+# "Only concentration -- the one feature that survived Layer 1 validation"). Same
+# graceful-degrade-to-{} pattern as every other local-Parquet-only gate in this module:
+# missing data means the veto never fires (fail open), not a crash.
+#
+# Applied ONLY as a filter on simulate_window's OWN consumption of score_candidates()'s
+# return value (same site/pattern as SPIKE_CONFIRM_GATE_ENABLED/DIVERGENCE_GATE_ENABLED
+# below) -- score_candidates() and compute_entry_fill() are UNCHANGED, so
+# paper_signal_scan.py/paper_monitor.py (which call those directly, never simulate_window)
+# cannot be affected by this flag regardless of its state -- same disclosed backtest-only
+# gap as STRUCT_SL_ENABLED. Kept structurally SEPARATE from BANDAR_SIZING_ENABLED (own
+# flag, own threshold, no shared state) so each can be tested independently and in
+# combination -- does not touch BANDAR_SIZING_ENABLED's own default or behavior. Off by
+# default; UNVALIDATED until the walk-forward + sensitivity sweep exists -- see
+# docs/V3_FINDINGS_LOG.md.
+BANDAR_VETO_ENABLED = os.environ.get("V4_BANDAR_VETO", "0") == "1"
+BANDAR_VETO_CONCENTRATION_MAX = float(os.environ.get("V4_BANDAR_VETO_CONCENTRATION_MAX", "0.3"))
+BANDAR_VETO_NET_LOT_MIN = float(os.environ.get("V4_BANDAR_VETO_NET_LOT_MIN", "0.0"))
+# Research instrumentation only, BANDAR_VETO_ENABLED-gated -- same "module-level
+# accumulator a sweep script reads/clears directly" pattern PULLBACK_FILL_LOG/
+# TRANCHE_FILL_LOG above already use, for the same reason: "how many candidates did this
+# actually drop" is exactly the honesty check this project's own adoption discipline
+# requires, and isn't otherwise visible from the aggregate walk-forward metrics alone. One
+# dict appended per vetoed candidate, never appended when the flag is off.
+BANDAR_VETO_LOG: list = []
 # Structurally different follow-up to the REJECTED SPIKE_CONFIRM_GATE_ENABLED above
 # (docs/V3_FINDINGS_LOG.md, "Spike confirmation-delay gate ... REJECTED"): that gate
 # excluded a spike-flagged stock from candidacy entirely, on the theory that the
@@ -1406,6 +1466,61 @@ def attach_bandarmology(df: pd.DataFrame) -> pd.DataFrame:
               f"BANDAR_SIZING_ENABLED stays inert regardless of the flag.")
         df["concentration"] = np.nan
         return df
+
+
+_bandar_net_lot_cache: dict = {}  # keyed by id(df) -- same reasoning as
+                                    # _broker_flow_ratio_cache above: simulate_window is
+                                    # called once per walk-forward window against the SAME
+                                    # df object (a walk-forward/sweep script loads df ONCE
+                                    # and reuses it across every window and every grid
+                                    # cell), and the underlying per_broker_net() pivot over
+                                    # the full multi-year archive is expensive -- memoize
+                                    # so a 9-window sweep doesn't redo it 9x per cell.
+
+
+def compute_bandar_net_lot(df: pd.DataFrame) -> dict:
+    """Returns {(stock_code, trade_date): net_lot} -- see BANDAR_VETO_ENABLED's
+    module-level comment above for the full design. `df` is used only as the cache key
+    (id(df)) -- see _bandar_net_lot_cache above -- not otherwise read; a future caller that
+    wants to restrict/join against it can do so without changing this function's contract.
+
+    Local-Parquet-only, same graceful degrade as attach_bandarmology/
+    compute_market_broker_flow: if the archive isn't present, returns {} -- the veto's own
+    lookup site below defaults an unknown (stock, date) to net_lot=0.0, which never clears
+    a negative (`< BANDAR_VETO_NET_LOT_MIN`) check, so missing data never blocks an entry,
+    same "missing data never blocks" convention every gate in this module uses.
+
+    Deliberately does NOT call bf.daily_stock_features() (what attach_bandarmology() uses
+    for `concentration`) -- that function's own concentration column costs a per-group
+    Python-level .apply() over every (trade_date, stock_code) group in the full multi-year
+    archive (~1.3M groups), several minutes of real wall time this function has no use for
+    (concentration is already available from df's own already-attached, already-fast
+    column -- see bandar_veto_fires's call site). A plain vectorized groupby-sum of
+    per_broker_net()'s own `net_lot` column is the only aggregation actually needed here."""
+    if id(df) in _bandar_net_lot_cache:
+        return _bandar_net_lot_cache[id(df)]
+    try:
+        raw = bf.load_raw()
+    except SystemExit:
+        _bandar_net_lot_cache[id(df)] = {}
+        return _bandar_net_lot_cache[id(df)]
+    daily = bf.per_broker_net(raw).groupby(["trade_date", "stock_code"])["net_lot"].sum().reset_index()
+    result = dict(zip(zip(daily["stock_code"], daily["trade_date"]), daily["net_lot"]))
+    _bandar_net_lot_cache[id(df)] = result
+    return result
+
+
+def bandar_veto_fires(concentration, concentration_p90: float, net_lot: float) -> bool:
+    """Pure boolean -- the BANDAR_VETO_ENABLED admit/reject condition, extracted out of
+    simulate_window's candidate-filtering loop so it's independently unit-testable (see
+    src/test_bandar_veto.py) without a dataset. See BANDAR_VETO_ENABLED's module-level
+    comment for the full rationale. `concentration=None` (missing data) always returns
+    False -- fail open, same convention every gate in this module uses."""
+    return (
+        concentration is not None
+        and (concentration / concentration_p90) < BANDAR_VETO_CONCENTRATION_MAX
+        and net_lot < BANDAR_VETO_NET_LOT_MIN
+    )
 
 
 def attach_mover_signal(df: pd.DataFrame) -> pd.DataFrame:
@@ -2337,6 +2452,12 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
     struct_swing_low_by_stock_date = (
         compute_struct_swing_low(df, STRUCT_SL_LOOKBACK) if STRUCT_SL_ENABLED else {}
     )
+    # RESEARCH CANDIDATE, off by default -- see BANDAR_VETO_ENABLED above. Same "only
+    # computed when the flag is actually on" discipline as market_broker_flow_by_date/
+    # broker_divergence_by_stock_date above (a real local-Parquet archive read, not free).
+    bandar_veto_net_lot_by_stock_date = (
+        compute_bandar_net_lot(df) if BANDAR_VETO_ENABLED else {}
+    )
     df = df.copy()
     df["_regime"] = df["trade_date"].map(regime_by_date).fillna("NEUTRAL")
     df["_streak"] = df["trade_date"].map(bullish_streak_by_date).fillna(0)
@@ -2957,6 +3078,27 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                 new_candidates = [c for c in new_candidates
                                   if broker_divergence_by_stock_date.get((c["stock_code"], trade_date), DIVERGENCE_MIN)
                                   >= DIVERGENCE_MIN]
+            # BANDAR_VETO_ENABLED only -- same "filters simulate_window's OWN consumption,
+            # not score_candidates() itself" pattern as SPIKE_CONFIRM_GATE_ENABLED/
+            # DIVERGENCE_GATE_ENABLED just above. A candidate with unknown (None)
+            # concentration is never vetoed (fail open, same convention BANDAR_SIZING_ENABLED's
+            # own has_concentration check uses); a candidate with unknown net_lot defaults to
+            # 0.0 via the dict's own .get(), which never clears `< BANDAR_VETO_NET_LOT_MIN`
+            # (default 0.0), so missing net_lot data behaves identically to "not net selling."
+            if BANDAR_VETO_ENABLED:
+                _kept = []
+                for c in new_candidates:
+                    _net_lot = bandar_veto_net_lot_by_stock_date.get((c["stock_code"], trade_date), 0.0)
+                    _veto = bandar_veto_fires(c.get("concentration"), concentration_p90, _net_lot)
+                    if not _veto:
+                        _kept.append(c)
+                    else:
+                        BANDAR_VETO_LOG.append({
+                            "stock_code": c["stock_code"], "trade_date": trade_date,
+                            "concentration": c.get("concentration"), "concentration_p90": concentration_p90,
+                            "net_lot": _net_lot, "score": c.get("score"),
+                        })
+                new_candidates = _kept
             # BACKLOG_QUEUE_ENABLED reads this to know how many days a dropped
             # candidate has been waiting (see the entry-consumption loop above and
             # the reset/carry-forward logic below). Tagged unconditionally (one

@@ -6079,3 +6079,312 @@ sweep) + its three CSV outputs (`.cache/tranche_entry_sweep_full.csv`, `_agg.csv
 `_fill_quality.csv`). `score_candidates()`, `compute_entry_fill()`, `paper_signal_scan.py`,
 and `paper_monitor.py` are unchanged. Left uncommitted for review, same pattern as this
 session's other entries.
+
+## 2026-08-31: concentration acceleration (YELO anecdote) base-rate check -- REJECTED,
+sample large enough to trust, effect points the wrong way
+
+**Trigger**: YELO broke out +14.44% in one session today. Its Bandarmology broker-
+concentration ratio (`bandarmology_features.py`'s `concentration` -- top-1 broker's
+`|net_lot|` share of all brokers' `|net_lot|` that day, the exact column live in DB2's
+`bandarmology_flow_daily` and driving `BANDAR_SIZING_ENABLED`'s own sizing multiplier)
+had risen from a ~0.20-0.30 baseline to 0.50 / 0.46 / 0.42 over the 3 sessions right
+before the move. One data point, found by looking backward at a stock that already
+won -- explicitly not evidence by itself. Per a same-day council session on research
+posture (informational, not a binding process change to this log's own standards): check
+the base rate with a cheap query before building a walk-forward test or touching
+`backtest_v4.py`. This entry is that check only -- read-only, `src/backtest_v4.py`
+untouched, no new strategy flag.
+
+**Definition, fixed before looking at results** (`src/scratch_concentration_acceleration_
+baserate.py`): per stock, `baseline_t` = trailing 20-trading-day MEDIAN concentration,
+window ending 3 sessions before `t` (offset so the baseline can't be contaminated by the
+very days being tested against it). `elevated_t` = `concentration_t >= baseline_t + 0.10`
+AND `concentration_t >= 0.35` -- both numbers modeled directly on YELO's own numbers
+(baseline ~0.20-0.30, spike to 0.42-0.50). `flag_t` = elevated on `t`, `t-1`, AND `t-2`
+(3 consecutive sessions, matching what YELO showed) -- deliberately does NOT require a
+rising day-over-day shape within those 3 days, since YELO's own sequence (0.50 -> 0.46 ->
+0.42 into the breakout) wasn't rising either; demanding that shape would have been
+curve-fit to a pattern the one real example didn't actually have. Only the first day of
+each per-stock flagged run counts as one "episode" (a stock elevated 5 days straight is
+one event, not 5 -- see bug note below). "Real breakout" = forward 3-session close-to-
+close return > +8% (the task's own suggested number, well below YELO's own +14.44%).
+
+**Universe**: full local Bandarmology history (`data/bandarmology_history/*.parquet`,
+2020-06-02..2026-08-11, 943 stocks, 1,116,627 stock-day rows) -- same `bf.load_raw()` +
+`bf.per_broker_net()` + `bf.daily_stock_features()` pipeline `attach_bandarmology()`
+(`backtest_v4.py`) and `diagnose_bandarmology_power.py` already use for this exact
+`concentration` column, no corrupt-row filter (matches what's actually live in
+production sizing today). **ADTV_MIN liquidity filter required and confirmed necessary**:
+unfiltered, the concentration distribution's 90th/95th/99th percentiles all cluster right
+at 0.4996/0.5000/0.5100 -- a thin-trading artifact (2 active brokers of similar size
+trivially produces concentration~0.5), not accumulation. After the `config.ADTV_MIN`
+filter (Rp1bn/20d, same threshold V3's own liquidity gate uses): 461,334 rows, median
+concentration drops to 0.250, 90th/95th to 0.411/0.459 -- the artifact meaningfully
+recedes, confirming the filter was doing real work, not a formality.
+
+**Bug caught and fixed mid-analysis**: the first run's episode dedup used `flag &
+~flag.shift(1).fillna(False)`. Shifting a bool-dtype pandas Series inserts a NaN at the
+boundary, which silently upcasts the whole Series to `object` dtype holding Python
+`True`/`False` objects -- applying `~` to THOSE gives `-2`/`-1` (Python's bitwise int
+negation, since `bool` subclasses `int`), not logical negation, and both are truthy, so
+the "was the previous day NOT flagged" check silently no-opped (confirmed empirically:
+raw flagged-row count and "deduped" episode count came out byte-identical, 4394 == 4394,
+on the first run). Fixed with `flag.shift(1, fill_value=False)`, which never introduces a
+NaN and stays bool dtype -- reran, episode count correctly dropped to 2659. Third
+pandas-dtype-promotion footgun this log has now caught this session/branch (joins the
+`groupby().apply()` one `bandarmology_features.py`'s own comments already document) --
+worth remembering as a class of bug, not a one-off.
+
+**Sample size**: 4,394 raw flagged (stock, day) rows, **2,659 deduped episodes** -- not
+remotely a single-digit sample (the council's own stated stopping condition for "too rare
+to matter regardless of hit rate" doesn't apply here; this pattern is common, roughly 1 in
+every ~170 eligible liquid stock-days is an episode start).
+
+**Base-rate comparison** (flagged episodes vs. all other eligible stock-days, same
+universe/period, same liquidity filter, same 20-day-baseline-history requirement):
+
+| Group | n | breakout rate (fwd 3d > +8%) | mean fwd_3d | median fwd_3d |
+|---|---|---|---|---|
+| Flagged episodes | 2,659 | 7.1% (190/2,659) | -0.44% | +0.00% |
+| Unflagged (same universe/period) | 453,465 | 7.9% (35,969/453,465) | +0.08% | +0.00% |
+| Unconditional (all eligible, context) | 457,859 | 7.9% (36,292/457,859) | +0.08% | +0.00% |
+
+Fisher's exact test, one-sided (flagged > unflagged): odds ratio 0.893, **p=0.9391** --
+nowhere near significant, and the point estimate itself is in the WRONG direction: the
+flagged group's breakout rate is slightly BELOW the unconditional base rate, not above
+it. False-positive rate among flagged episodes (no breakout follows): 92.9%
+(2,469/2,659) -- essentially the same as the unconditional false-positive rate (92.1%),
+i.e. statistically indistinguishable from picking a random day.
+
+**Across all horizons, the direction is consistent and gets worse, not better, with
+time**: flagged episodes' mean forward return is negative at every horizon tested and the
+gap to the unflagged group widens as the horizon lengthens --
+
+| Horizon | flagged episodes mean | unflagged mean |
+|---|---|---|
+| 1d | -0.33% | +0.02% |
+| 3d | -0.44% | +0.08% |
+| 5d | -0.44% | +0.16% |
+| 10d | -0.45% | +0.34% |
+
+If anything, a 3-day broker-concentration acceleration (by this definition) precedes
+mild underperformance over the following two weeks, not outperformance. A plausible
+(not tested here) economic reading: a 3-day concentration spike catches distribution/
+profit-taking clusters and exhausted-move broker activity just as often as accumulation
+-- concentration alone doesn't distinguish direction, only that one broker dominated
+that stock's flow, and YELO's own case might be one of a minority where that happened to
+coincide with genuine accumulation.
+
+**Caveat**: the actual YELO event (2026-08-31) is not in this dataset -- the local
+Parquet archive currently reaches 2026-08-11. This is the correct design, not a gap to
+fix: it means this check is a clean out-of-sample test of the pattern elsewhere in
+history, not a circular re-validation of the exact instance that inspired it.
+
+**Verdict: NOISE (if anything, mildly reversed-sign). Drop here -- do NOT build a
+walk-forward test or a new `backtest_v4.py` flag for this idea.** This matches the
+council's own stated stopping condition, just via the other route than "too few
+instances": the sample is large and well-powered, and it cleanly fails to show the
+YELO anecdote generalizes under its own most literal, non-cherry-picked mechanical
+reading. Not tested further (threshold sensitivity sweep, alternate baseline windows) --
+per the task brief, escalating scope here would itself be the kind of over-building this
+check was specifically meant to avoid before any real evidence existed.
+
+Code touched: none of the protected V1 files, none of `backtest_v4.py`. New:
+`src/scratch_concentration_acceleration_baserate.py` (standalone, read-only, run directly
+with `python src/scratch_concentration_acceleration_baserate.py`; ~5-8 min end to end --
+~3 min to rebuild the full-history concentration panel from local Parquet, ~1-2 min for
+the DB1 `ihsg_eod` price fetch across the ~940-stock universe).
+
+## 2026-08-31: Bandarmology hard admit/reject VETO -- categorically different mechanism
+## from BANDAR_SIZING_ENABLED (continuous multiplier) and today's three rejected SL-width
+## ideas (continuous stop adjustment). REJECTED -- the entire apparent aggregate
+## improvement traces to ONE window, and that window turns out to be a concrete,
+## traceable data-coverage artifact (an untrained `concentration_p90` fallback), not real
+## selection skill. Worst-case drawdown does not improve either.
+
+**Hypothesis** (from today's council session): should Bandarmology order-flow data ever
+act as a hard gate on entry -- drop a candidate entirely -- rather than only scaling
+position size (`BANDAR_SIZING_ENABLED`, live default ON) or stop width (today's three
+rejected SL-width ideas)? A binary admit/reject decision is a structurally different
+mechanism from a continuous multiplier, worth testing on its own rather than assuming the
+sizing result generalizes.
+
+**Design** (`BANDAR_VETO_ENABLED`/`BANDAR_VETO_CONCENTRATION_MAX`/`BANDAR_VETO_NET_LOT_MIN`,
+`backtest_v4.py`, all off by default): veto fires when BOTH (a) `concentration` (the one
+Bandarmology daily feature Layer 1 validated cleanly, see `docs/BANDARMOLOGY_DESIGN.md`)
+is in the low tail -- ratio to the train-derived `concentration_p90` below
+`BANDAR_VETO_CONCENTRATION_MAX` (default 0.3) -- AND (b) `net_lot` (daily net buy-sell,
+summed across all brokers at the stock level) is negative, below `BANDAR_VETO_NET_LOT_MIN`
+(default 0.0, a pure sign check). Rationale: `concentration` is UNSIGNED by construction
+(top-1 broker's share of total |net_lot| that day, see `bandarmology_features.
+daily_stock_features`) -- a low reading alone can't distinguish "broadly distributed
+ACCUMULATION" from "broadly distributed DISTRIBUTION," only that no single broker
+dominates. `net_lot`'s sign supplies the missing direction. Together this operationalizes
+the design doc's own 4-quadrant "distributing net-sell while price is up = warning,
+bearish despite a green candle" read, at the single-day level `score_candidates()` already
+screens on -- not an arbitrary threshold shape. `net_lot` itself has NOT been through
+Layer 1's own forward-return validation (only its rolling-normalized cousin
+`net_flow_norm` was tested, and flagged fragile) -- used here for its SIGN only, as a
+directional disambiguator for the validated `concentration` magnitude, disclosed rather
+than claimed as an independently validated predictor in its own right.
+
+`BANDAR_VETO_CONCENTRATION_MAX` defaults well BELOW `BANDAR_SIZING_ENABLED`'s own MIN
+floor (0.5) deliberately -- at 0.5 the veto would just be a harder version of what sizing
+already does (floor to 0.5x instead of dropping); at 0.3 it only fires on the clearly low
+tail sizing's own floor doesn't distinguish from "somewhat low." New `compute_bandar_net_lot()`
+(id(df)-memoized, same pattern as `compute_market_broker_flow`'s own `_broker_flow_ratio_
+cache` -- a 9-window sweep against one loaded dataset would otherwise redo the underlying
+`per_broker_net()` pivot over the full multi-year archive on every window; deliberately
+does NOT call `bandarmology_features.daily_stock_features()`, whose own `concentration`
+column costs a slow per-group `.apply()` this function has no use for -- `concentration`
+is already available from df's own already-attached column, this function only needs a
+plain vectorized groupby-sum of `net_lot`, found and fixed during this session's own
+sweep runs after an initial version took multiple wall-clock minutes per window). New pure
+`bandar_veto_fires(concentration, concentration_p90, net_lot)` extracted for direct unit
+testing. Applied ONLY as a filter on `simulate_window`'s OWN consumption of
+`score_candidates()`'s return value (same site/pattern as `SPIKE_CONFIRM_GATE_ENABLED`/
+`DIVERGENCE_GATE_ENABLED`) -- `score_candidates()` and `compute_entry_fill()` are
+UNCHANGED, so `paper_signal_scan.py`/`paper_monitor.py` cannot be affected by this flag
+regardless of its state, same disclosed backtest-only gap as `STRUCT_SL_ENABLED`. Kept
+structurally SEPARATE from `BANDAR_SIZING_ENABLED` (own flag, own threshold, no shared
+state) so both can be tested independently and in combination.
+
+**Self-check** (`src/test_bandar_veto.py`, 5 direct assertions on `bandar_veto_fires()`
+itself, no dataset needed): missing concentration never vetoes (fail open); low
+concentration + net SELLING fires; low concentration + net BUYING does NOT fire
+(confirms direction matters, not just magnitude -- the whole point of using `net_lot` at
+all); high concentration + net selling does NOT fire (both conditions required, neither
+alone); the threshold is relative to `concentration_p90` (train-window-relative, matching
+`BANDAR_SIZING_ENABLED`/`SL_CONCENTRATION_ENABLED`'s own convention), not an absolute
+concentration value -- the same raw concentration fires or not depending on `concentration_
+p90`. All 5 pass.
+
+**Baseline reconfirmed first** (requirement before trusting anything else), live
+`V4_PAPER` config (`V4_BANDAR_SIZING` default-on, `V4_ATR_PRICE_RATIO_MAX=0.08`), full
+9-window walk-forward: 366 trades, mean alpha **+26.17%**, mean PF 1.95, mean/worst maxDD
+-14.26%/-21.10%, beat-bench 7/9, win>50% 4/9 -- byte-identical to the last recorded number
+in this log.
+
+**Full 9-window sweep** (`src/sweep_bandar_veto.py`; per-window CSVs at
+`src/sweep_bandar_veto_bandar_on.csv` / `_bandar_off.csv`, per-vetoed-candidate detail at
+`.cache/bandar_veto_log_conc{0.2,0.3,0.4}.csv`), `BANDAR_VETO_CONCENTRATION_MAX` swept
+{0.2, 0.3, 0.4}, two passes per this session's own standing sizing-interaction-confound
+requirement:
+
+**Pass A -- `BANDAR_SIZING_ENABLED` at its live default (ON):**
+
+| cell | trades | vetoed | beat bench | win>50% | alpha mean | PF mean | DD mean/worst |
+|---|---|---|---|---|---|---|---|
+| **OFF (baseline)** | 366 | 0 | 7/9 | 4/9 | +26.17% | 1.95 | -14.26%/-21.10% |
+| conc_max=0.2 | 366 | 21 | 7/9 | 4/9 | +26.29% | 1.95 | -14.14%/-21.10% |
+| conc_max=0.3 | 363 | 101 | 7/9 | 4/9 | +26.70% | 1.95 | -13.84%/**-21.10%** |
+| conc_max=0.4 | 359 | 391 | 7/9 | 6/9 | +26.62% | 2.02 | -14.48%/**-21.19%** |
+
+**Pass B -- `BANDAR_SIZING_ENABLED` forced OFF (isolation):**
+
+| cell | trades | vetoed | beat bench | win>50% | alpha mean | PF mean | DD mean/worst |
+|---|---|---|---|---|---|---|---|
+| **OFF (baseline)** | 374 | 0 | 7/9 | 4/9 | +29.82% | 1.98 | -15.97%/-23.13% |
+| conc_max=0.2 | 374 | 21 | 7/9 | 4/9 | +30.18% | 1.99 | -15.60%/-23.13% |
+| conc_max=0.3 | 371 | 101 | 7/9 | 4/9 | +30.53% | 1.98 | -15.25%/-23.13% |
+| conc_max=0.4 | 374 | 391 | 7/9 | 5/9 | +30.79% | 2.12 | -15.90%/-23.13% |
+
+**The veto genuinely fires, at a non-trivial rate -- honesty check #1, satisfied**: 21,
+101, and 391 candidates vetoed at the three thresholds respectively (identical counts in
+both passes, confirming the admission DECISION itself doesn't depend on
+`BANDAR_SIZING_ENABLED` -- only what happens to surviving trades afterward does). At
+conc_max=0.3, that's roughly 28% of the baseline's own 366 admitted trades -- not a gate
+that never matters.
+
+**But per-window decomposition (both passes) shows this is a textbook single-window-
+carried result, the exact failure signature this session has already used to reject four
+other ideas today** -- at conc_max=0.2 AND 0.3 (the two most conservative, most
+"reasonable-looking" cells), **every single window except window 3 (2023 H1) is
+BYTE-IDENTICAL to baseline**, in both passes:
+
+| Pass A window | OFF | conc_max=0.2 | conc_max=0.3 |
+|---|---|---|---|
+| W1-W2, W4-W9 (8 of 9 windows) | unchanged | **identical** | **identical** |
+| W3 (2023 H1) | -11.94% | -10.87% | -7.19% |
+
+100% of the aggregate mean-alpha improvement at these two cells is window 3 alone --
+confirmed arithmetically, not just visually: at conc_max=0.3, window 3's own delta
+(+4.75pp) divided by 9 windows equals the observed mean-alpha delta (+0.53pp) exactly,
+because every other window contributes zero.
+
+**Root cause, traced concretely, not inferred**: window 3's TRAIN period (2021-01-01..
+2022-12-31, the expanding-window cutoff for that split) predates Bandarmology data
+entirely -- `concentration` data starts 2023-01-02 (confirmed directly: 0 of 479,990 rows
+in that exact train slice have a non-null `concentration`). `concentration_p90` therefore
+falls back to its hardcoded default of 1.0 (see `simulate_window`'s own
+`concentration_p90 = ... if len(train_concentration) > 0 else 1.0`) instead of a real
+trained percentile -- the SAME fallback `BANDAR_SIZING_ENABLED`'s own 2026-08-12
+validation already documented for windows 1-2 ("byte-identical off/on... confirms the
+NaN-fallback path... works correctly"), except window 3's TEST period does have real
+`concentration` values (data starts exactly at that window's train/test boundary), so
+here the fallback doesn't neutralize the mechanism -- it silently changes its calibration.
+The veto's ratio check in window 3 is therefore comparing raw `concentration` against an
+untrained placeholder denominator, not the same reference every other window uses.
+Window 3's "improvement" is a boundary-condition artifact of Bandarmology's own data
+coverage start date, not evidence the veto is correctly identifying bad candidates.
+Cross-checked directly against the vetoed-candidate log: at conc_max=0.2, all 21 vetoes
+fall in 2023 Q1-Q2 (window 3's exact date range); at conc_max=0.3, 63 of 101 do, but the
+other 38 (spread across 2023 Q3 through 2026 Q1) change **zero** trade outcomes --
+dropped candidates that were never going to be admitted anyway (already excluded by
+`MAX_POSITIONS`/cooldown/rank) or replaced by an equally-outcome candidate.
+
+**At conc_max=0.4 the effect finally spreads beyond window 3, but the result turns
+genuinely mixed, not broadly positive** -- window 6 (Pass A: +6.15%->+1.60%, DD -13.95%->
+-16.95%; Pass B: +11.24%->+3.00%, DD -13.20%->-17.60%) gets clearly WORSE in both passes,
+a real cost showing up identically regardless of `BANDAR_SIZING_ENABLED`'s state. Window
+8's own worst-case drawdown also degrades (Pass A: -15.17%->-19.63%), which is what pushes
+the aggregate worst-DD from -21.10% to -21.19% at this cell -- the one tested value where
+the veto touches enough windows to matter also makes the worst-case tail marginally worse,
+not better.
+
+**Sizing-interaction confound, checked per this session's own standing requirement**:
+NOT found. The window-3-dominated pattern at 0.2/0.3, and the window-6-cost pattern at
+0.4, reproduce identically in direction and magnitude with `BANDAR_SIZING_ENABLED` on or
+off (Pass A and Pass B tables above) -- the effect is native to the admission decision
+itself, not an artifact of how surviving trades get sized afterward.
+
+**No Monte Carlo permutation check run**, per this log's own established bar: reserved for
+a candidate that looks genuinely better and more robust on the sweep itself. This one
+doesn't clear that bar -- the apparent improvement is 100% attributable to a single,
+already-explained data-coverage artifact at the two most conservative cells, and turns
+mixed (a real cost to window 6, a worse worst-case drawdown) at the one cell wide enough
+to spread further.
+
+**Verdict: REJECTED.** Fails this project's adoption bar on both counts: mean alpha's
+apparent improvement is not real, distributed selection skill -- it is a single-window
+artifact traced concretely to an untrained `concentration_p90` fallback unique to the one
+walk-forward window whose train period predates Bandarmology's own data coverage start
+date, not the veto correctly identifying bad candidates. Worst-case drawdown does not
+improve at any tested threshold, and gets marginally worse at the one threshold wide
+enough to move more than one window. This is a genuinely different rejection reason from
+today's three SL-width ideas (which failed on worse drawdown from a sizing/leverage
+mechanism) and from Candidate B's structural-stop idea (a real but window-character-
+dependent trend-following effect) -- here the mechanism itself never gets a fair test
+outside window 3, because window 3 isn't a real out-of-sample read of the veto's
+behavior, it's a boundary condition. **`BANDAR_VETO_ENABLED` stays off by default**, kept
+in the code for a future attempt -- e.g. re-testing with a schedule that excludes or
+separately reports window 3, or requiring a minimum train-period sample size before
+trusting `concentration_p90` at all (the same class of fix `BANDAR_SIZING_ENABLED`'s own
+`has_concentration` check already applies at the per-candidate level, not yet applied at
+the per-window threshold level) -- not built or tested here, a genuinely new hypothesis,
+not a re-run of this session's grid.
+
+Code touched: `backtest_v4.py` -- `BANDAR_VETO_ENABLED`/`BANDAR_VETO_CONCENTRATION_MAX`/
+`BANDAR_VETO_NET_LOT_MIN`/`BANDAR_VETO_LOG` (all off/no-op by default); new
+`compute_bandar_net_lot()` (id(df)-memoized) and `bandar_veto_fires()`; the
+`bandar_veto_net_lot_by_stock_date` dict built conditionally in `simulate_window()` (zero
+cost when the flag is off, same discipline as every other conditional feature in this
+file); the candidate-filtering site gained a `BANDAR_VETO_ENABLED` block alongside
+`SPIKE_CONFIRM_GATE_ENABLED`/`DIVERGENCE_GATE_ENABLED`. Regression-verified:
+`test_paper_trading_math.py`, `test_bandar_sizing_default.py` both reproduce their own
+previously-recorded output exactly. New: `src/test_bandar_veto.py` (5-assertion unit
+self-check, no dataset needed), `src/sweep_bandar_veto.py` (full grid + BANDAR_SIZING-off
+isolation sweep) + its four CSV outputs (`src/sweep_bandar_veto_bandar_on.csv`, `_off.csv`,
+`.cache/bandar_veto_log_conc{0.2,0.3,0.4}.csv`). `score_candidates()`, `compute_entry_fill()`,
+`paper_signal_scan.py`, and `paper_monitor.py` are unchanged. Left uncommitted for review,
+same pattern as this session's other entries.
