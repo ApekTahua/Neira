@@ -14,6 +14,12 @@ name: Paper Trading -- Intraday Monitor (trigger)
 # V3_PAPER's open_positions count reaches 0, then it's safe to retire
 # for real.
 on:
+  # Re-pushed 2026-08-31: the schedule trigger has fired ZERO times all day
+  # (checked 09:14-10:59 UTC) -- every run today was a manual workflow_dispatch
+  # click. Sibling monitors (V4/V3.1) fired fine via schedule the same day, so
+  # this is specific to this file, most likely stale scheduler registration
+  # left over from the 2026-08-22 accidental-deletion-and-restore. A push to
+  # the workflow file is the known remedy.
   schedule:
     - cron: '*/15 2-4,6-8 * * 1-5'  # IDX hours, UTC (see paper_monitor.yml on the worktree branch)
   workflow_dispatch:

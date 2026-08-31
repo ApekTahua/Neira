@@ -15,6 +15,10 @@ name: "[18:10 WIB] - Paper Trading V4 Daily Signal Scan"
 # docs/V3_FINDINGS_LOG.md 2026-08-22 entry for full numbers and the one
 # honest caveat, window 3 getting worse on n=17).
 on:
+  # Re-pushed 2026-08-31 to re-register the schedule trigger: the last 2
+  # trading days both fired ~10h late (21:00 UTC instead of 11:10) and today
+  # didn't fire at all -- a push to the workflow file is the known remedy for
+  # GitHub Actions schedule-trigger registration going stale/flaky.
   schedule:
     - cron: '10 11 * * 1-5'  # same slot as V3_PAPER/V3.1_PAPER -- both need today's fresh ihsg_eod
   workflow_dispatch:
