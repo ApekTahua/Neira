@@ -5594,3 +5594,488 @@ sweep_sl_concentration.py` (two-pass bounds sweep, in-process) + its two CSV out
 `score_candidates()`, `evaluate_position_exit()`, `paper_signal_scan.py`, and
 `paper_monitor.py` are unchanged. Left uncommitted for review, same pattern as this
 session's other entries.
+
+## 2026-08-30: two mechanisms from the real trader's OWN indicators (UT Bot ATR trailing
+## stop, Smart Money Concepts swing-low structural stop) -- a genuinely different lever
+## from the three SL-width ideas just above (stop PLACEMENT/distance, not a per-trade
+## scalar on SL_MULT). BOTH tested, BOTH REJECTED, via two visibly different failure
+## shapes: Candidate A (ATR trail) makes worst-case drawdown WORSE at every single tested
+## value; Candidate B (structural swing-low stop) looks clean on every metric at EVERY
+## grid cell in the raw aggregate, but decomposes into a single-window (W8) artifact once
+## traced -- excluding that one window, the "improvement" evaporates into a flat +/-1.5pp
+## band centered on baseline, and two previously-solid windows flip to net-negative alpha
+## at 5 of 6 grid cells.
+
+**Where this came from**: this request came directly from the project's real trader after
+the three SL-width ideas above were rejected -- he uses UT Bot and Smart Money Concepts
+(SMC) as his own actual indicators, and asked for something built on volatility/price-
+structure, not another scalar multiplied onto the same `SL_MULT` lever. Both candidates
+here only move WHERE a stop sits or WHEN a trailing stop tightens -- neither reads `score`,
+`concentration`, or any other signal `compute_entry_fill`'s existing `*_mult` sizing chain
+already uses, which is the specific confound that sank 2 of the 3 prior ideas (SL_CONFIDENCE,
+SL_CONCENTRATION). Checked directly below (not just claimed) that this holds.
+
+**Step 1 -- baseline reconfirmed**, live `V4_PAPER` config (`V4_ATR_PRICE_RATIO_MAX=0.08`,
+`V4_BANDAR_SIZING` default-on), off the existing
+`.cache/walk_forward_data_2021-01-01_2026-06-30.pkl`: mean alpha +26.17%, mean PF 1.95,
+mean/worst maxDD -14.26%/-21.10%, beat-bench 7/9, win>50% 4/9, 366 trades -- byte-identical
+to every prior entry's own recorded numbers, confirmed via a fresh `run_schedule()` call
+before touching any code.
+
+### Candidate A -- ATR-scaled trailing stop (UT Bot style)
+
+**Hypothesis**: the trailing stop (`evaluate_position_exit()`'s `TRAILING` block) is
+`highest_price * (1 - cfg.TRAILING_PCT)` -- a flat 8% off the peak close regardless of how
+volatile the stock is RIGHT NOW. UT Bot's classic design instead recomputes the trail off
+TODAY's ATR every bar: `trailing_stop = highest_close_since_entry - atr_today * key_value`
+-- tightens automatically as volatility drops post-entry (locks in gains sooner), widens if
+volatility rises (avoids getting shaken out in a choppier stretch). Reuses the `atr_14`
+column `strategy.add_features()` already computes daily per stock (confirmed by reading
+`strategy.py`: `group["atr_14"] = group["tr_atr"].rolling(cfg.ADX_PERIOD, ...).mean()`, a
+genuine per-day rolling value, not a one-time entry-day snapshot) -- no new ATR computation.
+
+**Implementation**: `V4_TRAIL_ATR_ENABLED`/`V4_TRAIL_ATR_KEY_VALUE` (default 2.0) in
+`backtest_v4.py`, off by default. `evaluate_position_exit()` gained a `current_atr: float =
+None` keyword-only parameter (byte-identical default for every existing caller, including
+`paper_monitor.py`, which never passes it -- this flag is backtest-only until/unless
+validated and a live ATR source is wired in, disclosed rather than silently half-built).
+`simulate_window()` builds `atr_lookup` (a `(stock_code, trade_date) -> atr_14` dict, same
+"only computed when the flag is on" discipline as `feature_lookup`/`ROTATION_ENABLED`)
+and passes `current_atr=atr_lookup.get(...)` at the one real call site. Falls back to the
+existing flat-% trail whenever `current_atr` is missing/non-positive/NaN -- never crashes,
+never reuses a stale value.
+
+**Sizing independence, checked not assumed**: grep confirms `TRAIL_ATR_ENABLED`/
+`TRAIL_ATR_KEY_VALUE` are read ONLY inside `evaluate_position_exit()`'s trailing block --
+never inside `compute_entry_fill()`. `lots`/`alloc`/`risk_per_share` are fixed at ENTRY
+time, before any trailing logic ever runs on a position, so there is no lots-level channel
+for this flag to move sizing through at all (unlike Candidate B and unlike all three
+SL-width ideas above).
+
+**Self-check** (`src/test_trail_atr.py`, 4 direct assertions on `evaluate_position_exit()`
+itself): OFF ignores `current_atr` entirely, reproducing `test_paper_trading_math.py`'s own
+flat-% `TRAILING` fixture exactly; ON with a valid ATR genuinely fires at a DIFFERENT bar
+than the flat trail would (a real behavior change, not just "runs without crashing"); ON
+with `current_atr=None` falls back to the flat trail, no crash; ON with `current_atr=0.0`/
+NaN, same fallback. All 4 pass.
+
+**Full 9-window sweep** (`src/sweep_trail_atr.py`, key_value in {1.5, 2.0, 2.5} -- the
+task's own suggested grid; CSV at `src/sweep_trail_atr.csv`):
+
+| cell | beat bench | win>50% | win% mean | profit% mean | alpha% mean | PF mean | PF median | DD% mean/worst |
+|---|---|---|---|---|---|---|---|---|
+| **OFF (baseline)** | 7/9 | 4/9 | 49.8 | +25.31 | +26.17 | 1.95 | 1.29 | -14.26/-21.10 |
+| key_value=1.5 | 6/9 | 4/9 | 50.4 | +33.77 | +34.63 | 2.08 | 1.42 | -16.90/-24.87 |
+| key_value=2.0 | 6/9 | 4/9 | 48.6 | +20.15 | +21.01 | 15.47 | 1.17 | -16.39/-25.61 |
+| key_value=2.5 | 5/9 | 3/9 | 47.1 | +13.20 | +14.07 | 10.28 | 1.07 | -18.84/-26.58 |
+
+`pf_mean` at key_value=2.0/2.5 (15.47, 10.28) is a mean-distortion artifact, not a real
+8-10x profit-factor improvement: one window (W7, the same window in the per-window trace
+below) had almost no losing trades at those settings, producing a single Profit Factor of
+125.64 (key_value=2.0) / 82.00 (2.5) that swamps the other 8 windows' ordinary values --
+`pf_median` (1.17, 1.07) is the honest number, and it's flat-to-worse than baseline's 1.29,
+not better.
+
+**Worst-case drawdown is WORSE than baseline at every single tested value, monotonically
+worsening as key_value increases** (mean DD -14.26% -> -16.90% -> -16.39% -> -18.84%; worst
+DD -21.10% -> -24.87% -> -25.61% -> -26.58%) -- fails this project's own adoption bar on its
+own, independent of anything else. `beat_bench` also declines at every value (7/9 -> 6/9 ->
+6/9 -> 5/9).
+
+**Per-window trace, the same single/double-window-driven fragility signature this log has
+used to reject four other mechanisms this session**: at key_value=1.5 (the best-looking
+alpha cell), profit deltas vs baseline are w1 -7.42, w2 +2.29, w3 0.00, w4 +17.04, w5 +1.17,
+w6 +4.26, w7 -3.64, **w8 +62.99**, w9 -0.51 -- summing to +76.18pp total. W8 alone supplies
+62.99pp (**82.7%** of the whole aggregate gain); W4 supplies another 17.04pp (22.4%); W8+W4
+together account for 105% of the total, meaning every OTHER window nets slightly NEGATIVE
+(-3.85pp combined). W1 (a positive-alpha window at baseline) flips to a loss.
+
+**Verdict: REJECTED.** Worse worst-case drawdown at every tested value is disqualifying on
+its own; the one metric that does improve (mean alpha, at key_value=1.5 only) is 83%
+supplied by a single window (W8, already flagged repeatedly in this log as this schedule's
+outsized bull-run window) while W1 flips from a gain to a loss. Trade counts decline
+monotonically as key_value rises (366 -> 338 -> 319 -> 303) -- not a sizing effect (see
+above), but the well-catalogued `MAX_POSITIONS`-scarcity mechanism this log has named
+repeatedly: a wider trail (higher key_value) keeps winners in their slot longer, which
+blocks new entries and mechanically reduces total trade count over a fixed test window.
+`TRAIL_ATR_ENABLED` stays off by default.
+
+### Candidate B -- structural stop (Smart Money Concepts swing-low)
+
+**Hypothesis**: place the initial stop below the most recent CONFIRMED fractal swing-low
+(a low strictly lower than N bars on both sides, N=2/3 standard) in the stock's own
+pre-signal price history, minus a small ATR buffer -- a genuinely different SL PLACEMENT
+philosophy (support structure) from the current pure ATR-multiple, using only existing
+daily OHLC (`low`), no new data.
+
+**Implementation**: `V4_STRUCT_SL_ENABLED`/`V4_STRUCT_SL_LOOKBACK` (default 2)/
+`V4_STRUCT_SL_BUFFER_ATR` (default 0.75) in `backtest_v4.py`, off by default. New
+`compute_struct_swing_low(df, lookback)` (vectorized per-stock shift comparisons, same
+segmented-loop style as `compute_spike_confirm_gate`): a fractal at position i is only
+KNOWABLE once the `lookback` bars after it have themselves printed -- the flagged value is
+shifted forward by `lookback` positions before forward-filling, so it first appears in the
+output at the exact position it becomes knowable, never earlier (no lookahead, verified by
+construction, not just asserted). Tagged onto candidates at the same site as
+`origin_day_idx`/`is_spike` (`_c["struct_swing_low"] = struct_swing_low_by_stock_date.get(...)`,
+dict empty and `.get()` returns `None` when the flag is off). In `compute_entry_fill()`,
+REPLACES `sl_price` (not a multiplier stacked on `sl_mult_effective`, unlike
+SL_CONFIDENCE/SL_CONCENTRATION) only when a valid confirmed swing low exists AND
+`swing_low - buffer*atr` still lands below `entry_price` -- otherwise the unchanged
+ATR-multiple `sl_price` stands. `paper_signal_scan.py` calls `score_candidates()` directly
+(confirmed by grep), never `simulate_window()`'s admission loop, so live signals never carry
+`struct_swing_low` regardless of this flag's state -- backtest-only, same disclosed-gap
+convention as Candidate A.
+
+**Self-check** (`src/test_struct_sl.py`, 5 direct assertions on `compute_entry_fill()`
+itself): OFF is neutral regardless of `struct_swing_low`; ON with a valid swing low below
+entry REPLACES `sl_price` with the expected `swing_low - buffer*atr` value; ON with a swing
+low too close to/above entry falls back to the unchanged ATR-multiple default (never
+produces a stop at/above entry); ON with `struct_swing_low=None` same fallback, no crash;
+`sl_price` is independent of `BANDAR_SIZING_ENABLED`'s on/off state, and the only sizing
+channel this flag can move `lots` through is the pre-existing `risk_per_share`/`lots_risk`
+cap -- reproduced independently in the test and confirmed to match `compute_entry_fill`'s
+actual output, the same channel `SL_MULT` itself has always used, not a new correlation
+with any of the other per-candidate multipliers (which never read `struct_swing_low`). All
+5 pass.
+
+**Full 9-window sweep** (`src/sweep_struct_sl.py`, lookback in {2,3} x buffer_atr in
+{0.5,0.75,1.0} -- 6 cells; CSV at `src/sweep_struct_sl.csv`):
+
+| cell | beat bench | win>50% | win% mean | profit% mean | alpha% mean | PF mean | DD% mean/worst |
+|---|---|---|---|---|---|---|---|
+| **OFF (baseline)** | 7/9 | 4/9 | 49.8 | +25.31 | +26.17 | 1.95 | -14.26/-21.10 |
+| lookback=2, buf=0.5 | 5/9 | 6/9 | 55.2 | +36.97 | +37.84 | 3.13 | **-13.88**/**-18.35** |
+| lookback=2, buf=0.75 | 5/9 | 6/9 | 56.3 | +37.67 | +38.54 | 3.39 | -13.83/-18.36 |
+| lookback=2, buf=1.0 | 6/9 | 8/9 | 58.4 | +36.30 | +37.16 | 3.35 | -13.34/-18.58 |
+| lookback=3, buf=0.5 | 5/9 | 6/9 | 56.5 | **+44.30** | **+45.16** | 3.27 | -13.60/-18.15 |
+| lookback=3, buf=0.75 | 5/9 | 6/9 | 56.6 | +30.58 | +31.45 | 3.00 | -13.38/-18.01 |
+| lookback=3, buf=1.0 | 5/9 | 8/9 | 58.8 | +31.03 | +31.90 | 3.03 | **-13.09**/-18.56 |
+
+At first glance this is the cleanest-looking table of any SL-mechanism idea tested this
+session: mean alpha, PF, win rate, win-rate-consistency (win>50%), mean drawdown, AND
+worst-case drawdown all improve at literally EVERY grid cell -- no catastrophic value
+anywhere, unlike Candidate A above. `beat_bench` is the one metric that does NOT improve
+(7/9 -> 5/9 or 6/9 at every cell) -- worth noticing before trusting the rest.
+
+**Per-window trace reveals this is substantially a single-window (W8) artifact, the exact
+concern this project's adoption bar and this log's own established practice (pullback-fill,
+SL_CONFIDENCE) exist to catch**: W8's own profit goes from +132.88% at baseline to
++231-310% at literally every one of the 6 grid cells -- the single largest, most consistent
+lift of any window, by far. Decomposing lookback=2/buf=0.75 (a representative middle cell):
+per-window profit deltas vs baseline are w1 -6.95, w2 -5.53, w3 -1.17, w4 +17.03, w5 +13.95,
+w6 -9.82, w7 +2.24, **w8 +99.15**, w9 +2.40 (sum +111.30pp). **W8 alone supplies 89.1% of
+the entire aggregate gain.**
+
+**Recomputing mean alpha with W8 excluded, at all 6 grid cells** (the same diagnostic this
+log used to unmask the pullback-fill entry's apparent best cell):
+
+| cell | mean alpha, all 9 windows | mean alpha, W8 EXCLUDED |
+|---|---|---|
+| OFF (baseline) | +26.17% | +11.86% |
+| lookback=2, buf=0.5 | +37.84% | +11.16% |
+| lookback=2, buf=0.75 | +38.54% | +13.38% |
+| lookback=2, buf=1.0 | +37.16% | +11.92% |
+| lookback=3, buf=0.5 | +45.16% | +11.06% |
+| lookback=3, buf=0.75 | +31.45% | +10.90% |
+| lookback=3, buf=1.0 | +31.90% | +11.51% |
+
+Excluding W8, every cell's mean alpha sits in a flat **+10.90% to +13.38%** band around
+baseline's own +11.86% -- no cell is meaningfully better, some are meaningfully worse, and
+the ranking across the grid (lookback=3/buf=0.5 is "best" on the headline table) is not
+even the same ordering once the one dominant window is removed. The "improves at every
+single cell" story is a W8 artifact, not a broad effect.
+
+**This is corroborated by a second, independent check -- which windows individually flip
+from beating the benchmark to not**: at baseline only W2 and W3 have negative alpha; at 5
+of the 6 grid cells (all except lookback=2/buf=1.0), **W1 and W6 join them** -- two
+previously-solid, benchmark-beating windows turn into losses under this mechanism, a
+consistent pattern across the grid, not a one-cell fluke.
+
+**Mechanism trace -- genuinely different from the leverage artifacts the three SL-width
+ideas above were built on, but the benefit still doesn't generalize**: W8's own exit
+breakdown under lookback=2/buf=0.75 shows SL-hit fraction dropping from 34.5% (baseline) to
+15.9%, with TP1 rising 35.7%->39.7% -- a real "fewer stop-outs, more take-profits" effect,
+consistent with the claimed mechanism (a wider, structurally-placed stop survives normal
+volatility that would have hit a tighter ATR-multiple stop). But W1 and W6 (the two windows
+that flip negative) show the SAME direction of SL-fraction drop (W1: 41.7% -> 27.1%; W6:
+39.6% -> 20.5%) -- yet their alpha still gets WORSE, because a new `TIME` exit category
+appears at 14-15% of trades in both (near-zero at baseline): a wider stop lets a losing
+position survive long enough to avoid a fast SL cut, but in a choppier/weaker window it
+just drifts sideways and eventually times out at `MAX_HOLD_DAYS` instead of resolving --
+tying up a scarce `MAX_POSITIONS` slot for longer without reaching target. The same
+mechanism that pays off enormously in a strong, sustained trend (W8, and to a lesser extent
+W4/W5) costs in a choppier one (W1, W6) -- genuine, mechanistically coherent, but
+window-character-dependent in a way the available 9-window schedule cannot yet
+distinguish from "one big bull run happens to be in this dataset."
+
+**Trade counts drop ~20% at every cell** (366 baseline -> 288-295 across the 6 cells) via
+the same `risk_per_share`/`lots_risk` channel `SL_MULT` itself has always used (a wider stop
+-> larger `risk_per_share` -> smaller `lots_risk` cap -> more marginal candidates fall below
+`ALLOC_MIN_LOTS`) -- consistent, expected, and disclosed in this flag's own design (see
+Implementation above), not a new confound with any other sizing signal.
+
+**No Monte Carlo permutation check run**, per this log's own established bar: an MC check
+is for a candidate that looks genuinely better and more robust on the sweep itself. On the
+raw aggregate this candidate would have qualified for one for the first time this session --
+but the W8-exclusion recompute above (this log's own established substitute diagnostic,
+used identically for the pullback-fill entry) already shows the apparent robustness across
+all 6 cells is not real once the one dominant window is set aside.
+
+**Verdict: REJECTED**, though via a qualitatively different and less alarming failure mode
+than every other SL-mechanism idea this session: no grid cell shows a WORSE worst-case
+drawdown than baseline (unlike Candidate A and all three prior SL-width ideas), and the
+underlying mechanism (fewer premature stop-outs in a genuine trend) is real and coherent,
+not a sizing/leverage artifact. But the aggregate "every cell improves on every metric"
+result is substantially (89%) a single-window (W8) effect, does not survive that window's
+exclusion, and systematically turns two other solid windows negative at 5 of 6 grid cells.
+`STRUCT_SL_ENABLED` stays off by default.
+
+### Combined (A+B)
+
+**Not run.** The task's own instruction was to test the combination "if both look
+independently reasonable" -- neither does: Candidate A fails outright (worse drawdown
+everywhere), and Candidate B's apparent success does not survive its own per-window trace.
+Running the combination would only compound two mechanisms that already failed
+independently, without a new hypothesis to test -- skipped and disclosed here rather than
+run pro forma.
+
+**Next step if either is picked back up**: Candidate B is the more promising thread of the
+two -- its mechanism (avoid premature stop-outs from a tight, purely volatility-based
+stop) is real and directionally sound, it just needs to not fire in the wrong regime.
+A design that GATES `STRUCT_SL_ENABLED` on `TREND_STRENGTH`/`trend_duration_streak`
+(already-built infrastructure in this file, see `TREND_STRENGTH_MIN`/
+`TREND_DURATION_GATE_ENABLED` above) -- using the wider structural stop only in a
+confirmed, sustained trend, and leaving the tighter ATR-multiple default for weaker/choppier
+regime days -- targets exactly the W8-helps/W1-W6-hurts split found above, instead of
+applying one fixed rule to every regime. Not built here; a genuinely new hypothesis, not a
+re-run of this session's grid.
+
+Code touched: `backtest_v4.py` -- `TRAIL_ATR_ENABLED`/`TRAIL_ATR_KEY_VALUE`,
+`STRUCT_SL_ENABLED`/`STRUCT_SL_LOOKBACK`/`STRUCT_SL_BUFFER_ATR` (all off/no-op by default);
+new `compute_struct_swing_low()`; `atr_lookup`/`struct_swing_low_by_stock_date` built
+conditionally in `simulate_window()` (zero cost when both flags are off, same discipline as
+every other conditional feature in this file); `evaluate_position_exit()` gained
+`current_atr: float = None` (byte-identical default for every existing caller); the
+candidate-tagging loop gained `struct_swing_low` alongside `origin_day_idx`/`is_spike`;
+`compute_entry_fill()` gained the `STRUCT_SL_ENABLED` override block. Regression-verified:
+`test_paper_trading_math.py`, `test_diag_hook.py`, `test_bandar_sizing_default.py`,
+`test_sl_concentration.py`, and `test_sl_confidence.py` (a full 9-window walk-forward) all
+reproduce their own previously-recorded numbers exactly. New: `src/test_trail_atr.py`,
+`src/test_struct_sl.py` (unit self-checks, no dataset needed), `src/sweep_trail_atr.py`,
+`src/sweep_struct_sl.py` (full 9-window sweeps, in-process) + their CSV outputs
+(`src/sweep_trail_atr.csv`, `src/sweep_struct_sl.csv`). `score_candidates()`,
+`paper_signal_scan.py`, and `paper_monitor.py` are unchanged. Left uncommitted for review,
+same pattern as this session's other entries.
+
+## 2026-08-30: tranche (split-fill) entry -- a DIFFERENT design from the rejected
+## pullback-fill entry, not a retry of it. Structural fix (never skips an entry) confirmed
+## to actually work; fill-price improvement confirmed real and mechanical. Still NOT
+## VALIDATED at the standard adoption bar: mean alpha is worse in all 9 swept cells, traced
+## concretely to a real, disclosed trade-off (not a mirage) -- it under-sizes the single
+## biggest trending winner in this project's own best window, which never pulls back far
+## enough to earn its top-up.
+
+**Where this came from**: the same real trader who prompted pullback-fill (rejected
+earlier this session, see above) clarified how he actually enters -- he does NOT skip a
+trade waiting for a dip. He defines a price AREA from support/MA/range analysis, buys a
+FIRST tranche at the area's upper/psychological price the moment it's in range
+(guaranteed, no waiting), and only ADDS a second tranche -- averaging his cost basis down
+-- if price dips further within that same area. This is structurally different from
+pullback-fill's "skip the trade entirely if it never dips," which this log's own W8/W9
+per-window trace showed starves this project's scarce `MAX_POSITIONS=6` slots (a slot
+sits empty waiting for a fill that may never come while other candidates queue up).
+
+**Design** (`TRANCHE_ENTRY_ENABLED`/`TRANCHE_BASE_PCT`/`TRANCHE_ADD_LOW_PCT`/
+`TRANCHE_ADD_EXPIRY_SESSIONS` in `backtest_v4.py`, all new, off by default): on the
+execution day, `compute_entry_fill()` runs completely unchanged (every existing
+multiplier -- SCORE/LIQ/TREND/BANDAR/MOVER/ACCDIST/ROTATION/SPIKE sizing, the `RISK_PCT`
+`lots_risk` cap, `LIQ_CAP_PCT` -- is already applied by the time its `lots` figure exists).
+A `TRANCHE_BASE_PCT` fraction of that already-fully-sized lot count fills immediately at
+today's real open (byte-identical price to the baseline) -- this is the guaranteed part,
+never skipped. The remaining `(1 - TRANCHE_BASE_PCT)` is a pending top-up: if any of the
+next `TRANCHE_ADD_EXPIRY_SESSIONS` sessions' real low touches `TRANCHE_ADD_LOW_PCT` below
+the base fill price, a second tranche fills there, and `avg_price`/`cost_basis` are
+recomputed as a true weighted average -- the exact same blend formula
+`PYRAMID_ENABLED`'s own TP1/TP2 add-ons already use elsewhere in this file, just applied
+pre-TP1 (cost-averaging a dip) instead of post-TP1 (sizing up a confirmed winner with
+locked-in profit) -- not to be confused with pyramiding. If the dip never comes, the
+position simply stays at base size forever. `TRANCHE_ADD_LOW_PCT` is deliberately named
+`_PCT`, not `_MULT`, so the unit is unambiguous (a flat fraction of the base fill price,
+not an ATR multiple) -- this project has already shipped one real unlabeled-unit bug
+elsewhere, and matches the real trader's own concrete-price description (100 -> 95) more
+directly than an ATR-scaled band would. Disclosed simplification: the add can only fire
+starting the day AFTER entry (`evaluate_position_exit()` is never called on the entry day
+itself), so a same-day dip-then-add within the entry day is not modeled.
+
+**Self-check** (`src/test_tranche_entry.py`, same real 2025-07-01..2025-08-31 slice as
+`test_pullback_fill.py`): flag OFF reproducible and byte-identical to baseline, flag ON
+actually differs; **the number of positions opened is IDENTICAL ON vs OFF (17 both ways)
+-- the core structural claim vs pullback-fill, confirmed directly, not just asserted**;
+every logged second-tranche fill is `<=` its own add trigger price; `TRANCHE_ADD_EXPIRY_
+SESSIONS=0` produces zero adds (expiry genuinely gates the mechanism, not decorative); a
+position that never gets a second tranche has `avg_price` exactly equal to the baseline's
+own full-size fill price (isolated correctly from `PYRAMID_ENABLED`'s own separate
+post-TP1 avg_price mutation, which produces a second trade row per position that is NOT
+this mechanism -- caught and fixed during test-writing, not assumed away). All 5 checks
+pass.
+
+**Baseline reconfirmed first** (requirement before trusting anything else), live
+`V4_PAPER` config (`V4_BANDAR_SIZING` default-on, `V4_ATR_PRICE_RATIO_MAX=0.08`), full
+9-window walk-forward: 366 trades, mean alpha **+26.17%**, mean PF 1.95, mean/worst maxDD
+-14.26%/-21.10%, beat-bench 7/9, win>50% 4/9 -- byte-identical to the last recorded
+number in this log (confirmed via a direct re-run, not assumed from the code).
+
+**Full 9-window sweep** (`src/sweep_tranche_entry.py`; full per-window CSV at
+`.cache/tranche_entry_sweep_full.csv`, agg at `.cache/tranche_entry_sweep_agg.csv`,
+fill-quality diagnostic at `.cache/tranche_entry_fill_quality.csv`). Grid: `TRANCHE_BASE_
+PCT` in {0.5, 0.6, 0.7} x `TRANCHE_ADD_LOW_PCT` in {1%, 2%, 3%}, `TRANCHE_ADD_EXPIRY_
+SESSIONS=2` fixed, `BANDAR_SIZING_ENABLED` on (live default):
+
+| base_pct | add_pct | trades | beat bench | win>50% | win% mean | alpha% mean | PF mean | DD% mean/worst |
+|---|---|---|---|---|---|---|---|---|
+| **OFF (baseline)** | -- | 366 | 7/9 | 4/9 | 49.8 | **+26.17** | 1.95 | -14.26/-21.10 |
+| 0.5 | 1% | 371 | 7/9 | 4/9 | 48.9 | +23.71 | 2.06 | -15.04/-21.26 |
+| 0.5 | 2% | 367 | 8/9 | 5/9 | 49.8 | +24.42 | 2.08 | -12.80/-20.14 |
+| 0.5 | 3% | 366 | 7/9 | 4/9 | 49.3 | +22.78 | 2.04 | -12.85/-20.19 |
+| 0.6 | 1% | 370 | 7/9 | 4/9 | 48.8 | +22.92 | 2.00 | -14.83/-20.98 |
+| **0.6** | **2%** | **367** | **8/9** | **5/9** | **50.1** | **+25.17** | **2.06** | **-13.04/-20.30** |
+| 0.6 | 3% | 368 | 7/9 | 4/9 | 49.1 | +23.39 | 1.98 | -13.12/-20.08 |
+| 0.7 | 1% | 370 | 7/9 | 5/9 | 49.2 | +23.08 | 1.95 | -14.82/-20.66 |
+| 0.7 | 2% | 368 | 8/9 | **3/9** | 49.1 | +24.27 | 1.96 | -13.88/-20.32 |
+| 0.7 | 3% | 367 | 8/9 | 5/9 | 49.8 | +24.95 | 1.99 | -12.99/-20.18 |
+
+**Trade count never drops below baseline at any tested cell (366-371 vs 366) -- the core
+structural promise is delivered.** Unlike pullback-fill's 2-6% (later 3.7-40.8%) miss
+rate, nothing here is ever fully skipped; a couple of cells even admit marginally MORE
+trades than baseline (smaller base-tranche cost frees cash slightly sooner for a later
+candidate). PF, mean/worst drawdown improve at nearly every cell (worst-DD improves in
+8/9 cells; the one exception, 0.5/1%, is only marginally worse at -21.26% vs -21.10%).
+Win>50% count is NOT uniformly better either -- 0.7/2% actually drops to 3/9, worse than
+baseline's 4/9, a reminder the secondary-metric picture isn't perfectly clean.
+
+**But mean alpha is WORSE than baseline in every single one of the 9 cells tested** --
+the most robust, monotonic-in-direction finding in this sweep, unlike a value that swings
+sign across the grid. The best cell (0.6 base / 2% add, chosen by mean alpha) is still
+-1.00pp below baseline (+25.17% vs +26.17%).
+
+**Per-window trace explains why, and it is a real, concretely-traced mechanism -- not
+noise, and a different flavor from this log's prior three single-window-carried
+rejections** (those made a bad cell LOOK good; this makes a genuinely-improving
+configuration look bad, entirely through one window):
+
+| Window | OFF (baseline) | ON (0.6 base / 2% add) | delta |
+|---|---|---|---|
+| W1 (2022 H1) | +2.23% | +8.73% | +6.50 |
+| W2 (2022 H2) | -3.01% | +7.03% | +10.04 |
+| W3 (2023 H1) | -9.18% | -8.30% | +0.89 |
+| W4 (2023 H2) | +51.27% | +51.49% | +0.23 |
+| W5 (2024 H1) | +17.79% | +17.64% | -0.16 |
+| W6 (2024 H2) | +6.98% | +7.95% | +0.96 |
+| W7 (2025 H1) | +20.83% | +18.94% | -1.90 |
+| **W8 (2025 H2)** | **+107.84%** | **+80.93%** | **-26.91** |
+| W9 (2026 H1) | +40.76% | +42.13% | +1.37 |
+
+Summed (not averaged) across windows, the net delta is -8.99pp -- but **W8 alone accounts
+for -26.91pp of that, meaning the other 8 windows combined actually IMPROVE by +17.92pp**.
+Every one of the 9 swept cells shows the same shape: W8 damaged in all nine, by -18.6pp to
+-34.3pp, monotonically shrinking as `TRANCHE_BASE_PCT` rises toward 1.0 (less under-sizing
+the closer the base tranche gets to full size) -- exactly the expected direction if the
+mechanism below is the real cause, not a coincidence.
+
+**Root cause, traced concretely rather than inferred** (re-ran W8 alone with full
+position-level detail): W8 is the single largest alpha contributor at baseline (top-5
+tickers = 56.6% of positive PnL) -- exactly the "6/9 windows show >65% concentration, a
+handful of outlier winners carry most of the result" pattern this log's own walk-forward
+section already diagnosed as this strategy's central fragility. VKTR, W8's single biggest
+winner (Rp 29.3M PnL at baseline), trended up without ever dipping 2% below its base-
+tranche fill price within the 2-session add window -- it never got topped up, rode its
+entire position at 60% of normal size, and its PnL under the tranche design drops to ~Rp
+19.0M, roughly proportional to the size cut. BNBR and MLPT (2nd/3rd-biggest W8 winners)
+DID get topped up and their PnL is roughly preserved. A fourth top-5 winner, BSML (Rp
+15.8M at baseline), does not appear in the tranche-on trade list AT ALL -- a different
+candidate won its slot instead. That second effect is the SAME scarce-`MAX_POSITIONS`
+admission-order sensitivity this log has already documented for `BACKLOG_QUEUE_ENABLED`
+and `PULLBACK_FILL_ENABLED`, now shown to survive even a design built specifically to
+avoid it: a smaller base-tranche cost still changes the day-to-day cash trajectory, which
+can still change who gets admitted later when a slot opens. **Two distinct, real
+mechanisms are compounding here, not one**: (1) under-sizing a winner that never pulls
+back (the direct, intended cost of the design), and (2) the pre-existing admission-order
+ripple effect (an indirect, unintended side effect of changing capital consumption
+patterns).
+
+**Fill-price improvement (pre-registered check, confirmed real and mechanical
+independent of the walk-forward result)** -- pooled across all 9 windows, positions that
+actually got a second tranche only:
+
+| base_pct | add_pct | 2nd-tranche fills | avg fill-price improvement |
+|---|---|---|---|
+| 0.5 | 1% | 166 | 0.75% |
+| 0.5 | 2% | 142 | 1.23% |
+| 0.5 | 3% | 122 | 1.71% |
+| 0.6 | 1% | 168 | 0.62% |
+| **0.6** | **2%** | **143** | **1.00%** |
+| 0.6 | 3% | 121 | 1.39% |
+| 0.7 | 1% | 161 | 0.47% |
+| 0.7 | 2% | 138 | 0.76% |
+| 0.7 | 3% | 118 | 1.05% |
+
+Clean and monotonic: deeper add trigger -> fewer fills, bigger per-fill improvement when
+one happens -- the same shape (and a similar magnitude, ~0.5-1.7%) as pullback-fill's own
+confirmed 0.8-1.5% figure. At the chosen cell, roughly 143 of ~367 trades (~39%) get a
+real, mechanically confirmed ~1% better entry price.
+
+**`BANDAR_SIZING_ENABLED` interaction, checked specifically (not just assumed) per this
+session's own standing requirement**: re-ran the OFF baseline and the best ON cell (0.6
+base / 2% add) with `V4_BANDAR_SIZING=0`:
+
+| Metric | OFF, bandar off | ON, bandar off |
+|---|---|---|
+| Trades | 374 | 366 |
+| Win rate mean | 50.1% | 52.8% |
+| Alpha mean | +29.82% | +29.38% (-0.44pp) |
+| PF mean | 1.98 | 2.29 |
+| DD mean/worst | -15.97%/-23.13% | -14.07%/-19.57% |
+| Beat bench | 7/9 | 8/9 |
+| Win>50% | 4/9 | 6/9 |
+
+Same qualitative shape as with `BANDAR_SIZING` on: small mean-alpha decline, everything
+else improves. **The single-window mechanism reproduces even more strongly with `BANDAR_
+SIZING` off**: W8's alpha drops from +157.14% to +105.88% (delta -51.3pp, nearly double
+the on-state's -26.9pp, since `BANDAR_SIZING`'s own size-damping is absent) while the
+other 8 windows combined improve by roughly +47.3pp. Direction and root cause are not a
+`BANDAR_SIZING` artifact -- they reproduce with it on or off, just at different
+magnitudes, satisfying this session's specific interaction-isolation requirement.
+
+**No Monte Carlo permutation check run**, per this log's own established bar: an MC check
+is for a candidate that looks genuinely better and more robust on the sweep itself. This
+one doesn't clear that bar -- mean alpha is worse in literally every grid cell tested,
+both `BANDAR_SIZING` states.
+
+**Verdict: NOT VALIDATED.** Fails this project's standard adoption bar (beat baseline on
+BOTH mean alpha AND worst-case drawdown simultaneously) on the primary axis -- mean alpha
+never improves, at any tested cell, in either `BANDAR_SIZING` state. But this is a
+qualitatively different rejection from this session's three prior ones: those were
+"the apparent improvement turns out to be a single-window mirage that vanishes or flips
+sign under scrutiny." This one is "the mechanism is real, understood, and correctly
+built, and it trades a small, well-explained mean-alpha cost for broad, mostly-consistent
+gains everywhere else" -- the cost lands specifically on the biggest trending winner in
+this project's own strongest window, which is also exactly the kind of trade this
+project's own capital is most concentrated in. The core structural claim over pullback-
+fill (never skip an entry) is fully delivered and directly confirmed (trade count never
+below baseline, unlike pullback-fill's real miss rate), and the fill-price improvement is
+real. **Do not deploy to any live paper run at these settings.** Flag stays off by
+default, kept in the code for a future attempt -- e.g. a design that scales `TRANCHE_
+BASE_PCT` UP specifically for a high-conviction/strong-trend signal (so the trades most
+likely to run without a pullback keep more of their size from day one), which was not
+built or tested here.
+
+Code touched: `backtest_v4.py` (`TRANCHE_ENTRY_ENABLED`/`TRANCHE_BASE_PCT`/`TRANCHE_ADD_
+LOW_PCT`/`TRANCHE_ADD_EXPIRY_SESSIONS`/`TRANCHE_FILL_LOG`, the entry-fill split at the
+position-creation site, and the second-tranche add-on block inside
+`evaluate_position_exit()` -- all off/no-op by default, regression-verified byte-
+identical against the recorded baseline above). New: `src/test_tranche_entry.py`
+(5-assertion self-check), `src/sweep_tranche_entry.py` (full grid + BANDAR-off isolation
+sweep) + its three CSV outputs (`.cache/tranche_entry_sweep_full.csv`, `_agg.csv`,
+`_fill_quality.csv`). `score_candidates()`, `compute_entry_fill()`, `paper_signal_scan.py`,
+and `paper_monitor.py` are unchanged. Left uncommitted for review, same pattern as this
+session's other entries.

@@ -124,6 +124,47 @@ SL_CONFIDENCE_MAX = float(os.environ.get("V4_SL_CONFIDENCE_MAX", "1.3"))
 SL_CONCENTRATION_ENABLED = os.environ.get("V4_SL_CONCENTRATION", "0") == "1"
 SL_CONCENTRATION_MIN = float(os.environ.get("V4_SL_CONCENTRATION_MIN", "0.8"))
 SL_CONCENTRATION_MAX = float(os.environ.get("V4_SL_CONCENTRATION_MAX", "1.3"))
+
+# RESEARCH CANDIDATE (2026-08-30, real-trader request -- his own UT Bot indicator),
+# UNVALIDATED -- a genuinely different mechanism from the three SL-width ideas above (those
+# scaled entry SL_MULT by a per-trade signal; this touches the TRAILING stop instead, and
+# does not touch entry sizing at all). cfg.TRAILING_PCT (used a few hundred lines down in
+# evaluate_position_exit) is a flat % off pos["highest_price"] (highest CLOSE since entry),
+# fixed regardless of how volatile the stock is RIGHT NOW. UT Bot's classic formula instead
+# recomputes the trail distance from TODAY's ATR every bar: trailing_stop =
+# highest_close_since_entry - atr_today * TRAIL_ATR_KEY_VALUE -- tightens automatically as a
+# stock's volatility drops post-entry (locks in gains sooner), widens if volatility rises
+# (avoids getting shaken out in a choppier stretch). Falls back to the existing flat-%
+# trailing stop whenever today's atr_14 is missing/non-positive for that stock (a data gap,
+# not a design choice) -- never crashes, never reuses a stale entry-day ATR. Reuses the
+# atr_14 column strategy.add_features already computes daily per stock; no new ATR
+# computation. Sizing untouched: this only moves WHERE the trailing stop sits, not
+# risk_per_share/lots_risk (those are fixed at ENTRY time off the entry SL, never
+# recomputed once a position is open).
+TRAIL_ATR_ENABLED = os.environ.get("V4_TRAIL_ATR_ENABLED", "0") == "1"
+TRAIL_ATR_KEY_VALUE = float(os.environ.get("V4_TRAIL_ATR_KEY_VALUE", "2.0"))
+
+# RESEARCH CANDIDATE (2026-08-30, real-trader request -- his own Smart Money Concepts
+# swing-low placement), UNVALIDATED -- a different SL PLACEMENT philosophy from SL_MULT
+# above (support structure, not a volatility multiple): the INITIAL stop goes just below the
+# most recent CONFIRMED fractal low (a low strictly lower than STRUCT_SL_LOOKBACK bars on
+# both sides, standard N=2/3) in the stock's own pre-signal price history, minus a small ATR
+# buffer (a stop parked exactly on a level every other trader can see gets hunted). See
+# compute_struct_swing_low()'s own docstring for the no-lookahead mechanics -- a fractal is
+# only usable once the LOOKBACK bars after it have themselves already printed by the signal
+# day. Overrides sl_price (not sl_mult_effective -- a full replacement, not a multiplier on
+# top of SL_CONFIDENCE/SL_CONCENTRATION) only when a valid confirmed swing low exists AND the
+# resulting stop still lands below entry_price; otherwise silently falls back to the existing
+# ATR-multiple sl_price unchanged (an early-history stock with no confirmed fractal yet, or
+# one that has run up past its last swing low entirely, is not a case this design has an
+# opinion about). risk_per_share still moves with wherever this places the stop -- same
+# mechanical sizing interaction the existing SL_MULT already has via lots_risk, not a NEW
+# correlation with any of compute_entry_fill's other per-candidate multipliers (concentration/
+# score/etc. never enter this calc).
+STRUCT_SL_ENABLED = os.environ.get("V4_STRUCT_SL_ENABLED", "0") == "1"
+STRUCT_SL_LOOKBACK = int(os.environ.get("V4_STRUCT_SL_LOOKBACK", "2"))
+STRUCT_SL_BUFFER_ATR = float(os.environ.get("V4_STRUCT_SL_BUFFER_ATR", "0.75"))
+
 from strategy import add_features
 from phase0c_rrg_validation import fetch_sector_indices, fetch_sector_map, compute_rs_momentum
 from phase0d_multitimeframe_validation import attach_weekly_trend
@@ -501,6 +542,51 @@ def compute_spike_confirm_gate(df: pd.DataFrame, vol_mult: float, move_pct: floa
     return dict(zip(zip(stock_codes.tolist(), trade_dates.tolist()), gate_open.tolist()))
 
 
+def compute_struct_swing_low(df: pd.DataFrame, lookback: int) -> dict:
+    """Returns {(stock_code, trade_date): swing_low_price} -- the most recent CONFIRMED
+    fractal swing-low price known by each row's own day, for STRUCT_SL_ENABLED (see that
+    flag's own module-level comment). A bar at position i is a fractal low if its `low` is
+    strictly less than the `lookback` bars immediately before AND after it (standard N=2/3
+    Smart Money Concepts / fractal definition). It only becomes KNOWABLE once those
+    `lookback` bars-after have themselves printed -- shifting the flagged value forward by
+    `lookback` positions before forward-filling is what guarantees no lookahead (a fractal
+    at position i first appears in the output at position i+lookback, never earlier).
+
+    Same per-stock segmented-loop style as compute_spike_confirm_gate just above
+    (vectorized shift comparisons, no per-row Python state machine)."""
+    sub = df[["stock_code", "trade_date", "low"]].sort_values(["stock_code", "trade_date"])
+    stock_codes = sub["stock_code"].to_numpy()
+    trade_dates = sub["trade_date"].to_numpy()
+    low = sub["low"].to_numpy(dtype=float)
+
+    n = len(sub)
+    swing_low = np.full(n, np.nan)
+    start = 0
+    while start < n:
+        end = start + 1
+        while end < n and stock_codes[end] == stock_codes[start]:
+            end += 1
+        m = end - start
+        if m > 2 * lookback:
+            seg = low[start:end]
+            is_low = np.ones(m, dtype=bool)
+            for k in range(1, lookback + 1):
+                before = np.r_[np.full(k, np.inf), seg[:-k]]
+                after = np.r_[seg[k:], np.full(k, np.inf)]
+                is_low &= (seg < before) & (seg < after)
+            fractal_value = np.where(is_low, seg, np.nan)
+            confirmed = np.full(m, np.nan)
+            confirmed[lookback:] = fractal_value[:m - lookback]
+            swing_low[start:end] = pd.Series(confirmed).ffill().to_numpy()
+        start = end
+
+    return {
+        (sc, td): float(v)
+        for sc, td, v in zip(stock_codes, trade_dates, swing_low)
+        if not np.isnan(v)
+    }
+
+
 FETCH_START = date.fromisoformat(os.environ.get("V4_FETCH_START", "2021-01-01"))
 TRAIN_END = date.fromisoformat(os.environ.get("V4_TRAIN_END", "2024-06-30"))
 TEST_START = date.fromisoformat(os.environ.get("V4_TEST_START", "2024-07-31"))
@@ -789,6 +875,54 @@ PULLBACK_EXPIRY_SESSIONS = int(os.environ.get("V4_PULLBACK_EXPIRY_SESSIONS", "2"
 # {"outcome": "EXPIRED_UNFILLED", ...} the day it ages out of PULLBACK_EXPIRY_SESSIONS
 # without ever touching. Never appended when the flag is off.
 PULLBACK_FILL_LOG: list = []
+# RESEARCH CANDIDATE (2026-08-30), UNVALIDATED -- tranche (split-fill) entry. A
+# STRUCTURALLY DIFFERENT design from PULLBACK_FILL_ENABLED above, not a retry of it.
+# PULLBACK_FILL_ENABLED was REJECTED (see V3_FINDINGS_LOG.md, "pullback-to-buy-area entry
+# fill") because "skip the trade entirely if price never dips into the buy area" starves
+# this project's scarce MAX_POSITIONS=6 slots -- a slot sits empty waiting for a fill that
+# may never come while other candidates queue up, which is what produced the
+# non-monotonic, single-window-carried (W8/W9) result that got it rejected. This answers
+# the same real-trader critique with how he actually enters: buy a BASE tranche
+# IMMEDIATELY at the area-top price -- exactly today's baseline fill (same day, same
+# price), just sized smaller -- the trade NEVER skips or waits. Only a SECOND tranche is
+# conditional: if price dips further within a short window, add to it, averaging the cost
+# basis down. If the dip never comes, the position simply stays at base size forever --
+# no missed trade, no held-open scarce slot.
+#
+# TRANCHE_BASE_PCT: fraction of the normal (fully-sized, all-existing-multipliers-applied)
+# lot count that fills immediately at entry_price (today's real open, identical price to
+# the baseline). The remaining (1 - TRANCHE_BASE_PCT) tops the position up to that SAME
+# total if and only if the add trigger below is touched -- it is not an extra allocation
+# on top. Do not confuse with PYRAMID_ENABLED (a post-TP1, profit-funded add-on that this
+# is pre-TP1 and cost-basis-averaging, not sizing-up a winner) -- it reuses the identical
+# weighted-average avg_price/cost_basis blend formula PYRAMID_ENABLED's own TP1/TP2
+# add-ons already use, just applied pre-TP1 instead of post-TP1.
+#
+# TRANCHE_ADD_LOW_PCT: the add trigger is a FLAT PERCENTAGE below the base fill price
+# (entry_price * (1 - TRANCHE_ADD_LOW_PCT)) -- deliberately named _PCT, not _MULT, so the
+# unit is unambiguous (this project has already shipped one real unlabeled-unit bug
+# elsewhere; naming it as a flat price fraction avoids anyone later assuming it means an
+# ATR multiple). Matches the real trader's own description most directly -- a concrete
+# lower price within a known consolidation area (e.g. 100 -> 95), not an ATR-scaled band.
+#
+# TRANCHE_ADD_EXPIRY_SESSIONS mirrors PULLBACK_EXPIRY_SESSIONS's short retry window,
+# checked against pos["hold_days"] (0 on the first day evaluate_position_exit() is called
+# for this position, i.e. the day after entry) inside evaluate_position_exit() itself --
+# so the add can only fire starting the day AFTER entry, never same-day
+# (evaluate_position_exit is never called on the entry day itself, see the same-day-entry
+# branch in simulate_window's day loop). Disclosed simplification: with only daily OHLC, a
+# same-day dip-then-add within the entry day itself is not modeled here -- ponytail:
+# same-day intrabar add, add if the 1-2 session window this defaults to proves too tight.
+TRANCHE_ENTRY_ENABLED = os.environ.get("V4_TRANCHE_ENTRY_ENABLED", "0") == "1"
+TRANCHE_BASE_PCT = float(os.environ.get("V4_TRANCHE_BASE_PCT", "0.5"))
+TRANCHE_ADD_LOW_PCT = float(os.environ.get("V4_TRANCHE_ADD_LOW_PCT", "0.02"))
+TRANCHE_ADD_EXPIRY_SESSIONS = int(os.environ.get("V4_TRANCHE_ADD_EXPIRY_SESSIONS", "2"))
+# Research instrumentation only, TRANCHE_ENTRY_ENABLED-gated -- same "sweep script
+# reads/clears this directly" pattern PULLBACK_FILL_LOG above already uses. One dict
+# appended per COMPLETED second-tranche fill (never for a base-only position) -- used only
+# to measure the average-fill-price improvement on the subset of trades that actually get
+# a second tranche (see V3_FINDINGS_LOG.md).
+TRANCHE_FILL_LOG: list = []
 # Cross-day position ROTATION -- the "one thing to do first" the 2026-08-17 council
 # session's own peer review flagged, after BOTH other scarce-MAX_POSITIONS-slot fixes
 # above (widen the cap; the bounded backlog queue) were rejected on real evidence
@@ -1847,6 +1981,16 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
     else:
         tp1_price = entry_price + atr_val * cfg.TP1_MULT
         sl_price = entry_price - atr_val * sl_mult_effective
+        if STRUCT_SL_ENABLED:
+            # Full REPLACEMENT of sl_price (not a multiplier stacked on sl_mult_effective)
+            # -- only when a confirmed swing low exists AND placing the stop there still
+            # lands below entry_price. Otherwise the ATR-multiple sl_price just computed
+            # above stands unchanged -- see STRUCT_SL_ENABLED's own module-level comment.
+            swing_low = sig.get("struct_swing_low")
+            if swing_low is not None and np.isfinite(swing_low):
+                struct_sl_price = swing_low - STRUCT_SL_BUFFER_ATR * atr_val
+                if 0 < struct_sl_price < entry_price:
+                    sl_price = struct_sl_price
         tp1_price = max(tp1_price, entry_price * 1.01)
         sl_price = min(sl_price, entry_price * 0.99)
         expected_hold_days = abs(sig["tp_target"] - entry_price) / atr_val
@@ -1940,7 +2084,8 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
 
 def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: float,
                             trade_date, prev_equity: float, cash: float,
-                            prev_close=None, observed_max_move=None, allow_pyramid: bool = True):
+                            prev_close=None, observed_max_move=None, allow_pyramid: bool = True,
+                            current_atr: float = None):
     """SL/TP1/TRAILING/CHECKPOINT/TIME exit decision + the TP1/TP2 pyramid-add-on, for ONE
     open position on ONE day. Extracted so the live paper-trading monitor
     (src/paper_monitor.py) makes exit decisions through the exact same code path as this
@@ -1950,6 +2095,12 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
     the live monitor passes (day_open, current_live_price, day_high_so_far, day_low_so_far)
     built up from repeated intraday polls -- a disclosed proxy for true intrabar H/L, not real
     tick data (see docs/V3_FINDINGS_LOG.md paper-trading section).
+
+    `current_atr` (default None, byte-identical to every existing caller including
+    paper_monitor.py, which never passes it): TODAY's atr_14 for this stock, read only by
+    TRAIL_ATR_ENABLED's trailing-stop block below. paper_monitor.py does not currently wire
+    this through -- TRAIL_ATR_ENABLED is a backtest-only research flag until/unless it's
+    validated and a live ATR source is plumbed in.
 
     Mutates `pos`'s own bookkeeping fields in place (highest_price, tp1_hit, tp2_hit, sl_price,
     avg_price, total_lots, remaining_lots, cost_basis) -- these belong to the position, not the
@@ -1983,6 +2134,42 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
 
     exit_reason, exit_price, sell_lots = None, None, 0
     cash_delta = 0.0
+
+    # TRANCHE_ENTRY_ENABLED only -- second-tranche add-on, see module-level flag comment
+    # for the full design. pos["tranche_pending_lots"] is 0 for every position when the
+    # flag is off (or when this position's base-tranche split fell back to a full-size
+    # fill at entry), so this whole block is a no-op then -- confirmed byte-identical by
+    # test_tranche_entry.py. Runs BEFORE the SL/TP1 check below (an intraday low that
+    # pierces both the shallower add trigger and the deeper SL genuinely touches the add
+    # trigger first on the way down). Disclosed edge case not fixed here: an
+    # ARB_EXIT_REALISM-locked day already returned early above, so the add can't fire that
+    # day even though a real buy order (unlike a sell) could still likely execute on a
+    # limit-down day -- a missed-opportunity simplification, not one that fabricates a
+    # better result.
+    if (TRANCHE_ENTRY_ENABLED and pos.get("tranche_pending_lots", 0) > 0 and not pos["tp1_hit"]
+            and pos["hold_days"] < TRANCHE_ADD_EXPIRY_SESSIONS):
+        add_trigger_price = pos.get("tranche_add_price")
+        if add_trigger_price is not None and low_price <= add_trigger_price:
+            add_fill_price = min(o, add_trigger_price) if o is not None else add_trigger_price
+            add_fill_price = max(add_fill_price, low_price)  # never fabricate a fill below the day's real low
+            add_lots = pos["tranche_pending_lots"]
+            add_qty = add_lots * LOT_SIZE
+            add_participation = add_qty / max(pos.get("avg_vol_20", 1.0), 1.0)
+            add_cost_per_share = apply_slippage(add_fill_price, "buy", add_participation) * (1 + cfg.BUY_FEE)
+            add_cost_basis = add_qty * add_cost_per_share
+            if add_cost_basis <= cash:  # else: not enough cash today -- retry next day, still within the expiry window
+                new_total_lots = pos["total_lots"] + add_lots
+                pos["avg_price"] = (pos["avg_price"] * pos["total_lots"] + add_fill_price * add_lots) / new_total_lots
+                TRANCHE_FILL_LOG.append({
+                    "stock_code": pos["stock_code"], "base_fill_price": pos["entry_price_original"],
+                    "add_fill_price": add_fill_price, "base_lots": pos["total_lots"], "add_lots": add_lots,
+                    "final_avg_price": pos["avg_price"],
+                })
+                pos["cost_basis"] += add_cost_basis
+                pos["total_lots"] = new_total_lots
+                pos["remaining_lots"] += add_lots
+                pos["tranche_pending_lots"] = 0
+                cash_delta -= add_cost_basis
 
     if not pos["tp1_hit"]:
         if low_price <= pos["sl_price"]:
@@ -2030,7 +2217,16 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
             exit_reason, exit_price = "SL", (o if (o is not None and o < pos["sl_price"]) else pos["sl_price"])
             sell_lots = pos["remaining_lots"]
         elif hold_ok:
-            trailing_stop = pos["highest_price"] * (1 - cfg.TRAILING_PCT)
+            # TRAIL_ATR_ENABLED: recompute the trail off TODAY's ATR (UT Bot style) instead
+            # of a flat % of the peak -- falls back to the existing flat-% trail whenever
+            # current_atr isn't usable (flag off, or a real data gap), never crashes and
+            # never reuses a stale entry-day ATR. See TRAIL_ATR_ENABLED's own module-level
+            # comment.
+            if TRAIL_ATR_ENABLED and current_atr is not None and current_atr > 0 and not (
+                    isinstance(current_atr, float) and np.isnan(current_atr)):
+                trailing_stop = pos["highest_price"] - current_atr * TRAIL_ATR_KEY_VALUE
+            else:
+                trailing_stop = pos["highest_price"] * (1 - cfg.TRAILING_PCT)
             stop_eff = max(trailing_stop, pos["sl_price"])
             if close_price <= stop_eff:
                 exit_reason, exit_price = "TRAILING", close_price
@@ -2134,6 +2330,13 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
     # same reason as the two above: keeps the gate site below a plain dict lookup.
     spike_confirm_gate = compute_spike_confirm_gate(df, SPIKE_VOL_MULT, SPIKE_MOVE_PCT,
                                                       SPIKE_CONFIRM_DAYS, SPIKE_GIVEBACK_PCT)
+    # RESEARCH CANDIDATE, off by default -- see STRUCT_SL_ENABLED above. Per-STOCK, keyed
+    # by (stock_code, trade_date), same "only computed when the flag is actually on"
+    # discipline as broker_divergence_by_stock_date above (a real O(rows*lookback) scan,
+    # not free, though cheap in absolute terms -- no archive read needed, pure in-memory df).
+    struct_swing_low_by_stock_date = (
+        compute_struct_swing_low(df, STRUCT_SL_LOOKBACK) if STRUCT_SL_ENABLED else {}
+    )
     df = df.copy()
     df["_regime"] = df["trade_date"].map(regime_by_date).fillna("NEUTRAL")
     df["_streak"] = df["trade_date"].map(bullish_streak_by_date).fillna(0)
@@ -2253,6 +2456,14 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
         (r.stock_code, r.trade_date): (r.open_price, r.close_price, r.high, r.low, r.volume)
         for r in df.itertuples()
     }
+    # Only needed by TRAIL_ATR_ENABLED (the CURRENT day's ATR for an already-open
+    # position, not its entry-day ATR -- see that flag's own module-level comment).
+    # Same "only computed when the flag is actually on" discipline as feature_lookup
+    # below (ROTATION_ENABLED=False, the default, pays zero extra cost).
+    atr_lookup = (
+        {(r.stock_code, r.trade_date): r.atr_14 for r in df.itertuples()}
+        if TRAIL_ATR_ENABLED else {}
+    )
     # Only needed by the ARB exit-realism check; built once here rather than
     # looked up per position per day.
     _has_limit_cols = "observed_max_move" in df.columns
@@ -2538,11 +2749,35 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
             if fill is None:
                 continue
 
-            cash -= fill["cost_basis"]
+            # TRANCHE_ENTRY_ENABLED: split compute_entry_fill()'s already-fully-sized
+            # result (every existing multiplier -- SCORE/LIQ/TREND/BANDAR/MOVER/ACCDIST/
+            # ROTATION/SPIKE sizing, RISK_PCT lots_risk cap, LIQ_CAP_PCT -- has already been
+            # applied by the time we get here) into a base lot count that fills today and a
+            # pending lot count that only fills later if the dip trigger is touched. When
+            # the flag is off, or the split would leave a base tranche too small to trade
+            # (< cfg.ALLOC_MIN_LOTS), base_lots/base_quantity/base_cost_basis are the exact
+            # same objects compute_entry_fill() returned -- byte-identical to the pre-flag
+            # baseline (confirmed by test_tranche_entry.py), not a re-derived float.
+            tranche_pending_lots, tranche_add_price = 0, None
+            if TRANCHE_ENTRY_ENABLED:
+                _base_lots = int(fill["lots"] * TRANCHE_BASE_PCT)
+                if _base_lots >= cfg.ALLOC_MIN_LOTS:
+                    _cost_per_share = fill["cost_basis"] / fill["quantity"]
+                    base_lots = _base_lots
+                    base_quantity = base_lots * LOT_SIZE
+                    base_cost_basis = base_quantity * _cost_per_share
+                    tranche_pending_lots = fill["lots"] - base_lots
+                    tranche_add_price = entry_price * (1 - TRANCHE_ADD_LOW_PCT)
+                else:
+                    base_lots, base_quantity, base_cost_basis = fill["lots"], fill["quantity"], fill["cost_basis"]
+            else:
+                base_lots, base_quantity, base_cost_basis = fill["lots"], fill["quantity"], fill["cost_basis"]
+
+            cash -= base_cost_basis
             positions.append({
                 "stock_code": sig["stock_code"], "entry_date": trade_date, "entry_day_idx": day_idx, "avg_price": entry_price,
-                "tp1_price": fill["tp1_price"], "sl_price": fill["sl_price"], "total_lots": fill["lots"], "remaining_lots": fill["lots"],
-                "quantity": fill["quantity"], "cost_basis": fill["cost_basis"], "hold_days": 0, "tp1_hit": False, "tp2_hit": False,
+                "tp1_price": fill["tp1_price"], "sl_price": fill["sl_price"], "total_lots": base_lots, "remaining_lots": base_lots,
+                "quantity": base_quantity, "cost_basis": base_cost_basis, "hold_days": 0, "tp1_hit": False, "tp2_hit": False,
                 "highest_price": entry_price, "trigger": sig["trigger"],
                 "no_data_days": 0, "last_valid_close": entry_price,
                 "checkpoint_day": fill["checkpoint_day"], "target_price": sig["tp_target"],
@@ -2550,6 +2785,8 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                 "atr_at_entry": fill["atr_at_entry"],
                 "avg_vol_20": sig.get("avg_vol_20", 1.0),  # for exit-side slippage's participation estimate
                 "rotation_score": sig.get("score", 0.0),  # ROTATION_ENABLED only -- seeded at entry, refreshed daily by _rotation_current_score
+                "tranche_pending_lots": tranche_pending_lots,  # TRANCHE_ENTRY_ENABLED only; 0 = nothing left to add (flag off, or split fell back to full-size)
+                "tranche_add_price": tranche_add_price,  # TRANCHE_ENTRY_ENABLED only
             })
             new_entries_today += 1
             _admitted_codes_today.add(sig["stock_code"])
@@ -2668,6 +2905,7 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                 pos, bar, regime, trend_strength_by_date.get(trade_date, 0.0),
                 trade_date, prev_equity, cash,
                 prev_close=_prev_close, observed_max_move=_obs_max,
+                current_atr=atr_lookup.get((pos["stock_code"], trade_date)),
             )
             cash += cash_delta
 
@@ -2736,6 +2974,12 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                 # regardless of either flag's state) so nothing downstream needs a
                 # conditional default -- same pattern as origin_day_idx above.
                 _c["is_spike"] = not spike_confirm_gate.get((_c["stock_code"], trade_date), True)
+                # STRUCT_SL_ENABLED reads this at fill time (compute_entry_fill) to place
+                # the initial stop below the signal day's most recent confirmed fractal
+                # low instead of a pure ATR multiple. Tagged unconditionally (dict is
+                # empty when the flag is off, .get always returns None then) -- same
+                # pattern as origin_day_idx/is_spike above.
+                _c["struct_swing_low"] = struct_swing_low_by_stock_date.get((_c["stock_code"], trade_date))
             pending_entries.extend(new_candidates)
             if BACKLOG_QUEUE_ENABLED and pending_entries:
                 # Priority ordering when a slot opens among a mix of fresh + carried-
