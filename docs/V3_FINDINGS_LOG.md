@@ -7054,3 +7054,115 @@ seconds) plus one ad hoc read-only Supabase query against `paper_positions` /
 `backtest_runs` for `V4_PAPER` (same tables `src/scratch_v4paper_live_record_
 pull.py` already reads, not a new pull script). Left uncommitted for review,
 same pattern as this session's other entries.
+
+---
+
+## Signal accountability: what the published signals actually did (2026-09-02)
+
+**Why this exists.** Every enhancement up to here has been measured against the
+backtest. Nothing measured the thing that actually goes out the door: the 15
+signals published daily to the site and to Telegram. The EMAS complaint
+(published at 9,600 on 31 Aug, Rank #3, already far extended; down the next day)
+surfaced the gap -- there was no standing record anywhere of how the previous
+week's calls had done, so the only audit that ever happened was a user noticing
+a bad one after the fact. This entry closes that.
+
+**What was built.** `sql/signal_performance_view.sql` -- a VIEW, not a table, so
+it cannot drift out of sync with the price history, needs no backfill and no
+cron, and self-corrects if EOD data is restated. It scores every row of
+`daily_qualifying_signals` (180 signals, 2026-08-12 .. 2026-09-01) at 1/5/10/20
+traded sessions out, alongside IHSG over the identical span. A two-line scorecard
+now rides in the daily EOD Telegram summary (`_signal_scorecard` in
+`paper_signal_scan.py`), wrapped in try/except so reporting can never take down
+the job that manages live open positions.
+
+**Entry is scored at the next session's OPEN, not `signal_close`.** The scan runs
+after the close, so `signal_close` is a price nobody could have transacted at.
+Scoring against it credits every signal with an overnight gap it never captured
+-- which is exactly the mechanism that made an already-extended name look like a
+clean entry. Measured average gap between `signal_close` and the price actually
+paid: **+0.16%**, i.e. you pay up, slightly, on average.
+
+### Data-quality bug found on the way
+
+`ihsg_eod.open_price` is **0 on 34% of recent rows** (4,221 of 12,519 since
+2026-08-12), hiding two different things: (a) the stock genuinely did not trade
+-- volume 0, high = low = 0, close carried over from previous; (b) the stock DID
+trade but the open was not captured -- volume in the millions, real high/low,
+only `open_price` is 0 (ANDI, IGAR, IKAI on 2026-08-12 are examples). The first
+cut of the view hit both: 16 signals scored an entry price of literally 0, which
+read as a -100% entry gap and dragged the average gap to **-9.69%**, and
+non-trading bars fed `min(low) = 0` into the drawdown stat, inflating average
+5-day max adverse excursion to **-10.21%**. Fixed by keeping only bars that
+actually traded (`high > 0`) and falling back to that bar's close when the open
+is missing, flagged per row by `entry_ref_is_open` (14 of 180 signals use the
+fallback). Corrected figures: average gap **+0.16%**, average 5-day MAE
+**-6.27%**. **Anything computed off `ihsg_eod.open_price` without a zero guard
+is suspect -- this is a live, ongoing data-quality hole, not a historical one.**
+
+### What the signals actually did
+
+Sample: 165 signals with at least one session of hindsight, 102 with five. Base
+rate = every IHSG stock with >= Rp1bn turnover and price >= Rp50 on the same 12
+dates, scored with the identical next-open entry rule (4,163 stock-days).
+
+| Horizon | Signals avg | IHSG | Base rate (any liquid stock) | Signal win rate | Base win rate |
+|---|---|---|---|---|---|
+| 1 session  | **+0.44%** | +0.30% | +0.13% | 38.2% | 38.2% |
+| 5 sessions | **+1.37%** | +1.45% | +1.61% | 44.1% | 50.6% |
+
+Three things fall out, and two of them are unflattering:
+
+1. **At one session the signal has a real edge in size, none in direction.**
+   Average return is 3.4x the base rate (+0.44% vs +0.13%), but the win rate is
+   *identical to three significant figures* (38.2% vs 38.2%). The selection is
+   not finding stocks that are more likely to go up. It is finding stocks that
+   move further when they do move. Median 1-session return is exactly **0.00%**.
+
+2. **At five sessions the signal is worse than picking a liquid stock at
+   random** -- lower average (+1.37% vs +1.61%) *and* a materially worse win
+   rate (44.1% vs 50.6%). Held a week, the edge is not merely gone, it is
+   negative against the base rate.
+
+3. **The mean is a few outliers, not a tendency.** Median 5-session return is
+   **-0.59%** against a +1.37% mean; best is +38.41%, worst -25.00%, sd 11.49.
+   This is the same fat-tail structure the exit-asymmetry diagnostic found from
+   the other direction, now confirmed on the raw signals rather than on trades.
+
+**Rank ordering shows no usable signal at this sample size.** Per-rank buckets
+hold 5-7 five-session observations each; rank 1 averages +22.68% and rank 2
+averages -13.18%, which is noise, not a gradient. Consistent with the
+2026-08-24 window-3 research finding that the ranking carries no measurable
+value and the regime gate carries the edge. **Do not act on the per-rank table
+until each bucket has 30+ observations** (~6 months of daily signals).
+
+### The caveat that matters most
+
+This measures **signal quality** -- did the stock go up after it was named --
+and **not strategy P&L**. The live engine stops out, takes a 10% partial at the
+first target and trails the rest, so a raw N-day hold return is not what the
+account would have earned. A concrete illustration from the live scorecard's
+first run: the 14 Aug batch, ten sessions on, was **6/13 up, avg -0.8% vs IHSG
++3.1%, yet 10 of 13 reached the first target at some point**. Most of them
+touched the target intraday and the batch still lost to the index. That single
+line is the clearest evidence yet that "reached first target" is a near-
+meaningless success criterion on its own, and it is now published daily where it
+cannot be quietly ignored.
+
+### What would strengthen or kill this
+
+**Strengthens**: another 4-6 months of daily signals would put 30+ observations
+in every rank bucket, making the per-rank table interpretable for the first
+time, and would let the 5-session underperformance be tested for significance
+rather than merely observed. If the 1-session size edge survives that sample
+while the 5-session deficit persists, the honest conclusion is that the entry is
+a one-day momentum effect being held far too long.
+
+**Kills / narrows**: the sample here is 12 trading days in a single bullish
+stretch (IHSG +0.30%/session average). A market with a different character could
+reverse any of this. The 5-session deficit in particular rests on 102
+observations across 7 usable dates -- it is a warning, not a verdict.
+
+Code touched: none of the protected V1 files; `backtest_v4.py` unchanged. New:
+`sql/signal_performance_view.sql` (applied to DB1) and `_signal_scorecard` in
+`src/paper_signal_scan.py`. No trading logic, sizing, or exit rule was modified.

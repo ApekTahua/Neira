@@ -33,7 +33,7 @@ Usage:
 
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 
@@ -129,6 +129,56 @@ def _close_position(supabase, run_id: int, position_id: int, pos: dict, trade_re
         "exit_reason": trade_record["exit_reason"], "trigger": trade_record["trigger"],
         "hold_days": int(trade_record["hold_days"]),
     }).execute()
+
+
+def _signal_scorecard(supabase, today: date) -> list[str]:
+    """Score already-published signals against what the stocks actually did.
+
+    Two lines for the EOD summary, both read from the signal_performance view:
+    the most recent batch that now has one session of hindsight, and the most
+    recent batch that has ten. The signals go out every day, so their record
+    has to come back every day -- otherwise the only time anyone checks is
+    when a call looks obviously wrong after the fact, which is how EMAS got
+    published at 9,600 with nothing anywhere saying how the previous week's
+    calls had actually done.
+
+    Entry is scored at the next session's OPEN, never the signal-day close.
+    This job runs after the close, so signal_close is a price nobody could
+    have transacted at, and scoring against it silently credits every signal
+    with an overnight gap it never captured. IHSG over the same span sits
+    beside every number, because "up 1%" means nothing on a day the whole
+    market rose 1.5%.
+    """
+    since = (today - timedelta(days=60)).isoformat()
+    rows = _retry(lambda: supabase.table("signal_performance")
+                  .select("trade_date, ret_1d, ret_10d, ihsg_1d, ihsg_10d, hit_tp")
+                  .gte("trade_date", since).execute()).data
+    if not rows:
+        return []
+
+    def batch(ret_key: str, mkt_key: str, label: str, show_tp: bool = False):
+        scored = [r for r in rows if r.get(ret_key) is not None]
+        if not scored:
+            return None
+        # The newest batch old enough to have this much hindsight -- not the
+        # newest batch overall, which by definition has none yet.
+        day = max(r["trade_date"] for r in scored)
+        day_rows = [r for r in scored if r["trade_date"] == day]
+        rets = [float(r[ret_key]) for r in day_rows]
+        mkts = [float(r[mkt_key]) for r in day_rows if r.get(mkt_key) is not None]
+        up = sum(1 for v in rets if v > 0)
+        line = (f"\u00b7 {day}, {label}: {up}/{len(rets)} up, "
+                f"avg {sum(rets) / len(rets):+.1f}%")
+        if mkts:
+            line += f" vs IHSG {sum(mkts) / len(mkts):+.1f}%"
+        if show_tp:
+            line += f" | {sum(1 for r in day_rows if r.get('hit_tp'))}/{len(day_rows)} reached first target"
+        return line
+
+    out = [ln for ln in (batch("ret_1d", "ihsg_1d", "1 session on"),
+                         batch("ret_10d", "ihsg_10d", "10 sessions on", show_tp=True))
+           if ln]
+    return ["\U0001F9FE *How past signals actually did*", *out] if out else []
 
 
 def main():
@@ -716,6 +766,13 @@ def main():
     if pc.PAPER_VERSION == pc.PRIMARY_PAPER_VERSION:
         days_elapsed = (today - period_start).days
         lines.append(f"Gate: {total_trades}/25-30 closed trades · day {days_elapsed}/42-56")
+        # Signal accountability. Wrapped because this is reporting, not
+        # trading: a view that is missing or slow must never take down the
+        # job that manages real open positions.
+        try:
+            lines.extend(_signal_scorecard(supabase, today))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[SCORECARD] skipped -- {exc}")
     if new_candidates_notes:
         lines.append("New candidates queued for tomorrow's open: " + ", ".join(new_candidates_notes))
     # A retired run (pc.RETIRED_PAPER_VERSIONS) never has new_candidates_notes
