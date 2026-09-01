@@ -15,12 +15,24 @@ name: "[18:10 WIB] - Paper Trading V4 Daily Signal Scan"
 # docs/V3_FINDINGS_LOG.md 2026-08-22 entry for full numbers and the one
 # honest caveat, window 3 getting worse on n=17).
 on:
-  # Re-pushed 2026-08-31 to re-register the schedule trigger: the last 2
-  # trading days both fired ~10h late (21:00 UTC instead of 11:10) and today
-  # didn't fire at all -- a push to the workflow file is the known remedy for
-  # GitHub Actions schedule-trigger registration going stale/flaky.
+  # CATCH-UP SLOTS (2026-09-01). The 11:10 slot alone proved unreliable --
+  # GitHub silently skipped it two trading days running (2026-08-31 and
+  # 2026-09-01), each time needing a manual dispatch to rescue the day, even
+  # though today's ihsg_eod was already loaded and the scan would have worked.
+  # Re-pushing the file (the standard fix for a stale schedule registration)
+  # helped but did not make it dependable.
+  #
+  # Extra slots are safe to fire because the scan is idempotent by design:
+  # paper_signal_scan.py derives `today` from the latest ihsg_eod trade_date
+  # (not the wall clock) and returns immediately if last_signal_date already
+  # matches it. So the first slot that actually fires does the work and every
+  # later one no-ops with a [SKIP] line. All slots sit in the same UTC day as
+  # the primary, so neither the date-rollover nor the is_idx_trading_day()
+  # weekday gate behaves differently between them.
   schedule:
-    - cron: '10 11 * * 1-5'  # same slot as V3_PAPER/V3.1_PAPER -- both need today's fresh ihsg_eod
+    - cron: '10 11 * * 1-5'  # 18:10 WIB, primary -- needs today's fresh ihsg_eod
+    - cron: '10 13 * * 1-5'  # 20:10 WIB, catch-up
+    - cron: '10 15 * * 1-5'  # 22:10 WIB, last resort
   workflow_dispatch:
 
 # Own concurrency group -- independent run, disjoint run_id-scoped rows, no
