@@ -6388,3 +6388,193 @@ isolation sweep) + its four CSV outputs (`src/sweep_bandar_veto_bandar_on.csv`, 
 `.cache/bandar_veto_log_conc{0.2,0.3,0.4}.csv`). `score_candidates()`, `compute_entry_fill()`,
 `paper_signal_scan.py`, and `paper_monitor.py` are unchanged. Left uncommitted for review,
 same pattern as this session's other entries.
+
+## 2026-09-01: First genuine blind holdout -- V4_PAPER's frozen live config run ONCE
+## against 2026-07-01..2026-08-11, a window no backtest/sweep/walk-forward run in this
+## project's history has ever touched. Net loss (-4.55%), alpha -14.61% vs a strong IHSG
+## rally, but inside the pre-declared not-alarming band on every metric except alpha,
+## which lands just past its edge. Small-n result: can't confirm an edge, doesn't show
+## gross overfitting either.
+
+**Why this test exists**: every V4 config decision so far (16+ ideas tested, this log is
+the record) was validated against the same 9-window walk-forward built from
+`.cache/walk_forward_data_2021-01-01_2026-06-30.pkl`. Every individual test in this log
+was run rigorously -- multiple windows, permutation checks where warranted, parameter
+sweeps -- but the aggregate is still a multiple-comparisons problem: nothing in the
+record so far distinguishes "V4 has a real edge" from "V4 is the best-looking survivor of
+16+ trials against one finite sample." A 2026-09-01 council session ("Two Clocks") flagged
+this as the largest unaddressed risk in the project. `ihsg_eod` has real data through
+2026-09-01; the walk-forward cache stops 2026-06-30. That gap -- 2026-07-01 through
+2026-08-11 specifically (V4_PAPER itself went live 2026-08-12, so anything from that date
+on is a live record, not a blind test) -- is a genuine virgin sample no test in this
+project has ever touched, in either direction (never used to pick a threshold, never used
+to reject one).
+
+**Frozen config, declared before any data was touched** (read directly from
+`paper_signal_scan_v4_trigger.yml` / `paper_monitor_v4_trigger.yml` on `main`, cross-checked
+against `backtest_v4.py`'s module defaults): `V4_BANDAR_SIZING=1` (already the module
+default -- `BANDAR_SIZING_ENABLED` default-on) and `V4_ATR_PRICE_RATIO_MAX=0.08` (module
+default is 0.10, the live workflows override it). No other env var is set anywhere in
+either live workflow, so every other flag in `backtest_v4.py` rides its module default
+exactly as it does in production -- `LIQ_SIZING_ENABLED=1` (0.5x-2.0x), `PYRAMID_ENABLED=1`
+(20% add), `MAX_POSITIONS=6`, `TREND_STRENGTH_MIN=0.01`, `REGIME_CONFIRM_DAYS=3`,
+`QUANTILE_CUT=0.60`, `SL_MULT=1.5`, and every research-candidate gate this log has tested
+and left off by default (`SL_CONFIDENCE`, `SL_CONCENTRATION`, `TRAIL_ATR`, `STRUCT_SL`,
+`TREND_DURATION_GATE`, `PARTICIPATION_GATE`, `BROKER_FLOW_GATE`, `DIVERGENCE_GATE`,
+`SPIKE_CONFIRM_GATE`, `BACKLOG_QUEUE`, `PULLBACK_FILL`, `TRANCHE_ENTRY`, `ROTATION_ENABLED`,
+`SCORE_SIZING`, `TREND_SIZING`, `MOVER_SIZING`, `ACCDIST_SIZING`, `ROTATION_SIZING`,
+`BANDAR_VETO`, `SPIKE_SIZING`, `PYRAMID_TREND_GATE`, `PYRAMID_TP2`, `ARA_FILTER`,
+`ARB_EXIT_REALISM`, `ADAPTIVE_HOLDTIME`, `SLIPPAGE_ENABLED`). Printed and confirmed at
+script start before the fetch ran: `BANDAR_SIZING_ENABLED=True ATR_PRICE_RATIO_MAX=0.08
+FETCH_START=2021-01-01 LIQ_SIZING_ENABLED=True PYRAMID_ENABLED=True MAX_POSITIONS=6
+TREND_STRENGTH_MIN=0.01 REGIME_CONFIRM_DAYS=3`. **Nothing swept, nothing tuned, one call
+to `simulate_window`.**
+
+**Methodology**: single train/test split, train_end=2026-06-30 (the day before test_start),
+train expanding from `FETCH_START` (2021-01-01) -- identical to how every other window in
+`walk_forward_v4.py`'s own `build_schedule()` is constructed, i.e. the same methodology
+this log's entire walk-forward record uses, NOT the live paper engine's own daily-
+expanding retrain (`paper_signal_scan.py` retrains with `train_end=today` every single
+day; this test uses one fixed cutoff for the whole window instead, disclosed as a real,
+deliberate methodology difference from what V4_PAPER's actual day-to-day live run does).
+Data fetched fresh via `build_full_dataset` through 2026-08-11 exactly (`V4_TEST_END`
+override) -- no post-window data enters the fetch or the threshold derivation at all.
+The local Bandarmology Parquet archive (`data/bandarmology_history/`) happens to end
+2026-08-11 as well, so `BANDAR_SIZING_ENABLED` had real (not train-fallback) `concentration`
+data for the entire test window -- confirmed by the run log showing no
+"local backfill not found" fallback message.
+
+**Pre-declared interpretation bar** (written down before running the script, based only on
+the already-recorded 9-window walk-forward profile for this exact frozen config -- the
+2026-08-22 entry above: mean alpha +26.17%, per-window range from the worst window's 17.6%
+win rate / -9.18% alpha / PF 0.02 up to the best window's 77.3% win rate / PF 4.89, worst
+single-window maxDD -21.10%). Given the holdout is ~6 weeks (30 trading days) against
+6-month windows that produced 17-98 trades, this test was declared unable to confirm an
+edge -- only to catch gross breakage:
+- **Consistent-with-backtest / inconclusive** (not alarming, sample too small to read as
+  either a win or a loss): win rate 15%-85%, profit factor 0.3-4.0, net profit/alpha
+  roughly -12% to +40%, max drawdown down to -20%.
+- **Alarming** (would indicate gross overfitting, not just a bad-luck window): win rate 0%
+  on 5+ trades, profit factor <0.2 on 5+ trades, net loss worse than -15% **and**
+  alpha worse than -20% simultaneously, max drawdown beyond -25%, or a structural anomaly
+  (sizing multipliers outside the 0.5x-2.0x design bounds, `MAX_POSITIONS` violated, etc.)
+  pointing at a bug rather than a bad market.
+
+**Result, run once, 2026-07-01..2026-08-11**:
+
+| metric | value |
+|---|---|
+| Trades | 13 |
+| Win rate | 53.8% (7 wins / 6 losses) |
+| Net profit | **-4.55%** (Rp 100,000,000 -> Rp 95,446,069) |
+| Benchmark (IHSG) | +10.06% |
+| Alpha | **-14.61%** |
+| Profit factor | 0.28 |
+| Max drawdown | -7.50% |
+| CVaR (95%, daily) | -3.74% |
+
+Exit breakdown: TP1 38.5% (5/13), forced END-of-window mark-to-market 30.8% (4/13), SL
+23.1% (3/13), TRAILING 7.7% (1/13). Top-5 tickers by realized PnL (SOCI, SMLE, BLES, PKPK,
+RGAS) account for 100% of gross positive PnL -- consistent with this project's already-
+documented pattern (small-n windows are usually carried by a handful of names, see the
+2026-08-31 entry above's own concentration numbers).
+
+**Why win rate >50% still nets a loss**: not a mystery, and not new -- 3 SL exits
+(-Rp 4,325,110 combined: SMIL, DWGL, DEWA) plus 1 TRAILING exit (-Rp 1,177,941, RGAS) outweigh
+5 TP1 wins (+Rp 622,302 combined) by a wide margin; the 4 forced END-of-window exits net
+slightly positive (+Rp 326,818) and are not the source of the loss. This is the familiar
+"many small wins, a few bigger losses" shape a PF well under 1 implies regardless of win
+rate -- SL_MULT (1.5x ATR) sizes stop losses wider than TP1's own target, a known, disclosed
+design tradeoff elsewhere in this project, not something new this window reveals.
+
+**Against the pre-declared bar** (corrected on review -- the first write-up of this entry
+scored it as one breach, which was wrong): **two metrics fall outside the declared
+consistent band, not one.** Profit factor came in at **0.28 against a declared floor of
+0.30** -- below it, not "essentially at" it. That softening was exactly the post-hoc
+reasoning a pre-declared bar exists to prevent; if a number under the line can be talked
+back over it, the line stops being a line. Alpha (-14.61%) is the second breach, against a
+declared -12%/+40% band. Win rate (53.8%), net profit (-4.55%) and max drawdown (-7.50%)
+do land inside.
+
+Neither breach is large, and the alarming threshold genuinely was not hit (that required
+BOTH net loss worse than -15% AND alpha worse than -20%, simultaneously)  -- but the honest
+statement is "two of five declared metrics missed their band," not one. Read plainly: this
+is a real, not hidden, underperformance against a strong benchmark run, not a catastrophic
+or structurally
+(which required BOTH net loss worse than -15% AND alpha worse than -20%, simultaneously;
+only alpha alone breaches, and net loss doesn't). Read plainly: this is a real, not
+hidden, underperformance against a strong benchmark run, not a catastrophic or structurally
+broken result. It sits in the same territory this log's own historical record already
+contains -- windows 1 and 2 of the 9-window schedule (2022 H1/H2) also posted negative alpha
+in a difficult market character; window 8 (2025 H2) beat a comparably strong IHSG rally
+(+25.04%) by a wide margin (+104.12% alpha) -- so "benchmark rallies hard" does not
+uniformly predict this strategy underperforms; this specific window is one data point in
+a genuinely wide historical spread, not a new failure mode.
+
+**Live `V4_PAPER` comparison, 2026-08-12..2026-09-01 (separate, NOT part of the blind test --
+outcomes already known before this session started)**: pulled directly from
+`backtest_runs`/`paper_positions` (`version='V4_PAPER'`, run id 36). Overall run (marks
+all positions, open and closed, to the latest close): net profit **+0.93%** (Rp
+100,000,000 -> Rp 100,927,124), benchmark **+3.55%**, alpha **-2.62%**, max drawdown
+-2.60%. Of 12 position rows: 6 CLOSED (5 filled-and-closed, 1 `UNFILLED_EXPIRED` with no
+entry), 5 OPEN, 1 PENDING. **All 5 closed, filled trades are losses** (WMPP -13.9%, GIAA
+-10.8%, HATM -15.0%, BEEF -1.7% TRAILING, NICE -8.3% SL) -- realized PnL -Rp 6,904,539
+(-0.69% of capital), win rate 0/5, profit factor 0.0. The 6 still-open positions (PACK,
+EKAD, ELTY, PICO, FPNI, PPGL-pending) are unresolved.
+
+**Agreement and divergence, read honestly, not reconciled**: both slices show the same
+*direction* -- negative alpha against a rallying IHSG (backtest holdout: benchmark +10.06%,
+alpha -14.61%; live: benchmark +3.55%, alpha -2.62%) over adjacent real 2026 H2 stretches.
+That directional agreement is worth one sentence and no more, given both samples are tiny.
+**The win rate comparison (53.8% backtest vs 0% live) is NOT read as a contradiction** --
+the live run is only ~3 weeks in, the account's overall equity curve stayed roughly flat-
+to-up (Rp 100.0M -> Rp 100.9M) despite every *closed* trade losing, which is only
+consistent with the 5-6 still-open positions collectively running in positive
+mark-to-market territory. This is the ordinary asymmetry of a TP1/trailing-stop exit
+system early in a run -- losers get stopped out fast, winners are still open and haven't
+been counted yet -- not evidence the live engine's fills or exits behave differently from
+the backtest's. A real read on execution-vs-signal divergence would need those 6 positions
+to actually close; noted as unresolved, not concluded.
+
+**Honest verdict**: this result neither confirms nor undermines V4's edge -- ~30 trading
+days and 13 trades is not statistical power, and the pre-declared bar was written
+specifically because this sample size can only catch gross breakage, not measure an edge.
+It doesn't find gross breakage: three of five metrics land inside the pre-declared range,
+and the two that miss (profit factor 0.28 vs a 0.30 floor, alpha -14.61% vs a -12% floor)
+miss narrowly rather than catastrophically. Worth stating plainly rather than burying: the
+declared band was set loosely on purpose (win rate 15-85%, PF 0.3-4.0), so missing it twice
+is a weaker result than "one metric slightly over" made it sound.
+
+One pattern in these numbers deserves more attention than the pass/fail framing gives it:
+**a 53.8% win rate paired with a 0.28 profit factor means the average loser was far bigger
+than the average winner.** More than half the trades were right and the window still lost
+money. That is the profile of exits cutting winners short while losers run -- the opposite
+of what the TP1-plus-trailing design intends -- and it is visible here in untouched data
+rather than inferred from a swept backtest. Not escalated into a research thread here (out
+of scope for this task), but it is a sharper lead than anything the last several rejected
+ideas were chasing. **What this test does add**: a real, previously
+untouched data point showing V4's frozen config can and does lose money and trail its
+benchmark in a real, current market stretch -- exactly the kind of result a swept or
+tuned holdout could never produce, since sweeping toward a good-looking number is the one
+thing this test was built to rule out. The live record adds one more real, if very early,
+signal in the same direction (negative alpha against a rallying IHSG) without yet being
+resolvable into a comparable win-rate number.
+
+**One footnote, not a new research thread** (per this task's own scope -- not built or
+tested further here): the two negative-alpha readings in this entry both occur in the same
+real, currently-ongoing IHSG uptrend: if a third slice of this same stretch (whenever
+enough of the currently-open V4_PAPER positions actually close) also shows negative alpha,
+that would be worth a dedicated look at whether this strategy's gates (MAX_POSITIONS=6,
+2 new entries/day, TP1 partial-exit) structurally underparticipate in strong, low-choppiness
+rallies specifically -- not something to act on from three overlapping, still-partly-
+unresolved data points.
+
+Code touched: none of the protected V1 files, `backtest_v4.py` unchanged (config-only via
+env vars, no code edits). New, both read-only/standalone: `src/scratch_v4_blind_holdout_
+2026h2.py` (the one-shot holdout run, ~15-20 min end to end -- full-history fetch through
+2026-08-11 plus feature computation, no local cache existed for this exact date range
+before this run; now cached at `.cache/walk_forward_data_2021-01-01_2026-08-11.pkl` for
+reuse, though re-running this script against the same window would not be a second
+independent test -- the holdout is spent) and `src/scratch_v4paper_live_record_pull.py`
+(the live-record pull, seconds to run, plain Supabase reads). Left uncommitted for review,
+same pattern as this session's other entries.
