@@ -268,7 +268,31 @@ neighbor-checked (not a lucky spike) -- deployed as V3.1_PAPER, see below.
 Both runs frozen for their own lifetime -- a further improvement ships as
 a new versioned run, never a silent edit to a running one.
 
-## V4 -- IDEA STAGE, named 2026-08-11
+## V4 -- SHIPPED AND LIVE (header corrected 2026-09-01)
+
+**This section's original "IDEA STAGE / Not started" framing is long
+obsolete and was actively misleading anyone reading this file for current
+state.** What actually happened since it was written:
+
+- V4 shipped and is the **sole live paper-trading engine** (`V4_PAPER`,
+  trading since 2026-08-12). V3_PAPER and V3.1_PAPER were retired from new
+  entries on 2026-08-15; only their already-open positions still ride out.
+- The Layer 1 → Layer 2 gate described below **cleared**.
+  `BANDAR_SIZING_ENABLED` (concentration-based position sizing) was promoted
+  to default-ON on 2026-08-15 after a full 9-window walk-forward: mean alpha
+  +21.71% → +24.09%, mean profit factor 1.58 → 1.88, better drawdown.
+- `ATR_PRICE_RATIO_MAX` was subsequently tightened 0.10 → 0.08 (2026-08-22),
+  also walk-forward validated, also live.
+- Every *further* Bandarmology consumer tried since has honestly failed and
+  stayed off: mover/accdist/rotation sizing (too sparse at real entry days),
+  concentration-scaled stop-loss, and a hard entry veto. See
+  `docs/V3_FINDINGS_LOG.md` for each.
+
+The original 2026-08-11 reasoning is kept verbatim below because the DWGL
+worked example is still the clearest statement of *why* this layer exists —
+read it as history, not as status.
+
+### Original entry, 2026-08-11 (historical)
 
 V3 (regime + trend) merged with Bandarmology (broker conviction layer)
 -- this IS the Layer 2 integration already scoped in
@@ -295,7 +319,31 @@ sizing multiplier, full walk-forward + neighbor-check + Monte Carlo)
 is even attempted. V4 is the name for that destination, not a
 green light to start building it now.
 
-## Bandarmology / broker summary data -- IDEA STAGE, nothing backfilled yet
+## Bandarmology / broker summary data -- BUILT AND IN PRODUCTION (header corrected 2026-09-01)
+
+**The "IDEA STAGE, nothing backfilled yet" title was wrong by roughly three
+weeks.** Current reality:
+
+- **Full history exists locally**: `data/bandarmology_history/*.parquet` on
+  this branch covers 2020-06-02 → present, continuous, ~1,500 files. The
+  earlier "1,026-day gap" scare was a *sync* gap into one published table,
+  not a data gap.
+- **Live derived tables on DB2**: `bandarmology_flow_daily` (per stock/day:
+  net_lot, net_val, concentration, consistency, cumulative_net_val) and
+  `bandarmology_broker_flow_daily` (per broker/stock/day, 90-day rolling,
+  ~607K rows) with a `pg_cron` job keeping it current.
+- **Consumed in production**: `concentration` drives V4's live position
+  sizing (`BANDAR_SIZING_ENABLED`, default-ON since 2026-08-15), and the
+  frontend ships a per-broker flow chart plus a Broker Summary table off
+  this data.
+- **`investor_type` was solved** — the note below says it stays unpopulated;
+  it is now populated and rendered (Local/Foreign/BUMN badges in Broker
+  Explorer).
+
+Original 2026-08-08 entry kept below for the source/endpoint research and
+the Indopremier findings, which are still accurate and still useful.
+
+### Original entry, 2026-08-08 (historical)
 
 Started 2026-08-08. User is prototyping an n8n pull of per-stock daily
 broker summary data (top buy/sell brokers, lot, value, avg price,
