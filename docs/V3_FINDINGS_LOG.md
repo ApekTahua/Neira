@@ -6829,3 +6829,228 @@ window` exactly as validated; runs in a few minutes against the existing
 cache, no fetch). Output: `.cache/exit_diagnostic_trades.csv` (380 trade-legs,
 10 windows). Left uncommitted for review, same pattern as this session's
 other entries.
+
+## 2026-09-01 (analysis only, no config change): how much track record is
+## enough? -- bootstrap says ~90 filled positions before a losing run becomes
+## <20% likely even if the edge is exactly as strong as the historical
+## average, ~180 for <10% -- roughly 6 months to 3 years of live trading at
+## V4_PAPER's currently observed fill rate, itself a very thin estimate.
+## Along the way: this project's own "win rate" (leg-level, ~50% everywhere
+## in this log so far) overstates how often a real trade decision worked --
+## per-position it's 31.4%, because a TP1 partial-sale is always counted as
+## a "win" leg even when the position it belongs to later reverses to a net
+## loss.
+
+**Trigger**: the two entries directly above establish that V4's profit is fat-tail
+dependent (TRAILING exits, 81.3% of gross positive PnL from 21% of legs) and that a
+30-trading-day / 13-leg holdout can't distinguish a real edge from a window that
+simply didn't get a tail. This project's own deployment-readiness criteria call
+live-track-record depth "the dominant gate -- can't be rushed" without a number
+attached. This is that number, plus a check on whether position sizing is putting
+more capital into losers than winners (a live-holdout observation from the same
+13-leg window that could be a real sizing effect or a small-n coincidence).
+Analysis only: `backtest_v4.py` untouched, no flag added, no parameter swept, no
+new simulation run -- everything below is arithmetic on the already-computed
+`.cache/exit_diagnostic_trades.csv` (380 legs, 10 windows) plus one read-only
+Supabase pull of `paper_positions` for `V4_PAPER`.
+
+### 0. Unit correction before anything else: legs are not independent trades
+
+The CSV's 380 rows are trade-*legs* -- a TP1 partial sale (10% of the position,
+`TP1_PCT=0.10`) and that same position's later full exit are two separate rows. A
+first pass bootstrapping directly on the 380 leg-level `pnl_pct` values gave a
+much rosier answer (20%-loss-probability floor at N=10, 10% at N=20) than the
+corrected version below (N=90 / N=180) -- a **9x difference driven entirely by
+counting convention**, not by any change in the underlying data. The reason: TP1
+legs are positive by construction (they only fire once price has already hit the
+target) and are pooled in that first pass as if they were independent trade
+opportunities, which manufactures "free" positive draws that don't correspond to
+a separate risk decision. Rolled up to one row per position (`window` +
+`stock_code` + `entry_date`, net PnL summed across that position's legs, capital
+summed across legs too so pyramid top-ups are counted) instead: **258 positions**,
+not 380 legs. All numbers below use the position-level rollup; this matches how
+`paper_positions` itself counts trades live (one row per position, not one row
+per exit event) and is a more honest answer to "how many trades" in the plain-
+English sense the question asks in.
+
+**Side finding, not asked for but material**: position-level win rate is
+**31.4%** (81/258), not the ~52.6% the leg-level convention has produced
+everywhere else in this log (including the holdout's own headline "53.8% win
+rate"). Mechanism, not a bug: positions that never hit TP1 (136 of 258, 52.7%)
+win only **1.5%** of the time -- a stop-loss, forced-END, or TIME exit with no
+partial profit ever taken essentially never turns into a net winner. Positions
+that do hit TP1 (122 of 258, pyramid-eligible per `PYRAMID_ENABLED`) win **64.8%**
+of the time. Blended: 31.4%. Consistent across windows, not one window's
+artifact -- position-level win rate lands in a 24%-37% band in 8 of the 9
+walk-forward windows (W3, the already-known catastrophic window, at 0%; W7 an
+outlier at 66.7% on n=12). **Read plainly: "V4 wins about half its trades" --
+the framing this whole log has used so far, inherited from the codebase's own
+`win_rate` calc -- is true only if a guaranteed-positive 10%-partial-sale counts
+as a full win on its own. Whether the actual buy decision made money by the time
+the position fully closed is closer to a 1-in-3 shot.** This does not contradict
+the profit-factor/net-profit numbers already reported anywhere in this log (those
+are Rupiah-PnL-based and unaffected by this framing), only the win-rate framing
+specifically -- worth carrying forward into how any future live-record win rate
+gets read, including V4_PAPER's own.
+
+### 1. Q1 -- N-trades-until-confidence, bootstrap on 258 positions
+
+Method: resample N per-position `pnl_pct` values with replacement from the
+empirical 258-position distribution (mean +1.83% per position, median **-4.67%**
+-- median negative despite positive mean is the same right-skew signature this
+log has already established at leg level, skew +3.10), sum them (additive,
+equal-weighted -- **not** compounded, **not** capital-weighted; explicit
+simplification, caveat below), 20,000 draws per N. This is Monte Carlo
+resampling of the actual empirical distribution, not a normal-distribution
+assumption -- the point is that the distribution is skewed and a normal
+approximation would misstate exactly the tail behavior this whole research
+thread is about.
+
+| N (positions) | p5 | p25 | median | p75 | p95 | **p(net loss)** |
+|---|---|---|---|---|---|---|
+| 25 | -95.7% | -24.8% | +36.3% | +106.5% | +223.5% | **34.9%** |
+| 50 | -115.6% | -6.2% | +82.1% | +179.7% | +335.8% | **26.7%** |
+| 100 | -119.7% | +46.5% | +174.0% | +312.3% | +521.8% | **17.6%** |
+| 200 | -69.5% | +173.3% | +355.7% | +544.1% | +831.3% | **8.7%** |
+| 400 | +107.2% | +458.8% | +718.7% | +987.3% | +1390.2% | **2.6%** |
+
+Fine grid (step 5-20) to find the exact crossing points: **first N with
+p(net loss) < 20% is N=90. First N with p(net loss) < 10% is N=180.** A
+compounding version of the same bootstrap (each position risking 1/6 of
+capital, approximating `MAX_POSITIONS=6`) gives a slightly more conservative
+but same-order-of-magnitude answer: 21.1% at N=100, 12.1% at N=200 -- the
+additive table above is the more optimistic of the two framings, not the more
+pessimistic one.
+
+**Grounding against the two samples this log already has**: at N=8 (the
+holdout's actual position count, not its 13-leg count), p(net loss) = **47.1%**
+even assuming the edge is exactly as strong as the 258-position historical
+average -- the holdout's real -4.55% result was close to a coin flip's worth of
+uncertainty on sample size alone, not a surprising outcome. At N=10 (V4_PAPER's
+current live fill count), p(net loss) is **45.0%**.
+
+### 2. N converted to calendar time
+
+Two rate estimates, both disclosed as thin, for different reasons:
+
+- **Backtest-implied rate**: 27.8 new positions per ~126-trading-day (6-month)
+  walk-forward window on average (range 12-54 across W1-W9) = **0.220
+  positions/trading day**. Cross-checked against the holdout window specifically
+  (same rules, same era): 8 positions / 30 trading days = 0.267/day, close to the
+  9-window average -- this is the better-supported estimate (1,134 trading days
+  of underlying history) but assumes market conditions and signal frequency stay
+  in the same range they've historically been in (they have varied 4.5x across
+  windows already).
+- **Live-observed rate**: pulled directly from `paper_positions` for
+  `run_id=36` (`version='V4_PAPER'`), all rows since 2026-08-12 go-live. **10
+  filled positions** (WMPP, BEEF, EKAD, ELTY, GIAA, HATM, PACK, FPNI, NICE, PICO
+  -- excludes PSAB, `UNFILLED_EXPIRED`, and PPGL, still `PENDING`) over **15
+  trading days** (2026-08-12 through 2026-09-01 inclusive, not adjusted for IDX
+  public holidays in that span) = **0.667 positions/trading day**, 3x the
+  backtest-implied rate. **This is a very thin estimate** -- 15 trading days, and
+  every one of the 5 days that filled anything filled exactly 2 (the per-day
+  entry cap), clustered rather than spread evenly. It is also likely to slow
+  down mechanically regardless of signal quality: the account is at 6 of 6
+  `MAX_POSITIONS` right now (5 OPEN + 1 PENDING), so no new fill can happen
+  until an existing position closes a slot.
+
+| N | backtest-rate calendar time | live-rate calendar time |
+|---|---|---|
+| 25 | ~5.4 months | ~1.8 months |
+| 50 | ~10.8 months | ~3.6 months |
+| **90 (20% floor)** | **~19.5 months (1.6y)** | **~6.4 months** |
+| 100 | ~21.7 months | ~7.1 months |
+| **180 (10% floor)** | **~39 months (3.2y)** | **~12.9 months (1.1y)** |
+| 200 | ~43.3 months | ~14.3 months |
+| 400 | ~86.6 months (7.2y) | ~28.6 months (2.4y) |
+
+**Read plainly, as the number this task asked for**: getting below a 20% chance
+of a misleading (losing) read takes somewhere between roughly **6 months and 1.6
+years** of live trading at V4_PAPER's current pace; below 10% takes somewhere
+between roughly **1.1 and 3.2 years**. The width of that range is itself the
+honest answer about how thin the live-rate estimate is -- 15 trading days is not
+enough to pin down a fill rate, only enough to bound it loosely against the much
+larger backtest sample.
+
+**The caveat, stated as prominently as the number**: this whole calculation
+assumes the 258-position historical distribution is stationary and that the edge
+it implies (mean +1.83%/position, or +4.42% capital-weighted) is real. If the
+true edge is zero or negative, running more trades does not fix that -- it
+reveals it, converging the observed win rate and profit factor toward whatever
+the true (possibly zero or negative) values are instead of toward the favorable
+historical ones. This section computes **how long until a result becomes
+readable**, not **how long until the strategy works**. Nothing here adds
+evidence for or against the edge being real; W3's already-documented 0% win-rate,
+PF-0.02 window is a live illustration that the historical distribution itself
+already contains a scenario indistinguishable from "no edge, "as one of its ten
+windows.
+
+### 3. Q2 -- did sizing put capital into the losers?
+
+**Leg-level (the CSV's raw grain, and the same grain the holdout entry's own
+Rp254K-vs-Rp1.06M numbers used) reproduces the concern as stated**: pooled
+across all 380 legs, avg capital in winning legs Rp9.89M vs losing legs
+Rp17.18M -- losers get 1.74x more capital. But this is the same TP1-counting
+artifact as section 0: TP1 legs are ~always winners (122 of 200 winning legs)
+and mechanically tiny (avg capital Rp1.4M, a 10%-partial sale) by design, which
+drags the "winner" average down independent of any actual sizing decision.
+Excluding TP1 legs (comparing only full-exit legs: SL/TRAILING/END/TIME) already
+flips the sign: losers get 0.74x the capital of winners, i.e. **winners get
+more**.
+
+**Position-level (net PnL and total capital summed per position, the correct
+grain) confirms the flip cleanly**: avg capital in winning positions
+**Rp24.51M**, losing positions **Rp17.43M** -- ratio 0.71x, **winners get ~40%
+more capital, not less**. This holds in 8 of the 9 walk-forward windows (ratio
+0.50-1.13, all at or below 1.0 except W4's 1.13): W1 0.60, W2 0.51, W4 1.13, W5
+0.50, W6 0.73, W7 0.68, W8 0.89, W9 0.52. **Mechanism, verified**: `n_legs==2`
+positions (hit TP1, `PYRAMID_ENABLED` adds ~20% at a new, higher average cost --
+confirmed directly by entry_price shifting upward between a position's two legs,
+e.g. BLES 194->209.5, DEWA 444->462.75, RGAS 214->226.4) carry avg capital
+Rp26.2M vs `n_legs==1` positions (never hit TP1, no top-up) at Rp13.8M. Capital
+tilts toward winners historically because pyramiding only ever adds to a
+position *after* it has already proven itself by hitting TP1 -- an already-known,
+already-disclosed design tradeoff (see the 2026-08-31 concentration-acceleration
+entry above), not a new bug.
+
+**The holdout is the one window that inverts this pattern**: ratio **1.85x**,
+losers getting nearly double the capital of winners, on only **8 positions**.
+Of those 8, 5 hit TP1 and were pyramid-eligible; only 2 (SMLE, SOCI) ended up net
+winners, while 3 (BLES, DEWA, RGAS) took the pyramid top-up after an initial TP1
+gain and then reversed into a net loss on the back leg large enough to erase it.
+That is pyramiding operating exactly as designed (add to strength) in a window
+that, per the entry directly above, had no real trend to ride -- the same "no fat
+tail this window" explanation already established, now visible in the sizing
+data too, not a separate or new failure mode. **Read plainly: the holdout's
+apparent capital-into-losers pattern is a small-sample (n=8 positions) outlier
+against an otherwise consistent 8-window history where capital skews toward
+winners, not a systematic sizing bug.** No correlation found between capital and
+raw entry price level (r=-0.01, checked and ruled out as a confound).
+
+### What would strengthen or kill this
+
+**Strengthens**: V4_PAPER's still-open positions (PACK, EKAD, ELTY, PICO, FPNI)
+resolving with a realistic mix of outcomes matching the 31.4% position-level win
+rate above (not the ~54% leg-level framing this log has used until now) would
+corroborate the corrected framing with real, live, out-of-sample data. A future
+quarter where the live fill rate is measured over 60+ trading days instead of 15
+would materially tighten the calendar-time range in section 2 -- right now that
+range is wide enough (6 months to 1.6 years for the same N) that it is not
+useful for a precise "check back on this date" commitment, only an order-of-
+magnitude one.
+
+**Kills / narrows**: if the position-level win rate on the next 50-100 live
+positions comes in well outside the 24-37% band 8 of 9 historical windows show,
+that would indicate either the live engine's fills/exits behave differently from
+the backtest (a real divergence worth investigating directly) or that current
+market conditions are genuinely unlike anything in the 2022-2026 training
+history (which the bootstrap's stationarity assumption cannot detect from
+inside the historical data alone).
+
+Code touched: none of the protected V1 files, `backtest_v4.py` unchanged (read-
+only). New, read-only/standalone: `src/scratch_v4_track_record_bootstrap.py`
+(reuses `.cache/exit_diagnostic_trades.csv`, no fetch, no simulation, runs in
+seconds) plus one ad hoc read-only Supabase query against `paper_positions` /
+`backtest_runs` for `V4_PAPER` (same tables `src/scratch_v4paper_live_record_
+pull.py` already reads, not a new pull script). Left uncommitted for review,
+same pattern as this session's other entries.
