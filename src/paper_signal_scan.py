@@ -609,10 +609,29 @@ def main():
     idx_today = idx_df[idx_df["trade_date"] == today]
     bench_close = float(idx_today.iloc[0]["close"]) if not idx_today.empty else None
 
-    all_trades = _retry(lambda: supabase.table("backtest_trades").select("pnl").eq("run_id", run_id).execute()).data
-    wins = sum(1 for t in all_trades if t["pnl"] > 0)
+    all_trades = _retry(lambda: supabase.table("backtest_trades")
+                        .select("pnl, stock_code, entry_date").eq("run_id", run_id).execute()).data
     total_trades = len(all_trades)
-    win_rate = 100 * wins / total_trades if total_trades else 0.0
+
+    # win_rate is counted per POSITION, not per exit leg. backtest_trades logs
+    # one row per leg, and a position that hits TP1 writes two (the 10% partial,
+    # then the real exit) sharing a (stock_code, entry_date). TP1 partials are
+    # positive by construction -- TP1 only fires when price reaches it -- so
+    # counting legs turns one trade into a guaranteed win plus its true outcome.
+    # Measured overstatement on published runs was 6.6-23.0 points, worst on V4
+    # (49.3% leg-level vs 26.3% true). This column and the Telegram line below
+    # both fed that inflated figure to the user daily until 2026-09-02.
+    # total_trades stays a LEG count deliberately: /backtest renders it beside a
+    # leg-per-row table, and /paper-trading pairs it with its own position count.
+    position_pnl: dict[tuple, float] = {}
+    for t in all_trades:
+        key = (t["stock_code"], t["entry_date"])
+        position_pnl[key] = position_pnl.get(key, 0.0) + t["pnl"]
+    total_positions = len(position_pnl)
+    wins = sum(1 for p in position_pnl.values() if p > 0)
+    win_rate = 100 * wins / total_positions if total_positions else 0.0
+
+    # Sums over legs, so leg-vs-position grain doesn't change these.
     gross_win = sum(t["pnl"] for t in all_trades if t["pnl"] > 0)
     gross_loss = -sum(t["pnl"] for t in all_trades if t["pnl"] < 0)
     profit_factor = (gross_win / gross_loss) if gross_loss > 0 else None
@@ -686,7 +705,7 @@ def main():
         "\U0001F4CA *Neira Paper Trading -- EOD*",
         f"\U0001F4C5 `{today}`",
         f"Equity: Rp{total_equity:,.0f} ({net_profit_pct:+.2f}%)",
-        f"Open positions: {len(still_open)} | Win rate: {win_rate:.1f}% ({total_trades} trades)",
+        f"Open positions: {len(still_open)} | Win rate: {win_rate:.1f}% ({wins}/{total_positions} positions closed)",
     ]
     # Real-capital readiness gate (docs/MASTERPLAN.md criterion A) -- surfaced
     # daily so it can't quietly go stale in the roadmap docs again (2026-08-26
