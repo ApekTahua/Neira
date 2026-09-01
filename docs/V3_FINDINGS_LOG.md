@@ -6578,3 +6578,254 @@ reuse, though re-running this script against the same window would not be a seco
 independent test -- the holdout is spent) and `src/scratch_v4paper_live_record_pull.py`
 (the live-record pull, seconds to run, plain Supabase reads). Left uncommitted for review,
 same pattern as this session's other entries.
+
+## 2026-09-01 (diagnostic, no config change): decomposing the holdout loss --
+## exit-reason breakdown across 380 trade-legs / 10 windows favours "no fat
+## tail this window" over "exits mistuned," but the holdout alone (n=13)
+## can't settle it on its own
+
+**Trigger**: the blind-holdout entry directly above (13 trades, 53.8% win rate,
+PF 0.28) flagged an unresolved question -- more than half the trades were right
+and the window still lost money, which could mean (A) TP1/trailing are cutting
+winners short while SL lets losers run, or (B) this strategy's edge is
+structurally carried by a small number of outsized winners and this window
+simply didn't get one. This is a diagnostic only: no new idea built, no flag
+added, no parameter swept, `backtest_v4.py` untouched.
+
+**Method**: reused `simulate_window()` exactly as already validated, against
+the exact same cached data the 2026-09-01 holdout entry already fetched
+(`.cache/walk_forward_data_2021-01-01_2026-08-11.pkl`, no new Supabase call),
+same frozen config (`V4_BANDAR_SIZING=1`, `V4_ATR_PRICE_RATIO_MAX=0.08`). The
+only thing new is capturing `df_trades` at trade-leg granularity for the
+existing 9-window walk-forward schedule (`walk_forward_v4.build_schedule`)
+plus the holdout window as a 10th entry, in one script
+(`src/scratch_v4_exit_diagnostic.py`), instead of only the summary metrics
+`walk_forward_v4.py` normally keeps. Deterministic re-run of already-reported
+results at finer granularity, not a second independent test of anything --
+confirmed byte-identical per-window metrics against the already-recorded
+9-window numbers and the holdout entry's own numbers. 380 trade-legs saved to
+`.cache/exit_diagnostic_trades.csv`. Note on units: all "trades" counts below
+are trade-legs (a TP1 partial sale and its position's later final exit are
+two separate rows, same as `total_trades` has always meant in this codebase's
+own `win_rate`/`profit_factor` calc) -- the concentration section below also
+gives the position/ticker-level view where that distinction matters.
+
+### 1. Win/loss size decomposition (mean vs median = the fat-tail tell)
+
+| slice | n legs | win rate | avg win % (Rp) | avg loss % (Rp) | mean pnl% | median pnl% | skew |
+|---|---|---|---|---|---|---|---|
+| All 10 windows pooled | 380 | 52.6% | +15.89% (Rp2,146,329) | -6.92% (Rp-1,139,823) | +5.09% | +3.74% | +2.97 |
+| 9 walk-forward windows only | 367 | -- | -- | -- | +5.16% | +3.72% | +2.95 |
+| **HOLDOUT only** | 13 | 53.8% | **+9.87% (Rp254,226)** | **-5.16% (Rp-1,055,586)** | **+2.94%** | **+4.98%** | **-0.08** |
+
+Historically, average win Rp is **1.88x** average loss Rp (Rp2.15M vs Rp1.14M)
+-- wins outsize losses in money terms even though this codebase's SL is
+percentage-tighter than TP1/trailing's typical realized gain. In the holdout,
+that ratio **inverts**: average loss Rp is **4.15x** average win Rp
+(Rp1.06M vs Rp254K) despite a similar win rate (53.8% vs 52.6% pooled). Mean
+pnl% sits *below* median in the holdout (the opposite of the pooled
+population, where mean sits 36% above median) and skew flips from a strongly
+positive +2.95/+2.97 (population) to essentially flat -0.08 (holdout) -- on
+its own, n=13 is too small to trust a skew estimate, but it's consistent with
+the win/loss-Rp inversion above, not contradicting it.
+
+### 2. Concentration -- top-1/3/5 positions (tickers), % of each window's own gross positive PnL
+
+| window | n positions | top-1 % | top-3 % | top-5 % |
+|---|---|---|---|---|
+| W1 (2022 H1) | 30 | 21.2% | 56.9% | 89.3% |
+| W2 (2022 H2) | 26 | 32.1% | 64.1% | 85.3% |
+| W3 (2023 H1) | 14 | n/a (net loss, no positive base) | n/a | n/a |
+| W4 (2023 H2) | 27 | 55.9% | 83.0% | 91.7% |
+| W5 (2024 H1) | 25 | 66.9% | 90.3% | 97.1% |
+| W6 (2024 H2) | 32 | 26.7% | 61.6% | 82.6% |
+| W7 (2025 H1) | 11 | 26.7% | 66.6% | 90.3% |
+| W8 (2025 H2) | 49 | 15.6% | 42.9% | 59.3% |
+| W9 (2026 H1) | 16 | 65.7% | 90.2% | 100.0% |
+| **HOLDOUT** | 8 | **63.0%** | **100.0%** | **100.0%** |
+
+Every window with a positive-PnL base (8 of the 9 walk-forward windows) draws
+59%-100% of its own profit from 5 of its positions -- the holdout's 100%
+top-5 share is not an outlier against this, it's the norm this strategy has
+always run on (W8, the best-performing window on every other metric, is the
+one *least* concentrated at 59.3% from 49 positions). This table alone is a
+plain restatement of the project's own already-documented finding (the
+`MAX_POSITIONS` scarce-slot investigation: "most of the return comes from a
+handful of outlier winners") applied window-by-window instead of in
+aggregate.
+
+### 3. Exit-reason breakdown (pooled, all 10 windows, 380 legs; CHECKPOINT: 0 legs fired in any window)
+
+| exit_reason | n | avg pnl% | median pnl% | avg pnl (Rp) | total pnl (Rp) | % of gross+ PnL | avg hold days |
+|---|---|---|---|---|---|---|---|
+| TRAILING | 81 | **+20.00%** | +12.63% | +Rp4,308,959 | +Rp349,025,699 | **81.3%** | 15.2d |
+| END (forced, window boundary) | 20 | +10.35% | +2.91% | +Rp2,335,623 | +Rp46,712,453 | 10.9% | 23.2d |
+| TP1 (10% partial, `TP1_PCT=0.10`) | 122 | +10.68% | +9.76% | +Rp144,256 | +Rp17,599,259 | 4.1% | 5.6d |
+| TIME | 4 | -6.09% | -7.11% | -Rp302,478 | -Rp1,209,913 | 0% | 19.0d |
+| SL | 153 | -7.66% | -7.49% | -Rp1,228,953 | -Rp188,029,828 | 0% | 5.7d |
+
+TRAILING is the single best-performing exit type by every measure (highest
+avg/median %, highest avg Rp, 81% of all gross positive PnL from just 21% of
+legs) -- the opposite of a "cuts winners short" signature. TP1's average Rp
+gain is mechanically small (Rp144K vs TRAILING's Rp4.3M) because it only ever
+sells `TP1_PCT=0.10` of the position by design -- the other 90% stays open
+specifically to be captured later, and the TRAILING row shows that it
+generally is.
+
+**HOLDOUT only** (13 legs):
+
+| exit_reason | n | avg pnl% | avg pnl (Rp) | total pnl (Rp) | avg hold days |
+|---|---|---|---|---|---|
+| TP1 | 5 | **+11.52%** (vs pooled +10.68%) | +Rp124,460 | +Rp622,302 | 4.4d |
+| END | 4 | +1.36% | +Rp81,704 | +Rp326,818 | 6.25d |
+| TRAILING | 1 | **-3.72%** (vs pooled +20.00%) | -Rp1,177,941 | -Rp1,177,941 | 9.0d |
+| SL | 3 | **-7.06%** (vs pooled -7.66%) | -Rp1,441,703 | -Rp4,325,110 | 3.0d |
+
+SL and TP1 both land within ~1pp of their historical averages -- neither looks
+mistuned this window. The one exit type that's abnormal is TRAILING: only 1
+leg fired (pooled per-window range is 2-19; every other window had at least 5
+except W3), and it was a rare loss instead of the typically large gain.
+
+### 4. Money left on the table -- max favourable excursion (MFE) after TP1/TRAILING exits
+
+Pooled (n=201/203 legs with forward price data in `df`, the same in-memory
+frame `simulate_window()` itself uses, sourced from `ihsg_eod`; 2 excluded --
+both exited on the holdout's last trading day, no forward data exists yet):
+
+| exit_reason | n | realized pnl% at exit | fwd 10d high, mean/median (% of exit price) | fwd 20d high, mean/median | % with any further upside (10d) |
+|---|---|---|---|---|---|
+| TP1 | 122 | +10.68% | +21.33% / +14.71% | +30.47% / +18.42% | 94.3% |
+| TRAILING | 81 | +20.00% | +15.79% / +9.18% | +24.32% / +12.23% | 92.6% |
+
+TP1 legs do show large further upside after the exit -- but that's the
+intended design: only 10% was sold, and the population-level TRAILING row
+above shows the other 90% generally *does* capture much of that continuation.
+TRAILING legs (a full exit of the remaining position) show forward
+upside *smaller* than what's already been realized (median +9.18% further vs
++20.00% already banked) -- if trailing were routinely cutting winners short,
+this would show the reverse (large further upside missed), not a moderate
+additional move roughly half the size of the gain already captured.
+
+**HOLDOUT TP1/TRAILING legs individually** (6 legs; RGAS-TRAILING and
+BLES-TP1 both exited on 2026-08-11, the window's last day -- no forward data):
+
+| ticker | exit_date | reason | realized pnl% | fwd 10d MFE | fwd 20d MFE |
+|---|---|---|---|---|---|
+| RGAS | 2026-07-31 | TP1 | +8.41% | -6.03% | -6.03% |
+| DEWA | 2026-08-06 | TP1 | +9.91% | +1.64% | +1.64% |
+| SOCI | 2026-08-06 | TP1 | +15.38% | +0.98% | +0.98% |
+| SMLE | 2026-08-07 | TP1 | +12.58% | -2.79% | -2.79% |
+
+3 of 4 measurable holdout TP1 legs show flat-to-negative continuation, not
+money left behind. RGAS is the clearest single case against hypothesis A:
+TP1 banked +8.41% right before the stock reversed, and the remaining 90% of
+the position wasn't cut short by an over-tight trailing stop -- it caught a
+real reversal (price kept falling) and the eventual TRAILING exit on
+2026-08-11 still closed at only a small loss (-3.72%), not a large one.
+
+### 5. Cross-window corroboration (new arithmetic on the same 380-leg dataset, no new simulation)
+
+Per-window profit factor correlates with that window's average TRAILING-exit
+return (Spearman rho=0.70, p=0.025, n=10) but not with how many TRAILING
+legs fired that window (rho=0.41, p=0.24, n=10) -- it's the quality of the
+trailing exits, not merely their count, that tracks window profitability.
+The two worst-PF windows in the full 10-window record -- W3 (2023 H1, PF
+0.02) and HOLDOUT (PF 0.28) -- are also the only two windows where average
+TRAILING-exit return was negative (-2.82% on 2 legs, and -3.72% on 1 leg,
+respectively), while every other window's TRAILING legs averaged +8% to
++47%. In both bad windows, SL and TP1 behaved close to their normal
+historical range (W3: SL -7.90% vs pooled -7.66%, TP1 +10.25% vs pooled
++10.68%; HOLDOUT: SL -7.06%, TP1 +11.52%, both within ~1pp of pooled) -- what
+differs both times is specifically whether a real trend materialized for the
+trailing stop to ride, not whether SL/TP1 widths behaved abnormally. n=10 is
+a small sample for this correlation and it should be read as suggestive, not
+a settled statistical result on its own.
+
+### Is the holdout an outlier against the historical distribution, or typical?
+
+Mixed, metric by metric. Win rate (53.8%) sits almost exactly on the 9-window
+mean (~50.4%, range 17.6%-81.0%) -- typical, not an outlier. Profit factor
+(0.28) is in the bottom quartile but not the single worst -- W3's 0.02 is
+worse. Net profit (-4.55%) is nowhere near the worst -- W3's -14.46% is much
+worse. Alpha (-14.61%) is the one metric where the holdout sets a new low
+across all 10 windows -- W3's -11.70% was the previous worst, and the other
+8 windows were all positive (range +1.65% to +107.62%); this is more likely a
+benchmark-relative effect of a strongly-rallying, low-choppiness market (a
+gated, staged-entry strategy structurally under-participating in a fast
+one-directional rally) than an exit-mechanism problem specifically -- flagged
+as a footnote in the entry above, not re-escalated here, out of this task's
+scope. On the exit-mechanism question this task was built to answer, the
+holdout's specific signature (SL/TP1 normal, TRAILING absent-or-negative)
+is not a new pattern -- it's a repeat of W3's signature, the only other
+window that shares it.
+
+### Read: hypothesis A vs B
+
+**Evidence favours B (fat-tail dependent, this window had no tail) over A
+(exits mistuned), and does so with reasonable strength given the amount of
+data behind it (10 windows, 380 legs) -- though the holdout piece alone
+(n=13) still can't settle it standalone.**
+
+Supporting B, not A:
+- TRAILING is the best-performing exit type in the historical record by
+  every measure (avg/median %, avg Rp, share of gross profit) -- the
+  opposite of what "winners cut short" would produce.
+- The MFE check shows TRAILING exits leave comparatively little further
+  value on the table on average (median +9.18% further vs +20.00% already
+  banked); TP1's larger apparent "left on the table" number is explained by
+  its 10%-partial-sale design, and the other 90% of the position is exactly
+  what captures that continuation, as the TRAILING row's own numbers show.
+- In the holdout, SL and TP1 -- the two exit types A's mechanism most
+  directly implicates -- both land within ~1pp of their all-time averages.
+  Nothing about their behavior this window looks mistuned.
+- The one genuinely abnormal thing in the holdout (a single, losing
+  TRAILING exit instead of the typical several-and-large) is not unique to
+  this window -- it's the same signature the worst walk-forward window (W3)
+  already has, and a 10-window correlation check (new arithmetic on existing
+  data, not a new simulation) finds that signature tracks window profit
+  factor at p=0.025.
+- The population's return distribution is persistently, strongly
+  right-skewed (skew +2.95/+2.97, mean 36% above median, max leg return
+  +140%); the holdout's own 13-trade sample shows the opposite shape (mean
+  below median, ~flat skew) -- consistent with simply not containing one of
+  the outsized winners the strategy's edge structurally depends on.
+
+What this doesn't rule out: a milder version of A -- e.g., trailing
+distance or SL width being a few points wider or tighter than optimal in a
+way too small to show up as a "cuts winners short" pattern in this MFE
+check. That's a parameter-sensitivity question (a sweep), out of scope for
+this diagnostic by design.
+
+**What would follow from B, without building it**: if the edge is really
+carried by a handful of large TRAILING-exit winners per window (5-19 per
+6-month window historically, and only 1 or 2 in the two worst windows), a
+live track record needs enough elapsed time/trades for at least one such
+episode to plausibly occur before any win-rate/profit-factor read is
+interpretable at all -- a 30-trading-day, 13-trade window may simply be
+shorter than this strategy's natural sample-size floor. That materially
+affects how much live time V4_PAPER needs before its results mean anything,
+independent of whether the exit rule itself is ever touched. **What would
+sharpen this further**: (a) redo the cross-window correlation on more,
+smaller (e.g. quarterly) slices for a less noisy read on whether "no good
+trailing exit this window" really predicts "bad window" as cleanly as n=10
+suggests; (b) watch how V4_PAPER's still-open live positions (PACK, EKAD,
+ELTY, PICO, FPNI as of the entry above) actually resolve -- if none of them
+ever produce a real TRAILING win either, that would be a second, independent
+(live, not backtest) data point for B; a single one that does would already
+meaningfully complicate a "this window just has no tail" reading of the live
+account specifically. Live corroboration pulled this session (same query as
+`src/scratch_v4paper_live_record_pull.py`, not a new pull methodology): of
+V4_PAPER's 5 closed trades so far, the only TRAILING exit (BEEF, -1.72%) is
+also a loss, not the outsized winner the exit-reason table above says
+TRAILING typically produces -- directionally consistent with B, but this
+overlaps the same real 2026 H2 stretch the backtest holdout already covers,
+so it is not treated as a fully independent third data point (same caveat
+the entry above already gives its own live-record comparison).
+
+Code touched: none of the protected V1 files, `backtest_v4.py` unchanged.
+New, read-only/standalone: `src/scratch_v4_exit_diagnostic.py` (reuses
+`walk_forward_v4.load_dataset`/`build_schedule` and `backtest_v4.simulate_
+window` exactly as validated; runs in a few minutes against the existing
+cache, no fetch). Output: `.cache/exit_diagnostic_trades.csv` (380 trade-legs,
+10 windows). Left uncommitted for review, same pattern as this session's
+other entries.
