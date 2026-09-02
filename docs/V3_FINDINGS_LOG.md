@@ -7166,3 +7166,190 @@ observations across 7 usable dates -- it is a warning, not a verdict.
 Code touched: none of the protected V1 files; `backtest_v4.py` unchanged. New:
 `sql/signal_performance_view.sql` (applied to DB1) and `_signal_scorecard` in
 `src/paper_signal_scan.py`. No trading logic, sizing, or exit rule was modified.
+
+---
+
+## "It always buys the top": measured, tested, and the obvious fix rejected (2026-09-02)
+
+**The complaint, and why it deserved a test.** The user pointed at EMAS: UT Bot
+(the indicator he actually trades with) went long at 6,100 on 23 Jul and gave a
+sell at 8,800 on 1 Sep, +44.3%. Neira first named EMAS on 21 Aug at 7,900 --
+21 sessions later and 30% higher -- and then ranked it *better* as it got more
+extended: #15 at 7,900 rising to #3 at 9,600, one session before it fell 8.3%.
+
+### 1. The observation is real
+
+`src/scratch_signal_lateness.py` ran UT Bot (key=1.0, ATR 10, the stock default)
+across all 180 published signals and their price history:
+
+| Where Neira arrives | |
+|---|---|
+| Already in an uptrend by UT Bot's reckoning | 123/180 (68%) |
+| Sessions since the trend flipped up | median 7, mean 9.4, max 36 |
+| Move already banked before Neira names it | median +14.0%, mean +25.9%, max +197.5% |
+| Distance above MA20 | median +13.9% |
+| Position in 60-session range (100 = at the high) | median 88 |
+| Named while in the top fifth of their 60-day range | 128/180 (71%) |
+
+Not one stock: a second clean case is BEEF, where UT Bot bought at 160 on 1 Jul
+and Neira first named it at 414 on 12 Aug -- 159% higher.
+
+### 2. But "too extended" does not predict worse outcomes
+
+Median-split on the published signals gave two families of measure that
+*disagree*: trend age (sessions since flip, run banked) predicted BETTER forward
+returns, while distance above a moving average predicted worse ones at 5-10
+sessions. Both splits are ~50 observations a side over 12 days of one bullish
+stretch -- not enough to act on, which is why the flag below was built and
+swept rather than shipped off the diagnostic.
+
+### 3. The extension gate: 9 thresholds, 0 pass -- REJECTED
+
+`V4_EXTENSION_GATE` drops any candidate more than X% above its own moving
+average (ma20 or ma50, `EXTENSION_GATE_MA`). Thresholds were picked off the
+qualifying pool's own distribution measured beforehand (above ma50 the pool's
+median is +11.2%, p70 +20.7%, p80 +30.1%, p90 +50.8%; above ma20 +4.6% / +9.7%
+/ +14.6% / +25.5%), so every cell actually binds.
+
+| cell | beat bench | win% | profit | alpha | alpha med | PF | worst DD | trades |
+|---|---|---|---|---|---|---|---|---|
+| baseline   | 6/9 | 50.1 | 21.64 | **22.50** | 18.03 | 1.82 | **-22.41** | 396 |
+| ma20>0.05  | 5/9 | 47.3 | 16.69 | 17.56 | 1.55 | 2.05 | -18.79 | 302 |
+| ma20>0.10  | 4/9 | 51.0 | 13.88 | 14.74 | -5.16 | 1.81 | -15.98 | 321 |
+| ma20>0.15  | 5/9 | 53.5 | 18.39 | 19.25 | 12.42 | 2.30 | -21.39 | 325 |
+| ma20>0.25  | 5/9 | 52.8 | 21.55 | 22.41 | 14.67 | 4.07 | -26.32 | 368 |
+| ma50>0.10  | 5/9 | 47.7 | 19.32 | 20.19 | 8.46 | 2.48 | -17.86 | 305 |
+| ma50>0.15  | 4/9 | 47.6 | 10.74 | 11.60 | -0.39 | 1.37 | -13.84 | 321 |
+| ma50>0.20  | 4/9 | 49.8 | 16.00 | 16.86 | -0.47 | 1.77 | -18.25 | 331 |
+| ma50>0.30  | 6/9 | 47.6 | 16.41 | 17.27 | 10.15 | 1.88 | -18.02 | 329 |
+| ma50>0.50  | 4/9 | 50.9 | 4.95 | 5.82 | -3.28 | 1.35 | -25.47 | 347 |
+
+**Every single threshold loses mean alpha** (best: ma20>0.25 at -0.09, and that
+one's worst drawdown is 3.91 points *worse*). The consistent shape is a trade of
+alpha for drawdown: tighter gate, shallower drawdown, less profit. 0 of 9 clear
+the adoption bar (mean alpha AND worst drawdown both improve). Notably ma50>0.50
+-- the loosest gate, cutting only the most extreme 10% -- costs the MOST alpha
+(-16.69), which says the furthest-extended names are where the fat-tail winners
+actually live.
+
+**Verdict: rejected.** The flag stays in the code, defaulted off, documented, so
+the next person does not re-run this. Filtering out extended candidates makes the
+strategy smaller, not smarter.
+
+### 4. The exits are not the bottleneck either -- and this corrects a prior assumption
+
+Before assuming the entry needed replacing, `src/scratch_can_we_hold_a_multibagger.py`
+checked whether Neira's own exit rules could even hold a big winner, using the
+exact live logic (SL 1.5xATR, TP1 1.5xATR selling 10%, 8% trailing off the peak
+close, 20-day cap with its in-profit-and-bullish escape hatch):
+
+| ticker | entry | exit | held | got | peak seen |
+|---|---|---|---|---|---|
+| LUCY | 194 (early breakout) | TRAILING | 23 | **+521%** | +588% |
+| FPNI | 192 | TRAILING | 19 | +335% | +382% |
+| BEEF | 160 | TRAILING | 39 | +176% | +211% |
+| EMAS | 6,100 | TRAILING | 26 | +44.3% | +59% |
+| LUCY | 93 (the actual bottom) | TRAILING | 7 | **+31%** | +59% |
+
+An 8% trailing stop rode a 6-bagger. The 20-day cap never fired on a winner.
+**So the exit machinery was wrongly suspected; the entry is the whole problem.**
+
+The last row is the most useful one: buying the *actual bottom* returned +31%
+and then missed the 27x, because a base is choppy and an 8% trail gets hit.
+Buying the *early breakout* returned +521%. Under our own exit rules the bottom
+is a worse entry than the breakout -- so "build a bottom-fishing system" is the
+wrong project. "Fire the existing breakout entry earlier" is the right one.
+
+Caveat that must travel with that table: those five were selected *because* they
+were big winners. It shows the exits CAN hold a winner; it says nothing about
+whether the strategy makes money. The measured 26.3% position-level win rate
+still stands.
+
+### 5. Why LUCY was never named, and what it reveals
+
+LUCY ran 91 -> 2,510 -> 204 -> 490 and has **never** appeared in
+`daily_qualifying_signals`. It is not a liquidity failure at the time of asking
+(Rp20.5bn/day on 1 Sep, well over the Rp1bn floor). On the scoreboard it sits at
+label WATCH, percentile 5.3, with **weekly_ma_spread -10.30** -- price still
+below its own 10-week average, because that average still carries the pre-crash
+prices. The entry rule requires the weekly trend to be in the top quintile of
+*positive*, so a stock recovering from a crash cannot qualify for months.
+
+Same root cause as EMAS, opposite symptom: the rule only fires on established
+uptrends, so it arrives late in one (EMAS) and never at all in a recovery (LUCY).
+
+Liquidity is a real but partial constraint. Of UT Bot's 10 best trades this year,
+**6 were liquid at entry** (INET Rp143bn/day, EMAS Rp99bn, KETR Rp15bn, APEX
+Rp12.8bn, ELTY Rp9bn, BEEF Rp2.75bn) and 4 were not (SMLE 0.50, TAMA 0.31, FPNI
+0.21, LUCY 0.10). Most of the big winners were reachable at size and were missed
+on the entry rule, not the liquidity floor.
+
+### 6. UT Bot is not accurate, and that matters for what we copy
+
+`src/scratch_utbot_baserate.py` ran the same indicator over all 51 tickers Neira
+has ever named, a full year, exit on its own sell flip: **571 closed trades, 42.4%
+win rate, median trade -1.92%, mean +4.13%, profit factor 1.96, avg win +19.85%
+vs avg loss -7.43%.** It is wrong more often than it is right. What makes it work
+is the payoff ratio, not accuracy -- the same fat-tail structure this log has
+been finding in V4 from the other direction. The EMAS +44% is one good ride out
+of a year of mostly small losses, and should not be read as "the indicator knows
+where the discount is." It does not; it is a trailing stop that enters on a
+breakout.
+
+### 7. Firing earlier was tested too, and is also REJECTED
+
+`weekly_ma_spread` is built with `resample("W-FRI")` and merged backward, so it
+refreshes on Friday and is reused Monday-Thursday. Measured on the cached
+dataset rather than inferred from the merge: **87.4% of value changes land on
+Friday, 0.0% on Thursday.** That is 1-4 sessions (mean 2.0) of already-available
+price data being ignored on every non-Friday signal -- an obvious candidate for
+the lateness, and removing it is not lookahead (week-to-date closes have all
+already happened).
+
+`src/test_weekly_lag.py` recomputes the column in memory (no refetch, cache
+untouched) and runs the same 9 windows. The two versions correlate 0.9302 and
+37.8% of rows move by more than 2 points, so the change is material:
+
+| Metric | current (Friday-stale) | week-to-date |
+|---|---|---|
+| Windows beating benchmark | **6/9** | 5/9 |
+| Win rate (mean) | **50.1%** | 47.1% |
+| Profit (mean / median) | **+21.64% / +5.46%** | +9.18% / -1.68% |
+| Alpha (mean / median) | **+22.50% / +18.03%** | +10.04% / +1.36% |
+| Profit factor (mean / median) | **1.82 / 1.19** | 1.38 / 0.92 |
+| Max drawdown (mean / worst) | **-15.46% / -22.41%** | -17.81% / -27.02% |
+
+**Every metric is worse, alpha roughly halved.** This is a fair test, not a
+mis-thresholded one: `simulate_window` re-derives `weekly_cut` from each
+window's own training data, so the quantile adapted to the new distribution.
+
+**The lag is load-bearing.** Waiting for the week to close is doing real work --
+it filters intra-week noise that would otherwise become entries. Entering
+earlier through this route buys more false starts than early trends.
+
+That reframes the whole complaint. The lateness measured in section 1 is not a
+defect to be tuned away; it is the confirmation delay that makes the rule
+profitable at all. Two independent attempts to act on "it buys too late / too
+high" -- filter out the extended ones, and fire earlier -- both made the
+strategy worse.
+
+### What would strengthen or kill this
+
+**Strengthens**: the remaining untested route is a genuinely *different* entry
+running alongside the current one, rather than a modification of it -- something
+that fires on a recovery or an early breakout with its own confirmation, judged
+on the same 9-window bar. Section 4's LUCY rows argue that such a rule should
+target the early breakout, not the bottom: at the actual low the 8% trail gets
+whipsawed out for +31%, while the early-breakout entry held for +521%.
+
+**Kills / narrows**: if a separate early-entry rule also fails the walk-forward,
+the honest conclusion is that this strategy is structurally a mid-trend follower
+-- it arrives 7 sessions and ~14% into a move because that is when its evidence
+becomes reliable -- and the way to raise returns is position sizing and capital,
+not an earlier entry. Two rejections already point that way.
+
+Code touched: none of the protected V1 files. New: `V4_EXTENSION_GATE` in
+`backtest_v4.py` (defaulted OFF, rejected), `src/sweep_extension_gate.py`,
+`src/scratch_utbot_emas.py`, `src/scratch_utbot_baserate.py`,
+`src/scratch_signal_lateness.py`, `src/scratch_can_we_hold_a_multibagger.py`,
+`src/test_weekly_lag.py`. No live config, sizing, or exit rule was modified.

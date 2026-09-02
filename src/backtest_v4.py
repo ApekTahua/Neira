@@ -1207,6 +1207,31 @@ SLIPPAGE_IMPACT_BPS = float(os.environ.get("V4_SLIPPAGE_IMPACT_BPS", "16"))  # b
 BACKTEST_VERSION = os.environ.get("BACKTEST_VERSION", "v3-dev")
 BACKTEST_PUBLISH = os.environ.get("BACKTEST_PUBLISH", "false").lower() == "true"
 DELISTING_GAP_DAYS = 10  # consecutive no-data trading days -> force-exit at last known price
+# Candidate attempt: refuse to name a stock that has already run too far above
+# its own moving average -- the "kenapa lu suka banget beli saham yg udah mau
+# peak" complaint, made testable.
+#
+# The diagnostic that motivated it (src/scratch_signal_lateness.py, 2026-09-02,
+# over all 180 published signals): Neira names stocks sitting at a median 88th
+# percentile of their own 60-session range, a median +13.9% above MA20, with a
+# median +14.0% of the move already banked since a plain UT Bot trend flip. 71%
+# are named while in the top fifth of their 60-day range. That part is not in
+# question -- it is measured.
+#
+# What IS in question is whether it costs anything. On the published signals the
+# two families of measure disagree: being far along a TREND (sessions since flip,
+# run banked) predicted BETTER forward returns, while being far above one's own
+# MOVING AVERAGE predicted worse ones at 5-10 sessions. Both splits are ~50
+# observations a side over 12 days of one bullish stretch, which is not enough to
+# act on. Hence this flag and a real 9-window walk-forward rather than a rule
+# shipped off the diagnostic.
+#
+# Deliberately gates on distance above a moving average, NOT on trend age: the
+# diagnostic says trend age is, if anything, a positive. Uses ma20/ma50 already
+# computed by strategy.py's add_features -- no new feature, no new fetch.
+EXTENSION_GATE_ENABLED = os.environ.get("V4_EXTENSION_GATE", "0") == "1"
+EXTENSION_GATE_MA = os.environ.get("V4_EXTENSION_GATE_MA", "ma50")
+EXTENSION_GATE_MAX = float(os.environ.get("V4_EXTENSION_GATE_MAX", "0.30"))
 ATR_PRICE_RATIO_MAX = float(os.environ.get("V4_ATR_PRICE_RATIO_MAX", "0.10"))
                             # exclude entries where ATR_14/close > this -- PIPA/FUTR/ISAP-style
                             # hyperactive penny stocks slip through the Rupiah-value ADTV filter
@@ -1916,6 +1941,16 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
         & day_slice["avg_vol_20"].notna()
         & ((day_slice["atr_14"] / day_slice["close_price"]) <= ATR_PRICE_RATIO_MAX)
     ].copy()
+    # Extension gate -- see EXTENSION_GATE_ENABLED above. Applied after the
+    # liquidity/trend filters and before scoring, so it removes candidates
+    # rather than reordering them: a stock too stretched to buy should not be
+    # buyable at rank 15 either. Rows with no moving average yet (a stock with
+    # under 50 sessions of history) are kept, because "not enough data" is not
+    # evidence of being extended -- ADTV_MIN already excludes most of them.
+    if EXTENSION_GATE_ENABLED and not candidates.empty:
+        ma = candidates[EXTENSION_GATE_MA]
+        stretch = candidates["close_price"] / ma - 1
+        candidates = candidates[~(ma.notna() & (stretch > EXTENSION_GATE_MAX))]
     if ARA_FILTER_ENABLED and not candidates.empty:
         observed = (
             candidates["observed_max_move"] if "observed_max_move" in candidates.columns
