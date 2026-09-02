@@ -61,6 +61,29 @@ if os.environ.get("V4_TRAILING_PCT"):
 # coincidence (2026-08-22 audit finding: newscraper.ai's frontend estimate mirrored
 # the same coincidence, reusing TP1_MULT for its SL estimate too). Named here so a
 # future TP1_MULT sweep can't silently drag SL along with it.
+# Candidate: stop SELLING at TP1, keep TP1 as the gate.
+#
+# The user's own critique of the exit machinery: "Orang tuh kalau beli saham
+# simple, beli, pasang SL, TP, udah... lu tuh ada trailing2, ada TP1 lagi."
+# TP1 currently does three separate jobs at once -- it sells 10% of the
+# position, raises the stop to breakeven, and unlocks both the trailing stop
+# and pyramiding. Only the first of those is a trade.
+#
+# Two reasons to suspect the sale specifically, both already measured in
+# docs/V3_FINDINGS_LOG.md: TRAILING exits carry 81.3% of gross positive PnL
+# while TP1 contributes ~Rp144K per leg, and every TP1 leg is positive by
+# construction, which is what inflated the project-wide win rate from a true
+# 26.3% to a reported 49.3%. Selling 10% at a fixed 1.5xATR caps the very
+# trades the strategy depends on.
+#
+# Unlike the nine rejected ideas before it, this is a REMOVAL. Different prior:
+# every addition has failed, so the question worth asking is what the machinery
+# is already costing.
+#
+# OFF (0) keeps TP1's bookkeeping -- tp1_hit, stop to breakeven, trailing and
+# pyramid unlocked -- and sells nothing.
+TP1_PARTIAL_SELL_ENABLED = os.environ.get("V4_TP1_PARTIAL_SELL", "1") == "1"
+
 SL_MULT = float(os.environ.get("V4_SL_MULT", "1.5"))
 # RESEARCH CANDIDATE (2026-08-30, real-trader critique), UNVALIDATED -- SL_MULT above is a
 # single FLAT ATR multiplier applied to every candidate regardless of signal quality. Same
@@ -2327,7 +2350,8 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
             sell_lots = pos["remaining_lots"]
         elif hold_ok and high_price >= pos["tp1_price"]:
             exit_reason, exit_price = "TP1", (o if (o is not None and o > pos["tp1_price"]) else pos["tp1_price"])
-            sell_lots = max(1, int(pos["remaining_lots"] * cfg.TP1_PCT))
+            sell_lots = (max(1, int(pos["remaining_lots"] * cfg.TP1_PCT))
+                         if TP1_PARTIAL_SELL_ENABLED else 0)
         elif pos["checkpoint_day"] is not None and pos["hold_days"] == pos["checkpoint_day"]:
             dist_to_target = pos["target_price"] - pos["avg_price"]
             progress = (close_price - pos["avg_price"]) / dist_to_target if dist_to_target > 0 else 1.0
@@ -2383,7 +2407,7 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
                 sell_lots = pos["remaining_lots"]
 
     trade_record = None
-    if exit_reason is not None and sell_lots > 0:
+    if exit_reason is not None and (sell_lots > 0 or exit_reason == "TP1"):
         sell_qty = sell_lots * LOT_SIZE
         sell_cost_basis = pos["cost_basis"] * (sell_lots / pos["total_lots"])
         sell_participation = sell_qty / max(pos.get("avg_vol_20", 1.0), 1.0)
@@ -2394,12 +2418,13 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
         pnl_pct = (exit_price / pos["avg_price"] - 1) * 100
         cash_delta += net_return
         pos["remaining_lots"] -= sell_lots
-        trade_record = {
-            "stock_code": pos["stock_code"], "entry_date": pos["entry_date"], "exit_date": trade_date,
-            "entry_price": pos["avg_price"], "exit_price": exit_price, "quantity": sell_qty, "lots": sell_lots,
-            "pnl": pnl, "pnl_pct": pnl_pct, "exit_reason": exit_reason, "trigger": pos["trigger"],
-            "hold_days": pos["hold_days"],
-        }
+        if sell_lots > 0:
+            trade_record = {
+                "stock_code": pos["stock_code"], "entry_date": pos["entry_date"], "exit_date": trade_date,
+                "entry_price": pos["avg_price"], "exit_price": exit_price, "quantity": sell_qty, "lots": sell_lots,
+                "pnl": pnl, "pnl_pct": pnl_pct, "exit_reason": exit_reason, "trigger": pos["trigger"],
+                "hold_days": pos["hold_days"],
+            }
         if exit_reason == "TP1":
             pos["tp1_hit"] = True
             pos["sl_price"] = pos["avg_price"]  # protects the ORIGINAL cost basis, set before any pyramid blend below

@@ -7353,3 +7353,100 @@ Code touched: none of the protected V1 files. New: `V4_EXTENSION_GATE` in
 `src/scratch_utbot_emas.py`, `src/scratch_utbot_baserate.py`,
 `src/scratch_signal_lateness.py`, `src/scratch_can_we_hold_a_multibagger.py`,
 `src/test_weekly_lag.py`. No live config, sizing, or exit rule was modified.
+
+---
+
+## Two more rejections, and what ten of them start to mean (2026-09-02, later)
+
+### 8. A separate early-breakout entry, judged on trade quality -- REJECTED
+
+The two earlier rejections both modified the existing entry and were judged on
+9-window portfolio alpha. That metric is structurally unkind to what the user is
+proposing (trade rarely, sit in cash, win big), so this test changed both: a
+genuinely separate entry rule, judged per trade.
+
+`src/test_early_breakout_entry.py`. Entry is the only thing that differs -- a UT
+Bot flip to long (the trigger that bought EMAS at 6,100 and BEEF at 160) versus
+the live weekly/sector rule. Exits, liquidity floor, ATR ceiling and regime gate
+are identical on both sides, replayed bar by bar with the live exit logic. 975
+tickers, 2022-01-01..2026-06-30.
+
+| | Neira (current entry) | Early (UT Bot flip) |
+|---|---|---|
+| trades | 5,123 | 7,175 |
+| win rate | **31.0%** | 25.8% |
+| mean | **+1.26%** | +0.47% |
+| median | -3.79% | -3.72% |
+| avg win | **+18.64%** | +17.83% |
+| avg loss | -6.54% | -5.57% |
+| profit factor | **1.28** | 1.11 |
+
+When both fire on the same setup (3,063 pairs), Early is **9 sessions earlier at
+a price 3.6% lower** -- and still worse on every quality measure. Fees are
+modelled on neither side; at ~0.4% round trip Early's +0.47% mean becomes ~+0.07%,
+essentially breakeven.
+
+The result also contradicts the "fewer, better trades" premise directly: entering
+earlier produced **more** trades (7,175 vs 5,123), not fewer. Not "rare and good"
+-- "more often and worse". Same explanation as section 7: the 3.6% cheaper price
+does not pay for the false starts that come with it.
+
+**Three independent tests now say the same thing: the delay is the edge.**
+
+### 9. Removing TP1's partial sale -- REJECTED, but only just
+
+`V4_TP1_PARTIAL_SELL=0` (new flag, default 1 = current behaviour) keeps every
+piece of TP1's bookkeeping -- breakeven stop, trailing unlock, pyramid unlock --
+and sells nothing. A REMOVAL, unlike the nine additions before it.
+
+| Metric | current | TP1 sells nothing |
+|---|---|---|
+| Windows beating benchmark | 6/9 | 6/9 |
+| Win rate (mean / median) | 50.1% / 50.0% | 28.9% / 26.9% |
+| Profit (mean / median) | +21.64% / +5.46% | +19.68% / +5.32% |
+| Alpha (mean / median) | **+22.50%** / +18.03% | +20.54% / **+18.11%** |
+| Profit factor (mean / median) | 1.82 / 1.19 | **1.83** / 1.19 |
+| Max drawdown (mean / worst) | -15.46% / -22.41% | -15.77% / **-21.90%** |
+
+Fails the bar on alpha (-1.96) while improving worst drawdown (+0.51), with
+profit factor and windows-beating-benchmark identical. Practically a wash: **the
+partial sale is worth about 2 points of alpha over 4.5 years.** Not shipped --
+it fails the bar and it is a live risk-rule change -- but the price of
+simplifying the exit is now measured rather than guessed, which is the decision
+the user asked for.
+
+The win-rate collapse from 50.1% to 28.9% is a confirmation, not a regression:
+TP1 legs are positive by construction, so removing them lands the leg-level
+number on the true position-level rate (26.3%) measured in the accountability
+work earlier the same day. Two independent routes to the same finding.
+
+### What ten rejections in a row actually say
+
+Counting this session: extension gate (9 thresholds), the weekly-lag removal, the
+separate early entry, and the TP1 removal -- on top of the seven ideas rejected
+in previous sessions. Nothing has cleared the adoption bar.
+
+Two readings, and they are not the same:
+1. The configuration is at a local optimum and the remaining gains are in
+   position sizing, capital and discipline, not in the entry or exit rules.
+2. The search has been confined to one family -- tweaks to a mid-trend
+   follower, judged on 6-slot portfolio alpha over 6-month windows. A different
+   family (concentration, far longer holds, a different universe) has not been
+   tested, and the bar itself may be the wrong instrument for it.
+
+The evidence cannot currently separate these. What it does establish is that
+this strategy is a **mid-trend follower by construction**: it arrives a median 7
+sessions and +14% into a move because that is when its evidence becomes
+reliable, and every attempt to make it arrive sooner has cost more than it
+gained. Section 4's exit replay shows the machinery can hold a 6-bagger, so the
+ceiling is not the exits.
+
+**The honest next step is not another idea.** It is the readiness track already
+scoped: ~90 closed positions before the live record stops being a coin flip.
+Ten rejected ideas is itself evidence that the marginal idea is not where the
+remaining value is.
+
+Code touched: none of the protected V1 files. New: `V4_TP1_PARTIAL_SELL` in
+`backtest_v4.py` (default 1 = unchanged behaviour, rejected at 0),
+`src/test_early_breakout_entry.py`, `src/test_tp1_partial_removal.py`. No live
+config, sizing, or exit rule was modified.
