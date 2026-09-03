@@ -1197,6 +1197,36 @@ SCORE_OUTLIER_GAP_MULT = float(_outlier_gap_env) if _outlier_gap_env else None
 # More surgical follow-up to the two flags above: caps the weekly_ma_spread component
 # specifically (not sector_rs_momentum, not the combined score) at its own within-day
 # quantile among qualifying candidates. See score_candidates docstring. None (default) = off.
+# Repair candidate for the score's normalisation -- NOT a new idea competing for
+# adoption, a miscalibrated instrument that ten graded experiments sat on top of.
+#
+# The score adds two components, each normalised by its OWN threshold value:
+#     w_comp = (weekly_ma_spread   - weekly_cut) / |weekly_cut|
+#     s_comp = (sector_rs_momentum - sector_cut) / |sector_cut|
+# Those thresholds are three orders of magnitude apart and move independently.
+# Measured across the 9 walk-forward windows (src/diagnose_score_scale.py,
+# 2026-09-02): weekly_cut swings 1.8x (1.870..3.315) while sector_cut swings
+# 6.7x (0.00153..0.01023), and the weekly component's share of the score's own
+# variation ranges 18.3%..48.0% (mean 32.8%) instead of sitting near 50%. In
+# window 7 the sector component alone drives 81.7% of the ranking. Nobody chose
+# that weighting; it falls out of dividing by whatever the threshold happens to
+# be that window.
+#
+# Since the score picks which 6 of 15 daily candidates get bought, this sits
+# upstream of every walk-forward number this project has produced. Putting both
+# components on a common scale changes the within-day ordering materially --
+# mean Kendall tau 0.858, and only 78.5% of each day's top-6 survives unchanged.
+#
+# "train_sd" divides each component by its own standard deviation over the TRAIN
+# qualifying pool, so the two contribute comparably regardless of where their
+# thresholds happen to land. Same train-only, applied-out-of-sample discipline
+# weekly_cut/sector_cut/score_p90 already use -- never touches test data.
+#
+# Default "cut" reproduces the current formula exactly (both scales = 1.0), so
+# the live path through paper_signal_scan.py is bit-identical unless this is
+# deliberately switched.
+SCORE_NORM = os.environ.get("V4_SCORE_NORM", "cut")
+
 _weekly_cap_env = os.environ.get("V4_SCORE_WEEKLY_COMP_CAP_Q")
 SCORE_WEEKLY_COMP_CAP_Q = float(_weekly_cap_env) if _weekly_cap_env else None
 # Train-derived-absolute follow-up to SCORE_WEEKLY_COMP_CAP_Q -- see simulate_window's
@@ -1924,9 +1954,32 @@ def apply_slippage(price: float, side: str, participation: float = 0.0) -> float
     return price * (1 + slip) if side == "buy" else price * (1 - slip)
 
 
+def score_component_scales(train_pool: pd.DataFrame, weekly_cut: float,
+                           sector_cut: float) -> tuple:
+    """Returns (weekly_scale, sector_scale) for the score blend -- see SCORE_NORM.
+
+    (1.0, 1.0) reproduces the historical formula exactly. Under "train_sd" each
+    component is divided by its own spread across the TRAIN qualifying pool, so
+    the two contribute comparably instead of in whatever ratio their thresholds
+    happen to imply that window.
+
+    Falls back to 1.0 for a degenerate or empty pool rather than dividing by
+    zero -- a window with no train candidates should behave exactly as before,
+    not produce infinities.
+    """
+    if SCORE_NORM != "train_sd" or train_pool is None or len(train_pool) < 2:
+        return 1.0, 1.0
+    w = (train_pool["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
+    s = (train_pool["sector_rs_momentum"] - sector_cut) / max(abs(sector_cut), 1e-6)
+    w_sd, s_sd = w.std(), s.std()
+    w_sd = float(w_sd) if np.isfinite(w_sd) and w_sd > 0 else 1.0
+    s_sd = float(s_sd) if np.isfinite(s_sd) and s_sd > 0 else 1.0
+    return w_sd, s_sd
+
 def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: float, top_n: int = 15,
                       skip_top_n: int = 0, outlier_gap_mult: float = None,
-                      weekly_comp_cap_q: float = None, weekly_comp_abs_cap: float = None) -> list:
+                      weekly_comp_cap_q: float = None, weekly_comp_abs_cap: float = None,
+                      weekly_scale: float = 1.0, sector_scale: float = 1.0) -> list:
     """Filters a single trading day's cross-section to qualifying candidates (liquidity,
     weekly-trend, sector-momentum, ATR sanity) and returns the top-N by score as plain dicts.
     Extracted so the live paper-trading signal scan (src/paper_signal_scan.py) calls the exact
@@ -1986,10 +2039,12 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
         candidates = candidates[~np.array(locked, dtype=bool)]
     if candidates.empty:
         return []
-    candidates["w_comp"] = (candidates["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
+    candidates["w_comp"] = ((candidates["weekly_ma_spread"] - weekly_cut)
+                            / max(abs(weekly_cut), 1e-6) / weekly_scale)
     candidates["score"] = (
         candidates["w_comp"]
-        + (candidates["sector_rs_momentum"] - sector_cut) / max(abs(sector_cut), 1e-6)
+        + (candidates["sector_rs_momentum"] - sector_cut)
+        / max(abs(sector_cut), 1e-6) / sector_scale
     )
     if weekly_comp_cap_q is not None and len(candidates) >= 3:
         cap = candidates["w_comp"].quantile(weekly_comp_cap_q)
@@ -2550,9 +2605,20 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
     # instead learns one stable cutoff from the full train-period distribution of w_comp
     # among historically-qualifying candidates -- same train-only, applied-out-of-sample
     # methodology as weekly_cut/sector_cut/score_p90 above, not a noisy daily statistic.
+    # Computed here, before every train-derived quantity below that uses the
+    # score formula -- the cap and score_p90 must be measured on the SAME
+    # normalisation the entry ranking will use, or the flag silently makes
+    # them incomparable.
+    weekly_scale, sector_scale = score_component_scales(
+        train_liquid_bullish, weekly_cut, sector_cut)
+    if (weekly_scale, sector_scale) != (1.0, 1.0):
+        print(f"{prefix}[SCORE NORM] train_sd -- weekly /{weekly_scale:.3f}, "
+              f"sector /{sector_scale:.3f}")
+
     weekly_comp_abs_cap = None
     if SCORE_WEEKLY_COMP_ABS_CAP_Q is not None:
-        train_w_comp = (train_liquid_bullish["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
+        train_w_comp = ((train_liquid_bullish["weekly_ma_spread"] - weekly_cut)
+                        / max(abs(weekly_cut), 1e-6) / weekly_scale)
         if len(train_w_comp) > 0:
             weekly_comp_abs_cap = train_w_comp.quantile(SCORE_WEEKLY_COMP_ABS_CAP_Q)
 
@@ -2560,8 +2626,10 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
     # below) -- same score formula used at entry time, applied to the train
     # qualifying population itself, 90th percentile. Never touches test data.
     train_scores = (
-        (train_liquid_bullish["weekly_ma_spread"] - weekly_cut) / max(abs(weekly_cut), 1e-6)
-        + (train_liquid_bullish["sector_rs_momentum"] - sector_cut) / max(abs(sector_cut), 1e-6)
+        (train_liquid_bullish["weekly_ma_spread"] - weekly_cut)
+        / max(abs(weekly_cut), 1e-6) / weekly_scale
+        + (train_liquid_bullish["sector_rs_momentum"] - sector_cut)
+        / max(abs(sector_cut), 1e-6) / sector_scale
     )
     score_p90 = train_scores.quantile(0.90) if len(train_scores) > 0 else 1.0
     if not np.isfinite(score_p90) or score_p90 <= 0:
@@ -3123,7 +3191,9 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                                                skip_top_n=SCORE_SKIP_TOP_N,
                                                outlier_gap_mult=SCORE_OUTLIER_GAP_MULT,
                                                weekly_comp_cap_q=SCORE_WEEKLY_COMP_CAP_Q,
-                                               weekly_comp_abs_cap=weekly_comp_abs_cap)
+                                               weekly_comp_abs_cap=weekly_comp_abs_cap,
+                                               weekly_scale=weekly_scale,
+                                               sector_scale=sector_scale)
             # SPIKE_CONFIRM_GATE_ENABLED only -- filters simulate_window's OWN
             # consumption of score_candidates' return value, does not touch
             # score_candidates() itself (see SPIKE_CONFIRM_GATE_ENABLED's docstring).

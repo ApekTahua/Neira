@@ -7450,3 +7450,138 @@ Code touched: none of the protected V1 files. New: `V4_TP1_PARTIAL_SELL` in
 `backtest_v4.py` (default 1 = unchanged behaviour, rejected at 0),
 `src/test_early_breakout_entry.py`, `src/test_tp1_partial_removal.py`. No live
 config, sizing, or exit rule was modified.
+
+---
+
+## The instrument was miscalibrated: score normalisation, measured and re-baselined (2026-09-02, later)
+
+A council review, run after the tenth consecutive rejection, made one claim that
+was checkable rather than rhetorical: the score that decides which 6 of 15 daily
+candidates get bought has a known, logged, unfixed scaling defect, and every one
+of those ten experiments was graded on top of it. This entry checks it, fixes
+it, and re-baselines.
+
+### 1. The defect, measured
+
+    w_comp = (weekly_ma_spread   - weekly_cut) / |weekly_cut|
+    s_comp = (sector_rs_momentum - sector_cut) / |sector_cut|
+    score  = w_comp + s_comp
+
+Each component is normalised by its own threshold. Those thresholds are three
+orders of magnitude apart and move independently.
+`src/diagnose_score_scale.py`, over the 9 walk-forward windows:
+
+| Window | weekly_cut | sector_cut | weekly share of score variation |
+|---|---|---|---|
+| W1 | 3.093 | 0.00633 | 45.4% |
+| W2 | 1.870 | 0.00495 | 45.2% |
+| W3 | 2.311 | 0.00293 | 31.5% |
+| W4 | 2.290 | 0.00317 | 34.1% |
+| W5 | 2.151 | 0.00173 | 25.0% |
+| W6 | 2.076 | 0.00153 | 20.8% |
+| W7 | 2.652 | 0.00316 | **18.3%** |
+| W8 | 2.955 | 0.00321 | 26.7% |
+| W9 | 3.315 | 0.01023 | 48.0% |
+
+`weekly_cut` swings 1.8x across windows; **`sector_cut` swings 6.7x**. The
+weekly component's share of the score's own variation therefore wanders between
+**18.3% and 48.0%** (mean 32.8%) instead of sitting near 50%. In window 7 the
+sector component alone drives 81.7% of the ranking. Nobody chose that weighting.
+
+It is not cosmetic: putting both components on a common scale changes the
+within-day ordering by mean Kendall tau 0.858, and **only 78.5% of each day's
+top-6 picks survive unchanged**. Roughly one stock in five that the system
+actually buys is different.
+
+### 2. The repair, and the 9-window re-baseline
+
+New flag `V4_SCORE_NORM`, default `"cut"` = the current formula, bit-identical
+(both scales 1.0), so the live path through `paper_signal_scan.py` is untouched.
+`"train_sd"` divides each component by its own standard deviation over the TRAIN
+qualifying pool -- same train-only, applied-out-of-sample discipline
+weekly_cut/sector_cut/score_p90 already use. The same scaling is propagated to
+`score_p90` and `weekly_comp_abs_cap`, or the flag would silently make those
+derived quantities incomparable with the ranking they are meant to describe.
+
+| Metric | current | common scale |
+|---|---|---|
+| Windows beating benchmark | 6/9 | **7/9** |
+| Windows win-rate > 50% | 4/9 | **5/9** |
+| Win rate (mean / median) | 50.1% / 50.0% | 50.2% / **50.8%** |
+| Profit (mean / median) | **+21.64%** / **+5.46%** | +19.33% / +4.84% |
+| Alpha (mean / median) | **+22.50%** / +18.03% | +20.19% / **+20.52%** |
+| Profit factor (mean / median) | **1.82** / 1.19 | 1.73 / **1.27** |
+| Max drawdown (mean / worst) | **-15.46% / -22.41%** | -16.34% / -30.62% |
+
+**Fails the adoption bar** (alpha -2.31, worst drawdown -8.21). Not shipped.
+
+### 3. But look at the per-window table, not the aggregate
+
+| Window | Period | alpha now | alpha fixed | maxDD now | maxDD fixed |
+|---|---|---|---|---|---|
+| W1 | 2022 H1 | -8.26% | **-4.91%** | -16.92% | -21.73% |
+| W2 | 2022 H2 | -8.33% | **-3.48%** | -12.52% | **-10.54%** |
+| **W3** | **2023 H1** | **-3.28%** | **+5.32%** | -11.24% | **-5.85%** |
+| W4 | 2023 H2 | +34.77% | +20.52% | -22.41% | **-15.97%** |
+| W5 | 2024 H1 | +18.03% | +8.39% | -12.20% | -17.61% |
+| W6 | 2024 H2 | +6.30% | **+24.87%** | -19.45% | **-12.79%** |
+| W7 | 2025 H1 | +30.28% | +28.63% | -6.31% | -7.99% |
+| W8 | 2025 H2 | +104.12% | +73.88% | -18.74% | **-30.62%** |
+| W9 | 2026 H1 | +28.88% | +28.52% | -19.32% | -23.98% |
+
+**Window 3 turns positive.** That is the window seven separate prior fix attempts
+failed on, and about which this log concluded on 2026-08-24 that "every slice of
+its candidate pool, by any feature, any quintile, loses money -- there is no good
+subset within it to select for." That conclusion was reached using the
+miscalibrated score. With the components on a common scale: alpha -3.28% ->
++5.32%, max drawdown -11.24% -> -5.85%, win rate 31.6% -> 47.4%.
+
+Three of the four loss-making windows improve. The cost is concentrated in the
+two best windows (W4, W8) and in W8's drawdown.
+
+**The mean-versus-median split is the whole story.** The current configuration's
++22.50% mean alpha leans heavily on one spectacular window (W8, +104%). The
+repaired scale trades that dependence for consistency: more windows beat the
+benchmark, the median window is better on alpha, profit factor and win rate, and
+the worst window is much worse.
+
+### 4. What this does and does not establish
+
+**Does**: the ranking is load-bearing, not inert. Changing how its two components
+are blended moves outcomes by tens of points in both directions. So the council's
+core claim holds -- ten experiments were graded against an instrument whose
+calibration measurably changes what gets bought. The prior conclusion that
+"stock-picking carries no measurable value" was itself measured through the
+defect, and window 3's reversal contradicts it directly.
+
+**Does not**: validate the repair. It fails the declared bar, and under
+`docs/HOLDOUT_PROTOCOL.md` (written this session, before this result was known)
+these nine windows can now rule things out but cannot validate anything -- they
+have absorbed eleven graded experiments plus the original validation. Nothing
+here ships.
+
+The honest status of the ten rejections is now: **they still stand as
+rejections** -- each was worse on its own terms under the same normalisation on
+both sides of its comparison -- but the baseline they were measured against is
+one of at least two defensible baselines, and the mean-alpha figure that most of
+them were judged on is the one most sensitive to a single window.
+
+### What would strengthen or kill this
+
+**Strengthens**: window 3's reversal is the single most interesting result. If a
+mechanical diagnosis shows *why* the common scale rescues it -- which stocks it
+now picks in Feb 2023 that it previously did not -- that is real understanding
+rather than a number that moved. That diagnosis costs one script and no new
+data.
+
+**Kills / narrows**: the whole comparison rests on nine windows that are now
+badly over-used. If the per-window pattern here is mostly reshuffling noise
+between correlated windows, the median improvements are worth less than they
+look. A blind forward test is the only thing that can settle which baseline is
+right, and by the protocol that means live positions, not another simulation.
+
+Code touched: none of the protected V1 files. New: `V4_SCORE_NORM` in
+`backtest_v4.py` (default `"cut"` = unchanged, bit-identical live path), the
+`score_component_scales()` helper, `src/diagnose_score_scale.py`,
+`src/test_score_norm.py`, and `docs/HOLDOUT_PROTOCOL.md`. `test_paper_trading_
+math.py` passes unchanged. No live config, sizing, or exit rule was modified.
