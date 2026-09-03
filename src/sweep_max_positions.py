@@ -104,7 +104,16 @@ def main():
             "dd_mean": round(traded["max_dd"].mean(), 2),
             "dd_worst": round(traded["max_dd"].min(), 2),
             "conc_mean": round(traded["concentration_pct"].mean(), 1),
-            "conc_max": round(traded["concentration_pct"].max(), 1),
+            # The concentration question the user actually asked -- "if one trade can
+            # make hundreds of millions, why grind out many small ones" -- is about the
+            # SIZE of the best bet, which concentration_pct (a share-of-profit ratio)
+            # cannot answer. A config can be 90% concentrated and still never have a
+            # large winner.
+            "best_pos_pct_mean": round(traded["best_position_pct"].mean(), 1),
+            "best_pos_pct_max": round(traded["best_position_pct"].max(), 1),
+            "best_pos_pnl_mean": round(traded["best_position_pnl"].mean()),
+            "best_pos_pnl_max": round(traded["best_position_pnl"].max()),
+            "positions_total": int(traded["positions"].sum()),
         })
     agg = pd.DataFrame(agg_rows)
     print("\n" + "=" * 110)

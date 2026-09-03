@@ -123,6 +123,20 @@ def run_schedule(df, idx_df, schedule):
         # simultaneous positions on average, diluting capital) even when MAX_POSITIONS
         # itself is unchanged. See docs/V3_FINDINGS_LOG.md.
         avg_n_positions = df_equity["n_positions"].mean() if "n_positions" in df_equity.columns else float("nan")
+        # Best SINGLE POSITION, not best trade row. df_trades logs one row per exit
+        # LEG, so a TP1 partial is positive by construction and "max(pnl)" would
+        # flatter every config that takes more partials. (stock_code, entry_date)
+        # identifies one position; summing its legs is the real outcome of that bet.
+        # Added for the concentration question -- whether fewer, larger positions
+        # actually produce bigger individual winners -- which the existing
+        # concentration_pct (top-5 stocks' share of gross profit) does not answer:
+        # a config can be highly concentrated and still have a small best trade.
+        pos_pnl = df_trades.groupby(["stock_code", "entry_date"])["pnl"].sum()
+        cost = (df_trades["entry_price"] * df_trades["quantity"]).groupby(
+            [df_trades["stock_code"], df_trades["entry_date"]]).sum()
+        best_pnl = float(pos_pnl.max()) if len(pos_pnl) else float("nan")
+        best_key = pos_pnl.idxmax() if len(pos_pnl) else None
+        best_pct = (100 * best_pnl / cost.loc[best_key]) if best_key is not None and cost.loc[best_key] > 0 else float("nan")
         results.append({
             "window": i, "test_start": te_start, "test_end": te_end,
             "trades": metrics["total_trades"], "win_rate": metrics["win_rate"],
@@ -132,6 +146,9 @@ def run_schedule(df, idx_df, schedule):
             "cvar_95": metrics["cvar_95"],
             "concentration_pct": conc_pct,
             "avg_n_positions": avg_n_positions,
+            "positions": int(len(pos_pnl)),
+            "best_position_pnl": best_pnl,
+            "best_position_pct": best_pct,
         })
     import pandas as pd
     return pd.DataFrame(results)

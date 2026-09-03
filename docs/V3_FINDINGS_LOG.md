@@ -7585,3 +7585,135 @@ Code touched: none of the protected V1 files. New: `V4_SCORE_NORM` in
 `score_component_scales()` helper, `src/diagnose_score_scale.py`,
 `src/test_score_norm.py`, and `docs/HOLDOUT_PROTOCOL.md`. `test_paper_trading_
 math.py` passes unchanged. No live config, sizing, or exit rule was modified.
+
+## Concentration (FEWER, larger positions): tested, rejected on every axis -- and the
+## "one big trade" intuition is measurably backwards (2026-09-03)
+
+**The gap this closes.** Every prior MAX_POSITIONS sweep went *upward* -- 6 -> 8 -> 10, all
+rejected (see "Portfolio breadth" and "the scarce-MAX_POSITIONS-slot mechanism itself"). A
+grep of this log confirms **no test below 6 slots had ever been run.** That direction is the
+one the evidence pointed at: this log's own conclusion for rejecting 8/10 was that "diluting
+position size to fit more concurrent names means even the eventual big winners get a smaller
+slice of capital." If dilution hurts for that reason, concentration should help.
+
+It does not.
+
+Grid holds nominal max concurrent exposure ~constant at 1.2x, so this isolates concentration
+from leverage. `V4_BANDAR_SIZING=0`, 9-window walk-forward, baseline reproduced the published
+figures exactly (+15.88% mean alpha, -22.51% worst DD) as a harness check.
+
+| Config | alpha mean | alpha median | win>50 | DD worst | best position (mean) | best position (max) |
+|---|---|---|---|---|---|---|
+| **6 x 20% (current)** | **+15.88** | **+11.57** | **5/9** | **-22.51** | **58.0%** | **134.6%** |
+| 5 x 24% | +18.66 | +0.67 | 5/9 | -24.30 | -- | -- |
+| 4 x 30% | +3.10 | +1.51 | 4/9 | -32.13 | 34.5% | 53.6% |
+| 3 x 40% | +9.01 | +3.35 | 4/9 | -31.61 | 39.7% | 66.6% |
+| 2 x 60% | +1.67 | -5.29 | 4/9 | -38.28 | 31.8% | 64.1% |
+
+**REJECTED. KEEP MAX_POSITIONS=6, ALLOC_PCT=0.20.** No default changed.
+
+5x24% is the trap: mean alpha *rises* to +18.66 while the median **collapses from +11.57 to
++0.67** -- the classic one-window-carries-it signature this log has been caught by before.
+Every other cell is worse on both, and worst-case drawdown degrades badly (-22.51% to
+-32/-38%).
+
+**The genuinely surprising result is the last two columns**, which required a new metric.
+`concentration_pct` (top-5 stocks' share of gross profit) cannot answer "how big was the
+best bet" -- a config can be 90% concentrated and still never produce a large winner. So
+`walk_forward_v4.py` now also records `best_position_pnl` / `best_position_pct`, computed at
+POSITION grain (`groupby(stock_code, entry_date)`), not per trade row: `df_trades` logs one
+row per exit LEG and a TP1 partial is positive by construction, so `max(pnl)` would flatter
+whichever config takes more partials. Purely additive -- baseline reproduced byte-for-byte.
+
+**Concentrating capital produces SMALLER winners, not larger ones.** Baseline's best position
+averages 58.0% (max 134.6%); the most concentrated config manages 39.7% (max 66.6%). It does
+not win in rupiah either (max Rp 33.6M vs Rp 25.7M). The mechanism is visible once measured:
+the outlier winner is *found*, not forced. Six slots produce 268 positions across the
+schedule; two slots produce 107. Fewer draws, smaller maximum draw.
+
+This answers the standing user question ("kalau sekali trade bisa cuan ratusan juta, ngapain
+trading terus2an") with its own inverse: the path to one enormous trade is **more** positions,
+not fewer and bigger.
+
+---
+
+## Where the return actually comes from: stock selection has no measurable edge (2026-09-03)
+
+Recomputed directly from `backtest_trades` for run 37 (V4, 2022-01-03..2026-06-30, 262
+positions / 381 legs).
+
+**The decisive test** -- same trades, same % returns, every position sized identically:
+
+| Measure | Value |
+|---|---|
+| Profit factor as reported (rupiah-weighted) | 1.65 |
+| **Profit factor equal-weighted** | **0.95** |
+| Mean unweighted return per position | **-0.308%** |
+| Avg cost basis, winners vs losers | 1.57x |
+
+**Below 1.0 means: size every position the same and the strategy loses money.** Per year the
+equal-weight PF is 0.77 / 0.57 / 0.73 / **1.97** / (no winners) for 2022-2026 -- **four of five
+years lose.** The return is produced by position sizing, the regime gate, and the trailing
+stop; not by which stock gets picked.
+
+That is the most parsimonious explanation for eleven consecutive graded selection experiments
+failing: **there is no selection edge there to improve.** Effort belongs on the mechanisms
+that demonstrably carry the return.
+
+**Exit attribution (run 37, per leg):**
+
+| Exit | Legs | Net PnL | Share of gross profit |
+|---|---|---|---|
+| TRAILING | 80 | +Rp 425.1M | **92.1%** |
+| TP1 | 119 | +Rp 17.2M | 3.7% |
+| TIME | 14 | -Rp 7.0M | -- |
+| SL | 168 | -Rp 255.2M | -- |
+
+TP1 has the most legs and contributes almost nothing, while inflating the leg-grain win rate
+by 23 points and taking capital off the runners that produce the other 92%. (A TP1-removal
+test earlier this session came out a wash at -1.96 alpha, so this is an observation about
+where profit lives, not yet a validated change.)
+
+---
+
+## 2026's twelve losses: investigated, NOT a defect (2026-09-03)
+
+Run 37 opened 12 positions in 2026 and **all twelve lost** (0% win rate, -Rp 46.8M). Initial
+reading was "the entry engine stopped working." Examining them individually says otherwise.
+
+All twelve were entered between **2026-01-09 and 2026-01-28** -- a 20-day window -- and **not
+one entry was taken in the following five months.** Not gradual degradation: one cluster, then
+the gate closed completely.
+
+| Date | IHSG | vs MA50 | |
+|---|---|---|---|
+| 2026-01-09 | 8,937 | +4.68% | first entry |
+| 2026-01-20 | 9,135 | +5.73% | market top |
+| 2026-01-27 | 8,980 | +3.21% | last signal -- legitimately bullish |
+| 2026-01-28 | 8,321 | **-4.36%** | **index fell 7.3% in one session** |
+| 2026-03-31 | 7,048 | -13.15% | |
+
+**No gate leaked.** Every entry was valid on the prior session's close; the last was generated
+from 2026-01-27 (+3.21% above MA50) and filled at the 01-28 open, the day the index dropped
+7.3%. No daily-bar system can avoid that one-day gap.
+
+This is the structural cost of a trend filter, not a bug: **a regime gate is at its most
+confident immediately before a top**, because a top is by definition where trend strength
+peaks. Do not spend another parameter sweep here.
+
+**One measurable finding worth carrying into position sizing:** stops slip in a crash.
+
+| Period | SL legs | Avg SL loss | Share worse than -10% |
+|---|---|---|---|
+| 2022-2025 | 156 | -8.60% | 35.9% |
+| 2026 (crash) | 12 | **-11.92%** | **75.0%** |
+
+The backtester already models this honestly -- `backtest_v4.py:2404` fills at the day's OPEN
+when the open is below `sl_price`, rather than pretending the stop filled at its level, and
+ARB/limit-down days are modelled as non-fills. **The dangerous optimism bug is not present.**
+But it does mean stop protection in a crash is thinner than the nominal SL implies, and that
+belongs in any real-capital sizing decision.
+
+**Fairness note on 2026:** across 2026 H1 the strategy returned **+8.02% while IHSG fell
+23.78%** (+31.80pp). The January cluster cost real money, but the gate then shut and the
+trailing stop kept 2025's winners running. That is the mechanism working, not breaking.
