@@ -11,9 +11,20 @@ name: "[19:30 WIB] - Disclosure PDF Extraction"
 # branch directly and run the script inline instead of dispatching to a
 # separate workflow file -- same pattern run_screener.yml already uses
 # for main. No src/ changes, no cross-workflow dispatch, no ID lookup.
+# SCHEDULE DISABLED 2026-09-03. This job cannot do its work from a runner:
+# IDX blocks GitHub's IP ranges site-wide (verified on a runner from egress
+# 20.169.50.32 -- plain requests, browser headers, cloudscraper cold and
+# cloudscraper warmed all 403, and so does idx.co.id's own root page). Every
+# one of its 1,661 rows since 2026-08-03 came back method='failed' with an
+# empty text field, and it reported success each time. Left scheduled, all it
+# can do is burn minutes writing more empty rows.
+#
+# The PDF fetch now runs from the self-hosted n8n box, whose IP IDX does
+# serve, feeding off the public.disclosure_extract_queue view and upserting
+# into disclosure_extracts. Dispatch stays available so this can be re-run by
+# hand if the fetch ever becomes possible here again -- and the script is
+# still the only path that does OCR, which n8n's PDF node cannot do.
 on:
-  schedule:
-    - cron: '30 12 * * 1-5'  # 19:30 WIB, matches disclosure_extract.yml's own schedule
   workflow_dispatch:
 
 # Same group as paper_signal_scan_trigger.yml -- see that file's comment.
