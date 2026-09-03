@@ -10,3 +10,12 @@ package-lock.json
 .mcp.json
 .serena/
 .playwright-mcp/
+
+# Credentials -- never commit. This repository is PUBLIC.
+# The worktree branch already ignores these; main did not, and the V1 live
+# files here need the same Supabase credentials, so a .env appearing on this
+# branch later would otherwise be published. See the 2026-09-03 security audit
+# (kept in the private newscraper.ai repo, since it documents an open finding).
+.env
+.env.*
+!.env.example
