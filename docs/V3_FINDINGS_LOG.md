@@ -7717,3 +7717,60 @@ belongs in any real-capital sizing decision.
 **Fairness note on 2026:** across 2026 H1 the strategy returned **+8.02% while IHSG fell
 23.78%** (+31.80pp). The January cluster cost real money, but the gate then shut and the
 trailing stop kept 2025's winners running. That is the mechanism working, not breaking.
+
+## The trailing exit leaves measured value on the table -- and it is the EARLY exits,
+## not the mature winners. Hypothesis defined, NOT yet tested (2026-09-03)
+
+Follows from the audit finding that `TRAILING` produces 92.1% of gross profit from 80 legs.
+Every parameter-level question here is already closed: `TRAILING_PCT` swept 0.05/0.08/0.12
+(kept 0.08), `TRAIL_ATR_ENABLED` swept key_value 1.5/2.0/2.5 (rejected -- worse worst-case
+drawdown at every value). So this asks a different question the sweeps cannot answer:
+**how much did the stock keep running after we sold it?**
+
+Measured over run 37's 80 `TRAILING` exits, forward max close within 60 calendar days:
+
+| Measure | Value |
+|---|---|
+| Mean further run-up after exit | **+32.9%** |
+| Median further run-up | +15.3% |
+| Ran >=10% higher | 58.8% |
+| Ran >=25% higher | 37.5% |
+| Never exceeded the exit price | 20.0% |
+
+**Confound checked, not assumed.** A high 60-day maximum is partly automatic for a volatile
+stock. Against 228 random liquid stocks (`value >= 1e9`, `close >= 50`) sampled on the SAME
+exit dates: ours +32.9% mean / +15.3% median vs random +21.7% / +9.8%. The gap survives, on
+both mean and median. The stocks this strategy sells keep outperforming after it sells them.
+
+**The shape of it inverts the obvious fix.** Bucketing the 80 exits by realised gain:
+
+| Gain at exit | Exits | Avg gain | Further run-up | Ran >=25% more |
+|---|---|---|---|---|
+| < 15% | 46 | +3.8% | **+37.3%** | 41.3% |
+| 15-30% | 18 | +20.6% | +31.3% | 33.3% |
+| >= 30% | 16 | +65.0% | **+22.2%** | 31.3% |
+
+Further run-up is LARGEST for the positions exited with the SMALLEST gain and smallest for
+the mature winners. So a profit-tiered trail ("widen it once the position is up 30%") would
+target precisely the wrong group -- the big winners are already ridden reasonably far. The
+trail is shaking positions out **early in the move**, not cutting mature trends short.
+
+**Re-entry is permitted but almost never happens.** The cooldown is SL-only, so a
+trailed-out name is eligible immediately. In practice only **14 of 80 (17.5%)** are re-entered
+within 60 days, and those come back after a mean of 3.6 days -- quick re-entries, not a later
+leg. 82.5% are sold and never bought back while continuing to outperform.
+
+**HYPOTHESIS, explicitly untested:** a continuation re-entry rule -- re-buy a name exited by
+`TRAILING` when it makes a new high within N days -- may capture part of this. Two honest
+caveats before anyone runs it:
+
+1. **+32.9% is a forward MAXIMUM, not an achievable return.** No rule can sell the high. It
+   establishes that value exists past the exit; it does not establish that a rule can take it.
+2. The likely reason re-entry does not happen on its own is the well-catalogued
+   `MAX_POSITIONS` scarcity (this log: the cap binds on 84.8% of candidate-days) -- the freed
+   slot is taken by another candidate the same day. So a re-entry rule is really a
+   *priority* change, and it competes with whatever it displaces. It must be graded on the
+   full 9-window walk-forward against the standing bar (mean alpha AND worst drawdown both
+   improve), not on the run-up figures above.
+
+Nothing was changed. No default touched.
