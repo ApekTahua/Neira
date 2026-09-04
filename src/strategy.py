@@ -137,10 +137,40 @@ def add_features(group: pd.DataFrame) -> pd.DataFrame:
     group["swing_high"] = group["close_price"].rolling(p, min_periods=p).max().shift(p // 2)
     group["swing_low"] = group["close_price"].rolling(p, min_periods=p).min().shift(p // 2)
 
+    # Corporate-action guard for the ffills below. A stock split / reverse split
+    # rescales every subsequent price with no organic-trading equivalent on IDX
+    # (auto-reject bands keep a normal session's move well under 2x). Bug found
+    # 2026-09-03 via live daily_qualifying_signals: DSSA split 2026-04-09 (close
+    # 67000 -> 3120, ~21x rescale) and the old unbounded .ffill() kept carrying
+    # its pre-split swing high (65900) forward for 5+ months, producing
+    # tp_target=65900 against a 1185 close (+5,461%) on 2026-09-03 -- see
+    # docs/V3_FINDINGS_LOG.md for the full trace. `previous` already carries the
+    # data vendor's split-adjusted prior close on the transition session itself,
+    # so a same-session ratio outside [0.5, 2.0] is a reliable, false-positive
+    # -free signal a rescale happened. Segmenting the ffill at that boundary
+    # means a stale swing level from the OLD price scale can never leak across
+    # it -- a fresh swing high/low must be confirmed post-rescale before
+    # last_swing_high/last_swing_low report anything again (same fallback,
+    # close*1.05 / close itself, as a stock with no prior history at all). A
+    # stock that never splits gets a single constant segment id, so this is a
+    # no-op there -- byte-identical to the old .ffill() output.
+    #
+    # NOTE: this must compare close_price to close_price.shift(1) (the raw
+    # PRIOR ROW's close), not the `previous` column -- verified directly
+    # against DSSA's real split (2026-04-09, close 67000 -> 3120): the data
+    # vendor already split-adjusts `previous` on the transition day itself
+    # (2680 = 67000/25, so close_price/previous = 1.16, invisible to a ratio
+    # check on that column), which is why daily_return/RSI/ATR never spike at
+    # a split -- but it also means `previous` cannot be used to DETECT one.
+    rescale_ratio = group["close_price"] / group["close_price"].shift(1).replace(0, np.nan)
+    split_segment = (rescale_ratio.lt(0.5) | rescale_ratio.gt(2.0)).fillna(False).cumsum()
+
     is_swing_low = (group["close_price"] == group["swing_low"]) & (
         group["close_price"] < group["close_price"].shift(1)
     )
-    group["last_swing_low"] = group["swing_low"].where(is_swing_low).ffill()
+    group["last_swing_low"] = (
+        group["swing_low"].where(is_swing_low).groupby(split_segment).ffill()
+    )
 
     last_low = group["last_swing_low"].fillna(group["close_price"])
     buy_buffer = last_low * cfg.SMC_OB_BUFFER_PCT
@@ -150,7 +180,9 @@ def add_features(group: pd.DataFrame) -> pd.DataFrame:
     is_swing_high = (group["close_price"] == group["swing_high"]) & (
         group["close_price"] > group["close_price"].shift(1)
     )
-    group["last_swing_high"] = group["swing_high"].where(is_swing_high).ffill()
+    group["last_swing_high"] = (
+        group["swing_high"].where(is_swing_high).groupby(split_segment).ffill()
+    )
 
     above_price = group["last_swing_high"] > group["close_price"]
     group["tp_target"] = (

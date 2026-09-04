@@ -7774,3 +7774,94 @@ caveats before anyone runs it:
    improve), not on the run-up figures above.
 
 Nothing was changed. No default touched.
+
+---
+
+## The swing-high ffill carried pre-split prices forever: real data corruption,
+## zero backtest impact, and the reason both statements are true (2026-09-04)
+
+**Found from live output, not from reading code.** `daily_qualifying_signals`
+on 2026-09-03 had DSSA closing at 1185 with `tp_target` = **65900** — a
++5,461% target. 65900 is DSSA's *pre-split* price. Across the whole table,
+21 of 210 rows (10%), 8 distinct tickers, carried a target more than 25%
+above the close while every other row sat at exactly +5.0% (the
+`close * 1.05` fallback).
+
+**Mechanism.** `strategy.add_features` built `last_swing_high` with a bare
+`.ffill()` — no recency bound, no corporate-action bound. A split rescales
+every subsequent price with no organic equivalent, so the last pre-split
+swing level kept being carried against post-split prices indefinitely.
+`last_swing_low` (and therefore `buy_zone_low`/`buy_zone_high`) had the
+identical defect.
+
+**The detail that makes this non-obvious.** The tempting way to detect a
+rescale is the `previous` column — and it does not work. The data vendor
+already split-adjusts `previous` on the transition session itself (DSSA
+2026-04-09: close 67000 -> 3120, with `previous` = 2680 = 67000/25), which
+is exactly why `daily_return`/RSI/ATR never spike at a split. Detection has
+to compare `close_price` to the raw PRIOR ROW's close.
+
+**Fix.** Segment the ffill at a same-session close ratio outside [0.5, 2.0]:
+
+```python
+rescale_ratio = group["close_price"] / group["close_price"].shift(1).replace(0, np.nan)
+split_segment = (rescale_ratio.lt(0.5) | rescale_ratio.gt(2.0)).fillna(False).cumsum()
+group["last_swing_high"] = group["swing_high"].where(is_swing_high).groupby(split_segment).ffill()
+```
+
+A stale level can no longer cross a rescale; a fresh swing must be confirmed
+on the new scale first, falling back to `close * 1.05` until then. A stock
+that never rescales gets one constant segment id, so it is a no-op there.
+
+**What actually changed, measured over the full 2021-2026 dataset**
+(1,242,246 stock-days, 979 tickers; `src/verify_tp_target_split_fix.py`,
+output kept as `src/tp_target_fix_diff.csv`):
+
+| | |
+|---|---|
+| Tickers whose `tp_target` changed | **64 of 979** |
+| Rows changed | **3,811 of 1,242,246 (0.31%)** |
+| Worst target/price ratio BEFORE | **2025.0x** (BEBS) |
+| Worst target/price ratio AFTER | **1.05x** |
+
+DSSA alone accounts for 218 rows at up to 152x. So this was real, widespread
+corruption — not one odd ticker.
+
+**And the 9-window walk-forward came back BYTE-IDENTICAL.** Baseline vs fixed,
+same schedule, one shared fetch, `V4_BANDAR_SIZING=1`,
+`V4_ATR_PRICE_RATIO_MAX=0.08`: mean alpha +26.27%, median +17.79%, worst
+maxDD -21.16%, PF 2.04, win rate 50.4%, 8/9 windows beating benchmark — every
+figure the same to the last digit, and the two CSVs `diff` clean.
+
+**That is not a contradiction, and it is not evidence the fix works.**
+`tp_target`'s only consumer in the exit math is `expected_hold_days`
+(`backtest_v4.py:2224`), which feeds `checkpoint_day` — and that is gated on
+`ADAPTIVE_HOLDTIME`, which defaults to **0**. With the flag off, `tp_target`
+cannot influence a single exit, so an A/B walk-forward is structurally
+incapable of detecting a change to it. The isolation diff above is the real
+evidence; the walk-forward only rules out an unexpected side effect through
+some other path.
+
+**Why fix it anyway, given zero measured impact:**
+1. The value is persisted and user-facing — `daily_qualifying_signals.tp_target`
+   and `paper_positions.target_price`. A +5,461% "target" on a live page is
+   the exact class of defect this project keeps having to apologise for.
+2. It silently invalidates a future experiment. Any `ADAPTIVE_HOLDTIME=1`
+   sweep run against a 2025x target would have produced garbage
+   `expected_hold_days` for 64 tickers and nobody would have known why the
+   sweep looked strange.
+
+**Honest caveats.**
+- A stock resuming after a long suspension can gap more than 2x with no
+  corporate action, which creates a false segment boundary. The consequence
+  is benign by construction: the swing level simply resets and falls back to
+  `close * 1.05` until a fresh swing confirms — the guard fails conservative,
+  never toward a larger target.
+- The baseline here (+26.27% mean alpha) is not comparable to the +15.88%
+  recorded in the concentration entry above: that run used
+  `V4_BANDAR_SIZING=0`, this one `=1`. Different config, not a drifted
+  baseline.
+- `src/test_split_guard.py` covers the property directly: a synthetic 1:20
+  split no longer leaks (worst target 1.05x), and the [0.5, 2.0] band cannot
+  be tripped by any legal IDX session — the widest auto-reject band is
+  +/-35%, and a 2,000-session random walk stays in one segment.
