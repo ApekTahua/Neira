@@ -27,7 +27,7 @@ Usage:
 import os
 import re
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 os.environ.setdefault("V4_TEST_END", date.today().isoformat())
 
@@ -221,8 +221,49 @@ def main():
         pc.notify(msg)
 
     # ---- Fill PENDING candidates at today's open ----
+    #
+    # Both of the backtest's entry-timing caps are enforced here, at FILL time,
+    # because that is where backtest_v4.simulate_window enforces them: its
+    # `pending_entries` queue holds today's fresh signals AND anything carried
+    # over from an earlier day, and `new_entries_today` counts actual fills, not
+    # signals issued.
+    #
+    # This loop had neither cap, and paper_signal_scan.py's
+    # `min(slots_free, MAX_NEW_ENTRIES_PER_DAY)` does not substitute for them:
+    # that bounds how many PENDING rows one scan CREATES, so a candidate queued
+    # on an earlier day that has not filled yet is invisible to it. Live
+    # consequence on 2026-09-03: PPGL (queued 09-01, unfilled 09-02) filled
+    # alongside SGER and TOBA (both queued 09-02) -- three positions opened at
+    # one day's open against a cap of two. Every other entry day in the run's
+    # history has exactly two. The cap exists precisely so one bad open can
+    # damage at most two positions (see MAX_NEW_ENTRIES_PER_DAY in
+    # backtest_v4.py, added after six simultaneous entries on a false regime
+    # flip lost window 3 real money), so exceeding it is a live divergence from
+    # the validated rules, not a cosmetic one.
+    #
+    # Counted from the database, not a loop-local variable: this monitor runs
+    # every ~15 minutes, so fills made by an earlier poll today must still count
+    # against today's cap.
+    _entry_hist = _retry(lambda: supabase.table("paper_positions").select("entry_date").eq(
+        "run_id", run_id
+    ).not_.is_("entry_date", "null").gte(
+        "entry_date", (today - timedelta(days=45)).isoformat()
+    ).execute()).data
+    filled_today = sum(1 for p in _entry_hist if p["entry_date"] == today.isoformat())
+    recent_entries = sum(
+        1 for p in _entry_hist
+        if pc.trading_days_elapsed(supabase, date.fromisoformat(p["entry_date"]), today)
+        <= bt.ENTRY_CLUSTER_WINDOW_DAYS
+    )
+
     prev_equity = cash + sum(float(p["cost_basis"]) for p in open_positions)
-    for row in pending:
+    # Score-ranked, like the backtest's queue: when a cap bites it must defer the
+    # WEAKEST candidate, not whichever row PostgREST happened to return first.
+    for row in sorted(pending, key=lambda r: float(r["score"] or 0), reverse=True):
+        if filled_today >= bt.MAX_NEW_ENTRIES_PER_DAY:
+            break
+        if recent_entries >= bt.MAX_ENTRIES_PER_CLUSTER_WINDOW:
+            break
         if breadth_crash:
             continue  # new capital deployment paused this poll -- retried once breadth recovers
         r = live.get(row["stock_code"])
@@ -267,6 +308,8 @@ def main():
             "filled_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", row["id"]).execute())
         _persist_cash()
+        filled_today += 1
+        recent_entries += 1
         pc.notify(f"\U0001F7E2 *FILLED* {row['stock_code']} @ Rp{entry_price:,.0f} x {fill['lots']} lot(s)")
         print(f"[MONITOR] FILLED {row['stock_code']} @ {entry_price:.0f} x{fill['lots']}lot cash_out=Rp{cash_out:,.0f}")
 
