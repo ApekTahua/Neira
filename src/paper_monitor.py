@@ -250,11 +250,26 @@ def main():
         "entry_date", (today - timedelta(days=45)).isoformat()
     ).execute()).data
     filled_today = sum(1 for p in _entry_hist if p["entry_date"] == today.isoformat())
-    recent_entries = sum(
-        1 for p in _entry_hist
-        if pc.trading_days_elapsed(supabase, date.fromisoformat(p["entry_date"]), today)
-        <= bt.ENTRY_CLUSTER_WINDOW_DAYS
-    )
+    # The cluster window is counted in TRADING days, so it needs the exchange
+    # calendar, not date arithmetic. Resolved to a single cutoff date with ONE
+    # query rather than calling trading_days_elapsed() per row: this monitor
+    # polls every ~15 minutes, so a per-row call would be ~10 extra round trips
+    # every poll, ~1,000 a day, to answer a question that has one answer.
+    # index_eod/COMPOSITE, not ihsg_eod: ihsg_eod carries ~963 rows per session,
+    # so pulling enough of it to see six distinct DATES means thousands of rows
+    # (and a limit sized by guesswork). The index has exactly one row per
+    # trading day, so a limit of N rows is a limit of N sessions.
+    _cal = _retry(lambda: supabase.table("index_eod").select("trade_date").eq(
+        "index_code", "COMPOSITE"
+    ).lte("trade_date", today.isoformat()).order(
+        "trade_date", desc=True
+    ).limit(bt.ENTRY_CLUSTER_WINDOW_DAYS + 5).execute()).data
+    _days = sorted({r["trade_date"] for r in _cal}, reverse=True)
+    # _days[0] is today (or the last session on or before it); the window is
+    # the ENTRY_CLUSTER_WINDOW_DAYS sessions before that, matching the
+    # backtest's `day_idx - p["entry_day_idx"] <= ENTRY_CLUSTER_WINDOW_DAYS`.
+    _cutoff = _days[min(bt.ENTRY_CLUSTER_WINDOW_DAYS, len(_days) - 1)] if _days else today.isoformat()
+    recent_entries = sum(1 for p in _entry_hist if p["entry_date"] >= _cutoff)
 
     prev_equity = cash + sum(float(p["cost_basis"]) for p in open_positions)
     # Score-ranked, like the backtest's queue: when a cap bites it must defer the
