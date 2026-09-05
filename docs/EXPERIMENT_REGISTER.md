@@ -23,6 +23,12 @@ what stops the metric being chosen after the numbers are in.
 
 ---
 
+### Backfill, 2026-09-05 (my own Rule 3 breach, logged as such)
+
+| Date | What | Cells | Deciding metric | Note |
+|---|---|---|---|---|
+| 2026-09-05 | Four bandar features (`concentration`, `mover_score`, `accdist_score`, `rotation_score`) against the right tail, on stock-days already past liquidity / volatility / weekly trend | 4 | P(>+50% run within 20 sessions), high vs low, date-level bootstrap | **Written and run before the row was added.** The hypothesis was stated in the script's docstring first, and all four features are reported rather than the best one, so the count is knowable -- but the rule says the row goes in before the run, and it did not. Recorded here rather than quietly slotted into the pre-registered table above. |
+
 ## Pre-registered
 
 | Date | What varies | Cells | Deciding metric | Prediction |

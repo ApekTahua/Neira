@@ -8184,3 +8184,60 @@ Below average, not zero.
 Whether the gate should be *relaxed* rather than removed -- a softer penalty
 instead of a hard cut, the way the price-range term is a re-ranking rather than a
 filter -- is a real question and cannot be answered on these windows.
+
+## Bandar flow DOES predict the tail -- and the one variable in production is the
+## one that does not (2026-09-05, later still)
+
+The founding purpose of this system was to read bandar flow. It does not use it
+to pick stocks: the entry score is weekly trend plus sector momentum, and
+bandarmology only sizes positions. That gap exists because bandar-as-entry was
+tested once and rejected on a **42.5% win rate**.
+
+Win rate is the one axis on which this project's selection is provably average.
+Eleven selection experiments were graded on it before the tail measurement showed
+where the edge actually lives. **The bandar rejection was decided on the wrong
+metric, exactly like the others**, and re-asking it on the tail axis is a genuinely
+new question rather than a repeat.
+
+Same shape as the sector-gate diagnostic run an hour earlier: stock-days already
+past liquidity, the volatility cap and the weekly-trend cut (n=65,826, baseline
+tail rate 5.25%), split high vs low on each feature, gap bootstrapped by date.
+
+| feature | in production? | non-zero | tail rate high / low | gap | 95% CI | |
+|---|---|---|---|---|---|---|
+| `mover_score` | no | 13% | **7.91% / 5.03%** | **+2.87pp** | [+2.14, +3.64] | **SIG** |
+| `accdist_score` | no | 9% | **7.42% / 5.14%** | **+2.28pp** | [+1.32, +3.24] | **SIG** |
+| `concentration` | **YES** (BANDAR_SIZING) | 100% | 5.48% / 5.35% | +0.13pp | [-0.31, +0.57] | no |
+| `rotation_score` | no | 14% | 5.37% / 5.23% | +0.14pp | [-0.33, +0.63] | no |
+
+For scale, the sector gate measured the same way today is **+1.52pp**, and that
+gate is load-bearing. `mover_score` is nearly twice that.
+
+**The finding that matters is the third row.** `concentration` is the only bandar
+variable wired into production -- it drives BANDAR_SIZING's position multiplier --
+and it is flat across all ten of its deciles, gap indistinguishable from zero. The
+two features that do carry tail signal are computed, carried alongside every
+candidate, and used for nothing. That is also the variable whose adoption cleared
+its bar by 0.10pp on one partition and loses by 3.81pp on two others.
+
+This does NOT contradict the 42.5% win-rate result; it explains it. Bandar flow
+does not improve direction. It improves the odds of a big run -- the same shape
+the entry filter itself has.
+
+Three limits, none of them small:
+
+- **Rarity.** `mover_score` is non-zero on 13% of the pool and `accdist_score` on
+  9%, so "high" here means "any bandar activity detected at all". A hard gate on
+  either would cut the candidate pool by roughly the same fraction the sector gate
+  does, and the LUCY entry above records what that costs.
+- **Coverage.** `concentration` and `mover_score` exist on only 65% of pool rows;
+  the bandarmology archive does not reach everywhere.
+- **These are the closed windows.** Rule 1 stands. This says "worth pursuing",
+  never "adopt". Four features were tested and all four are reported, so the
+  comparison count is knowable -- but the register row went in after the run, not
+  before, which is my own Rule 3 breach and is logged as backfill.
+
+The honest next question is not "add mover_score to the score". It is whether a
+feature that fires on 13% of days can carry an entry at all, or whether it belongs
+as a re-ranking term the way the price-range test was built -- and that has to be
+answered forward, not here.
