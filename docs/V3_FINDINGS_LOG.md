@@ -8031,3 +8031,96 @@ not a best-of-N pick, so the multiple-comparisons discount that applies to the
 survive live data before anything is built on it.
 
 Nothing changed. `V4_PAPER` remains frozen at 7/60 closed positions.
+
+## Three results from one afternoon: costs do not kill it, the tail finding
+## survives clustering, and the leak is the STOP, not the trail (2026-09-05, later)
+
+All three were pre-registered in `docs/EXPERIMENT_REGISTER.md` before running,
+per HOLDOUT_PROTOCOL Rule 3. None may promote anything -- Rule 1 closes these
+windows. They are robustness and mechanism readings.
+
+### 1. Slippage: the headline is not an artifact of the zero-cost assumption
+
+`V4_SLIPPAGE` defaults to `"0"`, so every figure this project has published
+assumes a fill at the exact close with no spread and no market impact, on exits
+that are market-on-close. Fifteen full walk-forwards, five cost levels across
+three partitions:
+
+| base/impact bps | orig | shift3mo | quarterly |
+|---|---|---|---|
+| off (as reported) | +26.17% | +19.81% | +13.15% |
+| 5 / 16 (module default) | +24.05% | +20.08% | +12.66% |
+| 10 / 30 | +24.34% | +18.60% | +12.20% |
+| 20 / 50 | +21.60% | +17.28% | +10.71% |
+| 35 / 80 | +19.35% | +15.40% | +10.21% |
+
+**The pre-registered prediction was wrong.** It said cost should bite roughly
+linearly because the trailing exit fills at `close_price` by construction. It
+does not: at the module default the drag is 0.5-2.1pp, and shift3mo actually
+improves by 0.27pp. Even at 35/80 -- far above what a name trading a billion
+rupiah a day costs to exit -- alpha stays clearly positive on all three cuts.
+
+What DOES degrade is consistency, and that is the reading worth keeping. On
+`orig`, windows beaten drops 7/9 -> 5/9 and profit factor 1.95 -> 1.63; on
+`shift3mo` the worst drawdown widens -22.41% -> -26.88%. Cost does not remove
+the edge, it thins how many windows carry it.
+
+### 2. The tail finding survives a cluster bootstrap
+
+The 2026-09-05 tail result was bootstrapped over individual picks, which assumes
+they are independent draws. The regime gate makes that suspect: entries should
+cluster on the days the gate opens, and correlated picks counted n times give an
+interval that is too narrow. Re-run resampling entry DATES instead:
+
+| 60d | observation bootstrap | date-level bootstrap |
+|---|---|---|
+| p90 gap | +33.19 [+18.59, +44.97] | +33.13 [+19.00, +45.03] |
+| p95 gap | +34.67 [+9.65, +77.30] | +34.44 [+9.10, +76.73] |
+| share >+25% gap | +9.78 [+4.68, +15.17] | +9.81 [+5.07, +14.90] |
+| median gap | +1.20 [-4.73, +6.37] | +1.28 [-3.92, +6.11] |
+
+Effectively identical. The reason is in the count the script now prints: **183
+distinct entry dates for 262 positions -- 1.4 picks per date.** The entries are
+barely clustered at all, so there was nothing for the correction to correct. The
+suspicion was reasonable and is now measured rather than assumed.
+
+### 3. Where the tail actually leaks: the stop, not the trail
+
+For every position, the best close-to-close gain available in the 60 sessions
+after entry, against what the position realised. Deciding metric declared in
+advance: median capture on positions whose available peak beat +25%.
+
+| exit | n | available p50 | realised p50 | capture p50 |
+|---|---|---|---|---|
+| TRAILING | 69 | +69.74% | +14.35% | **25.4%** |
+| SL | 49 | +50.47% | **-8.75%** | -15.1% |
+| TIME | 2 | +71.60% | -0.63% | -0.9% |
+| all | 120 | +58.29% | +0.92% | 0.5% |
+
+**120 of 262 positions had a run of more than +25% available. The median one
+kept 0.5% of it.**
+
+The pre-registered hypothesis was that the leak would be spread evenly, in which
+case the exit is about as good as an 8% trail can be and the entry is the thing
+to improve. It is not spread evenly. **Forty-nine positions -- 41% of the tail
+draws -- were stopped out at a median -8.75% on names that went on to offer a
+median +50%.** The trailing stop, which was the suspect going in because it
+carries 92.1% of gross profit, is the part that works: it keeps a quarter of a
++70% run.
+
+Three things this does NOT establish, and they matter:
+
+- **"Available" ignores path.** A stop can fire on day 2 and the peak arrive on
+  day 40. The number says the name ran; it does not say we could have held it.
+- **Nothing here identifies which stop-out would later run.** Removing the stop
+  is not the implied fix -- the stop is what bounds the drawdown that the
+  partition-sensitivity test already shows reaching -30%.
+- **It is per-position, and the strategy is portfolio-constrained** at 6 slots
+  and 2 new entries a day.
+
+What it does make concrete is a lever nobody has swept: `COOLDOWN_DAYS = 10`
+blocks re-entry into a name for ten trading days after it stops us out. Against
+49 stopped-out positions with a median +50% still ahead of them, a ten-session
+re-entry ban is a specific, testable, and possibly expensive choice. That is the
+next thing to measure, and it is the first version of the re-entry hypothesis
+(defined 2026-09-03) that names a parameter instead of a feeling.

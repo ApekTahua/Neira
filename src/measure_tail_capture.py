@@ -59,7 +59,7 @@ def main():
 
     sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     legs = sb.table("backtest_trades").select(
-        "stock_code,entry_date,exit_date,entry_price,exit_price,exit_reason,shares"
+        "stock_code,entry_date,exit_date,entry_price,exit_price,exit_reason,lots"
     ).eq("run_id", RUN_ID).execute().data
     print(f"[POS ] {len(legs)} legs")
 
@@ -70,7 +70,7 @@ def main():
     for t in legs:
         k = (t["stock_code"], t["entry_date"])
         ep, xp = float(t["entry_price"]), float(t["exit_price"])
-        sh = float(t["shares"] or 0)
+        sh = float(t["lots"] or 0) * 100   # backtest_trades stores LOTS; 1 lot = 100 shares
         pos[k]["pnl"] += (xp - ep) * sh
         pos[k]["cost"] += ep * sh
         pos[k]["reasons"].append((t["exit_date"], t["exit_reason"]))
