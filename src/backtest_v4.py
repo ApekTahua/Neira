@@ -1225,6 +1225,26 @@ SCORE_OUTLIER_GAP_MULT = float(_outlier_gap_env) if _outlier_gap_env else None
 # Default "cut" reproduces the current formula exactly (both scales = 1.0), so
 # the live path through paper_signal_scan.py is bit-identical unless this is
 # deliberately switched.
+# Position in the 252-session range, as a RANKING penalty rather than a filter.
+# Yartseva (2025), "The Alchemy of Multibagger Stocks", CAFE WP 33: across 464
+# US stocks that became 10-baggers, the single most robust technical variable is
+# `price_range` -- (price - 12m low) / (12m high - 12m low) -- with a negative,
+# strongly significant coefficient in all seven specifications (-0.70 to -0.92).
+# The closer to the 12-month high at purchase, the lower the next year's return.
+# Our own signals sit at a median position of 88 in their 60-session range
+# (scratch_signal_lateness.py, 2026-09-02), i.e. the opposite end.
+#
+# This is NOT the extension gate (EXTENSION_GATE_ENABLED above, rejected on 9 of
+# 9 thresholds). That one REMOVED candidates; a name too stretched to buy was not
+# buyable at rank 15 either. This REORDERS them, which has never been tested, and
+# reordering is the mechanism the user's complaint actually points at: SGER
+# scored 10.89 at 600 and 13.60 at 645, so the score rises with the very move
+# that raises the price, and a name becomes buyable only after it has run.
+#
+# Default 0.0 = byte-identical to every prior run. Requires a `price_range_252`
+# column; where it is absent or NaN the penalty is neutral, because "no 12 months
+# of history" is not evidence of being at a high.
+PRICE_RANGE_PENALTY = float(os.environ.get("V4_PRICE_RANGE_PENALTY", "0"))
 SCORE_NORM = os.environ.get("V4_SCORE_NORM", "cut")
 
 _weekly_cap_env = os.environ.get("V4_SCORE_WEEKLY_COMP_CAP_Q")
@@ -2046,6 +2066,14 @@ def score_candidates(day_slice: pd.DataFrame, weekly_cut: float, sector_cut: flo
         + (candidates["sector_rs_momentum"] - sector_cut)
         / max(abs(sector_cut), 1e-6) / sector_scale
     )
+    # See PRICE_RANGE_PENALTY above. Subtracted after the two momentum
+    # components, so it can only change the ORDER of the qualifying pool, never
+    # its membership -- a name at the top of its range still qualifies, it just
+    # stops outranking one that is not.
+    if PRICE_RANGE_PENALTY and "price_range_252" in candidates.columns:
+        candidates["score"] = candidates["score"] - PRICE_RANGE_PENALTY * (
+            candidates["price_range_252"].astype(float).fillna(0.5)
+        )
     if weekly_comp_cap_q is not None and len(candidates) >= 3:
         cap = candidates["w_comp"].quantile(weekly_comp_cap_q)
         candidates = candidates[candidates["w_comp"] <= cap]
