@@ -7639,6 +7639,17 @@ not fewer and bigger.
 
 ## Where the return actually comes from: stock selection has no measurable edge (2026-09-03)
 
+> **PARTLY WITHDRAWN 2026-09-05.** The equal-weight profit factor below is
+> correct, but it is measured *at our exit* -- through the stop, the partial and
+> the trail -- so it answers a question about direction, not about selection.
+> Measured at the *idea* instead (buy-and-hold from entry against liquid names
+> sampled on the same dates), the filter has no directional skill but roughly
+> doubles the odds of a +25% run. See "The entry filter DOES have an edge" at the
+> end of this log. The heading's claim -- "no measurable edge" -- is wrong; the
+> narrower claim it actually supports is "no edge on the axis this metric
+> measures".
+
+
 Recomputed directly from `backtest_trades` for run 37 (V4, 2022-01-03..2026-06-30, 262
 positions / 381 legs).
 
