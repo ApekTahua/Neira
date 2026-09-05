@@ -20,6 +20,13 @@ just the forward return distribution of the names the filter picked, against
 names that were liquid on the same day. If the tails are indistinguishable, the
 entry filter earns nothing and the system simplifies enormously.
 
+Two bootstraps are reported. The observation-level one treats every pick as
+independent evidence, which the regime gate makes false: entries cluster on the
+days the gate opens, and correlated picks counted n times return an interval
+that is too narrow. The date-level one resamples entry DATES and takes every
+pick made on a drawn date, so a cluster counts once. Read the second; the first
+is kept only to show how much it overstates.
+
 Read-only. Nothing here can be promoted: the underlying window is the same
 exhausted data (see docs/HOLDOUT_PROTOCOL.md).
 """
@@ -76,16 +83,24 @@ def main():
     rng = random.Random(SEED)
     for h in HORIZONS:
         ours, rand = [], []
+        # Grouped by date as well as flat: the regime gate makes entries
+        # cluster heavily in time, so an observation-level bootstrap counts
+        # correlated picks as independent evidence and returns an interval
+        # that is too narrow. The date-level bootstrap below is the honest one.
+        by_date = {}
         for code, d0 in entries:
             r = fwd(code, d0, h)
             if r is None:
                 continue
             ours.append(r)
+            slot = by_date.setdefault(d0, ([], []))
+            slot[0].append(r)
             pool = liq.get(d0, [])
             for c in rng.sample(pool, min(N_RANDOM_PER_DATE, len(pool))):
                 rr = fwd(c, d0, h)
                 if rr is not None:
                     rand.append(rr)
+                    slot[1].append(rr)
         a, b = np.array(ours), np.array(rand)
         if not len(a):
             continue
@@ -125,6 +140,32 @@ def main():
             al, bl = a.tolist(), b.tolist()
             d = [stat(np.array(rng.choices(al, k=len(al))))
                  - stat(np.array(rng.choices(bl, k=len(bl)))) for _ in range(BOOT)]
+            lo, hi = np.percentile(d, [2.5, 97.5])
+            sig = "SIGNIFICANT" if lo > 0 or hi < 0 else "not significant"
+            print(f"    {label:<18} {np.mean(d):+7.2f}  95% CI [{lo:+.2f}, {hi:+.2f}]  {sig}")
+
+        # --- date-level (cluster) bootstrap ---------------------------------
+        # Resample entry DATES with replacement, taking every pick made on a
+        # drawn date against the random names drawn on that same date, so a
+        # cluster of correlated entries counts once rather than n times.
+        dates = sorted(by_date)
+        print(f"\n  cluster bootstrap over {len(dates)} entry dates "
+              f"({len(a) / max(len(dates), 1):.1f} picks per date):")
+        for label, stat in [
+            ("p90 gap", lambda x: np.percentile(x, 90)),
+            ("p95 gap", lambda x: np.percentile(x, 95)),
+            ("share >+25% gap", lambda x: 100 * (x > 25).mean()),
+            ("median gap", lambda x: np.median(x)),
+        ]:
+            d = []
+            for _ in range(BOOT):
+                oa, ob = [], []
+                for dt in rng.choices(dates, k=len(dates)):
+                    o, r_ = by_date[dt]
+                    oa += o
+                    ob += r_
+                if oa and ob:
+                    d.append(stat(np.array(oa)) - stat(np.array(ob)))
             lo, hi = np.percentile(d, [2.5, 97.5])
             sig = "SIGNIFICANT" if lo > 0 or hi < 0 else "not significant"
             print(f"    {label:<18} {np.mean(d):+7.2f}  95% CI [{lo:+.2f}, {hi:+.2f}]  {sig}")
