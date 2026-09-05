@@ -7865,3 +7865,68 @@ some other path.
   split no longer leaks (worst target 1.05x), and the [0.5, 2.0] band cannot
   be tripped by any legal IDX session — the widest auto-reject band is
   +/-35%, and a 2,000-session random walk stays in one segment.
+
+---
+
+## Methodology audit: how many tests were actually run against the nine windows, what pure noise would produce at that count, and whether adopted changes survive a re-cut of the same data (2026-09-05)
+
+**Why this exists.** The owner's standing worry: every adoption decision for months has been graded on the same fixed 2022-01-01..2026-06-30 nine-window battery, `docs/HOLDOUT_PROTOCOL.md` already calls it "a development set, not a test set," and a prior council flagged test-reuse bias. This audits the *process*, not the strategy: is the bar that decides "this is an improvement" actually discriminating, or has it just been asked too many times. Two results were already in hand from a parallel session and are used here without re-deriving them: **run 37's regime gate fires on only 8 independent BULLISH episodes** (lengths 177/84/84/81/69/42/22/11 days, not the 262 positions usually quoted), and **a 2,000-sample bootstrap of buy-and-hold selection vs. random liquid stocks on the same dates has every confidence interval spanning zero at 5/20/60 days**, median negative and worsening while the mean is pulled up by a fat right tail -- both point the same direction as the earlier equal-weight profit-factor-0.95 finding: whatever edge exists lives in sizing/exits/timing, not in a broadly replicated stock-picking or regime-timing signal, and the sample sizes behind either of those two channels are thin (8 episodes, and 262 positions with no significant selection CI at any horizon).
+
+### Priority 1 -- the multiple-comparisons count
+
+Parsed every markdown table in `docs/V3_FINDINGS_LOG.md` (split header/data rows on the `|---|` separator line), counted separately from the `sweep_*.py`/`scratch_*.py`/`diagnose_*.py` scripts on disk:
+
+| Count | Method | N |
+|---|---|---|
+| Distinct named, dated hypotheses ("## ... (2026-XX-XX)" headings) | grep | **37** |
+| Distinct test/sweep/diagnostic scripts (`sweep_*.py` 16 + `scratch_*.py` 21 + `diagnose_*.py` 9 + `phase0*.py` 4) | `ls` | **50** |
+| Total markdown tables in the log | parsed | 103 |
+| ...of which have an `alpha` column (graded against the 9-window battery) | parsed | 47 |
+| Distinct non-baseline configuration rows in those tables | parsed | **262** |
+| (+ baseline/reference re-verification rows, not new candidates) | parsed | 25 |
+
+**262 is a floor, not a ceiling.** Several sweep scripts' CSV outputs currently on disk (e.g. `sweep_trail_atr.csv`, now 4 rows) are smaller than the grid the log's own prose table for that same sweep reports (9 rows for the VOL_BAND_MULT sweep alone) -- output files get overwritten by the next run of the same script name, so the true historical total is higher than what current files or even the current log text can fully reconstruct. Treat 262 as conservative.
+
+**Bootstrap: what would best-of-262 look like under a null of "no incremental true edge"?** Pooled every `.cache/*_full.csv` sweep artifact still on disk plus the walk-forward baseline/summary CSVs that retain genuine per-window `alpha_pct` (58 distinct configurations recovered this way, 521 clean config/window observations after dropping one zero-trade cell). For each config, residual = alpha_pct minus that config's own 9-window mean -- pools window-to-window sampling noise while removing each config's average level; std of the pooled residual is **29.44 percentage points per window** (matches the log's own repeated observation of window-to-window swings this large, e.g. Window 8 alone ranging 70pp across a single parameter sweep). Bootstrap-resampling 9 of these residuals at a time, added to the pooled configs' own median level (+19.17%, i.e. "the already-adopted base strategy, no further increment"), 20,000 repeats:
+
+| | Single test (N=1) | Best-of-262 |
+|---|---|---|
+| Mean measured alpha under H0 | +19.14% | **+52.71%** |
+| Median | -- | +51.99% |
+| 10th-90th pct | [+7.3%, +32.3%] | [+46.4%, +60.0%] |
+| P(measured alpha >= reported +26.27%) | **22.3%** | **~100%** (all 20,000 repeats) |
+
+Two readings, both real: (1) a single arbitrary untested idea has a 1-in-5 chance of "beating" the reported +26.27% by noise alone -- the per-test bar is weak given how much window-to-window variance this exact harness has. (2) Best-of-262 draws under pure noise would be expected to produce +52.71% mean alpha -- roughly double the actual adopted figure. **The project's adopted number sits below the noise ceiling for this many attempts, not above it** -- the per-experiment scrutiny already in this log (fine-neighbor sweeps, per-window tracing, Monte Carlo checks, the repeated "single-window artifact" rejections) evidently screened out the more spectacular noise draws a naive best-of-sweep pick would have kept. That is a genuine point in the process's favor. It is not proof the +26.27% is clean: the same math says a config landing anywhere in the +30-45% range would have been statistically indistinguishable from noise at this N, and nothing in the record rules out partial, undetected inflation of that kind in what was actually kept.
+
+### Priority 2 -- partition sensitivity, actually run
+
+`walk_forward_v4.py`'s cached full dataset (`.cache/walk_forward_data_2021-01-01_2026-06-30.pkl`, no Supabase call needed) lets the current-default config be re-simulated on different window boundaries directly, not just reasoned about. Ran three schedules, same config throughout (module defaults: `BANDAR_SIZING=1`, `LIQ_SIZING=1`, `PYRAMID=1`, `QUANTILE_CUT=0.60`, `VOL_BAND_MULT=2.0`, `REGIME_CONFIRM_DAYS=3`, `TREND_STRENGTH_MIN=0.01`, `ATR_PRICE_RATIO_MAX=0.10` -- the last differs from the live-deployed 0.08 override, held constant across all three runs so the comparison is apples to apples):
+
+| Partition | Windows traded | beat bench | win>50% | alpha mean/median | worst DD |
+|---|---|---|---|---|---|
+| ORIGINAL (9x 6mo, Jan/Jul starts -- what every adoption decision has used) | 9/9 | 6/9 | 4/9 | +22.50% / +18.03% | -22.41% |
+| SHIFTED +3mo (8x 6mo, Apr/Oct starts) | 8/9 | 5/8 | 3/8 | +22.89% / **+12.16%** | **-30.02%** |
+| QUARTERLY (18x 3mo, same start) | 14/18 | 9/14 | 8/14 | **+8.51%** / **+5.05%** | -30.02% |
+
+Direction survives: all three cuts show positive mean alpha and a majority of windows beating benchmark. Magnitude and the drawdown half of the adoption bar do not. Median alpha drops 33% on the shift, 72% on the quarterly cut; worst-case drawdown gets 34% worse on both alternates (same underlying 2025 Q4/2026 Q1 episode, just cut differently); and 4 of 18 quarterly windows produced **zero trades at all** -- this engine's own `MAX_POSITIONS=6`/trend-alignment gate frequently has nothing to say over a bare 3-month span, which the semiannual schedule's larger windows structurally hide.
+
+Isolated the single largest individually-adopted sizing mechanism (`BANDAR_SIZING_ENABLED`) on the same three partitions, since the whole-system number above conflates several adopted flags at once:
+
+| Partition | Alpha lift, ON vs OFF | Worst-DD change, ON vs OFF |
+|---|---|---|
+| ORIGINAL (the partition it was adopted on) | **+6.62pp** (22.50 vs 15.88) | **+0.10pp** (-22.41 vs -22.51, slightly better) |
+| SHIFTED +3mo | +2.25pp (22.89 vs 20.64) | **-3.81pp** (-30.02 vs -26.21, worse) |
+| QUARTERLY | +1.18pp (8.51 vs 7.33) | **-3.81pp** (worse, same episode) |
+
+This one adopted change clears the standing bar ("mean alpha AND worst drawdown both improve") on the partition it was tested on, and fails the drawdown half of that same bar on both alternates -- its alpha lift also shrinks to a sixth to a third of its original size on the alternates. Not a new failure mode: the log's own 2026-08-17 `VOL_BAND_MULT`/`REGIME_CONFIRM_DAYS` interaction check already found and rejected the identical signature for a different pairing (`REGIME_CONFIRM_DAYS=2`'s apparent +47.1pp gain at `VOL_BAND_MULT=2.0` flips to -17.7pp at `VOL_BAND_MULT=3.0`) -- that one was caught by manual per-window tracing before promotion; `BANDAR_SIZING` was not checked against a different partition before promotion because no such check existed. Of the two individually-adopted mechanisms actually tested against an alternate partition in this project's history (one here, one in the 08-17 entry), **zero of two hold up.**
+
+### Priority 3 -- is `docs/HOLDOUT_PROTOCOL.md` sufficient as written
+
+Its core call is correct and should stand: the nine windows are spent, forward paper-trading data (`V4_PAPER`, currently 23 days / -0.34% / **7** closed positions, versus the pre-registered 60-position bar) is the only source of genuinely new evidence, and it is scored once, not monitored early. Two gaps, given what is measured above:
+
+1. **It does not say the development set is closed for promotion, only that it is weaker evidence than it looks.** Given the noise ceiling in Priority 1 (best-of-262 pure noise is about 2x the adopted figure) and the partition failure in Priority 2 (the one adopted mechanism actually checked fails half the bar on a re-cut), any further sweep against these nine windows has a real chance of producing a "better" number that a re-cut would not reproduce, with no way to tell from this data alone. Recommend making this explicit: no config change ships from a nine-window result again, full stop -- the holdout protocol's forward-only rule already implies this but does not say it in one sentence anywhere.
+2. **It has no partition-robustness pre-filter.** The three-way re-cut run here (`.cache/walk_forward_data_2021-01-01_2026-06-30.pkl` plus `walk_forward_v4.build_schedule()` with a shifted start or shorter `test_months`, no new fetch needed, roughly 10-12 minutes per config) is cheap and would have flagged `BANDAR_SIZING`'s drawdown fragility before it reached the live default. Recommend adding it as a necessary, not sufficient, gate before anything is even proposed for the live paper-trading queue: an idea must hold its alpha-mean sign and not flip its drawdown-direction on at least the shifted-by-3-months cut before it competes for a spot in the (separately scored) forward holdout.
+
+A formal multiple-testing correction (deflated Sharpe, White's Reality Check) was considered and not recommended as the primary fix: nine non-overlapping, visibly non-stationary windows (bull run, chop, crash, in different proportions depending on the cut, as Priority 2 just showed) is too small and too regime-dependent a sample for a parametric correction's assumptions to be more trustworthy than the direct resampling done here. The bootstrap above already is that correction, empirically; it does not need a parametric wrapper, and neither approach solves the deeper issue -- the nine-window sample does not grow no matter how it is re-analyzed. Only forward time does. **Do not lower the 60-position bar to get a read sooner; 7/60 is where the project actually is.**
+
+Artifacts (not committed, reproducible from the commands in this entry, kept local to avoid clutter): `partsens_orig.csv` / `partsens_shift3mo.csv` / `partsens_quarterly.csv` and their `bandaroff` counterparts in `src/`, built from `walk_forward_v4.load_dataset()` + `build_schedule()` against the existing cached dataset -- no new fetch, no protected file touched.
