@@ -21,3 +21,14 @@ rank1_component_raw.csv
 .env
 .env.*
 data/
+
+# Sweep/scratch outputs. These are regenerable byproducts of research runs;
+# listing them one filename at a time (see above) stopped scaling around the
+# thirtieth one and made `git status` useless for spotting real changes.
+*.log
+sweep_*.csv
+partsens_*.csv
+loadtest_*.csv
+scratch_*.csv
+walk_forward_v4_*.csv
+pooled_*.csv

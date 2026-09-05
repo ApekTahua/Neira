@@ -86,3 +86,77 @@ forward data can say the second thing.
 - `docs/V3_FINDINGS_LOG.md` — the 2026-09-01 blind-holdout entry (the previous
   one, now spent) and the eleven graded experiments.
 - `docs/MASTERPLAN.md` — the real-capital readiness criteria this feeds.
+
+---
+
+# Amendment, 2026-09-05: three rules the methodology audit forced
+
+The audit in `docs/V3_FINDINGS_LOG.md` (commit `140d40f`) established three
+things this protocol did not cover. Each becomes a rule, because each one has
+already produced a wrong answer that shipped.
+
+## Rule 1 — the nine windows are closed for promotion, not just "weak evidence"
+
+The earlier wording said the nine windows can no longer say "this idea is
+validated". In practice that softness was ignored: `BANDAR_SIZING` went live on
+the strength of a nine-window run.
+
+The rule is now mechanical. **No configuration change reaches the live pipeline
+on the strength of a nine-window result, whatever the margin.** The nine windows
+may rule an idea *out*. They may not let one *in*. The only promotion evidence
+is forward data scored under the holdout above.
+
+## Rule 2 — a partition re-cut is a mandatory pre-filter, run before anything else
+
+Every result must be reproduced on all three cuts before it is reported at all:
+
+| Cut | Definition |
+|---|---|
+| `orig` | 6-month test windows from 2022-01-01 |
+| `shift3mo` | the same, shifted one quarter to 2022-04-01 |
+| `quarterly` | 3-month test windows from 2022-01-01 (18 windows) |
+
+A window boundary is an arbitrary choice, so a result that only survives one
+placement of the boundary is a property of the boundary. Measured on
+2026-09-05, this is not hypothetical:
+
+| Config | orig | shift3mo | quarterly |
+|---|---|---|---|
+| walk-forward alpha, adopted config | +22.50% | +22.89% | +8.51% |
+| worst drawdown | −22.41% | **−30.02%** | **−30.02%** |
+
+`BANDAR_SIZING` — which is **in production right now** — cleared the drawdown
+leg by 0.10pp on `orig` and loses it by 3.81pp on *both* alternate cuts. It was
+adopted on the one cut that happened to be cut first.
+
+It stays in production anyway: V4_PAPER's config is frozen at 7 of 60 closed
+positions and rewriting it mid-holdout would destroy the only clean test this
+project has. That is a deliberate, disclosed cost, not an endorsement.
+
+## Rule 3 — the hypothesis and its metric are written down before the run
+
+The audit could only establish that **at least 262 distinct configurations**
+have been graded against these windows. "At least", because nothing was
+recorded; 262 is a floor recovered from CSVs and git history. Under a zero-edge
+null, the best of 262 draws would be expected to return about **+52.71%** mean
+alpha — so the reported +26.27% cannot be used as evidence of an edge, only as
+evidence that the manual filtering was not the worst case.
+
+The count has to be knowable in advance. Before a sweep runs, append one line to
+`docs/EXPERIMENT_REGISTER.md`:
+
+    date | what varies | how many cells | the ONE metric that decides | pre-run prediction
+
+The metric is the part that matters most. Eleven selection experiments were
+graded on hit rate and direction accuracy — the single axis on which the entry
+filter is provably average — while the axis where it is significant (the fatness
+of the right tail; see the 2026-09-05 entry in the findings log) went unmeasured
+for months. Choosing the metric after seeing the numbers is how that happens.
+
+## Rule 4 — costs are on by default
+
+`V4_SLIPPAGE` defaults to `"0"`. Every headline figure this project has
+published therefore assumes a fill at the exact close with no spread paid and no
+market impact, on an exchange where the strategy's own exits are market-on-close
+in names trading a billion rupiah a day. Any number reported outside an explicit
+cost-sensitivity study runs with slippage **on**.
