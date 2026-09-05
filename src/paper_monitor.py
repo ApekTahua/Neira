@@ -244,7 +244,9 @@ def main():
     # Counted from the database, not a loop-local variable: this monitor runs
     # every ~15 minutes, so fills made by an earlier poll today must still count
     # against today's cap.
-    _entry_hist = _retry(lambda: supabase.table("paper_positions").select("entry_date").eq(
+    _entry_hist = _retry(lambda: supabase.table("paper_positions").select(
+        "entry_date, exit_date"
+    ).eq(
         "run_id", run_id
     ).not_.is_("entry_date", "null").gte(
         "entry_date", (today - timedelta(days=45)).isoformat()
@@ -269,7 +271,21 @@ def main():
     # the ENTRY_CLUSTER_WINDOW_DAYS sessions before that, matching the
     # backtest's `day_idx - p["entry_day_idx"] <= ENTRY_CLUSTER_WINDOW_DAYS`.
     _cutoff = _days[min(bt.ENTRY_CLUSTER_WINDOW_DAYS, len(_days) - 1)] if _days else today.isoformat()
-    recent_entries = sum(1 for p in _entry_hist if p["entry_date"] >= _cutoff)
+    # Still-open only, because that is what the backtest counts: its
+    # `recent_entries` sums over `positions`, the list of CURRENTLY held
+    # positions, so one that entered and stopped out inside the window has
+    # already been removed and no longer blocks anything. Counting every entry
+    # in the window regardless of outcome -- the first version of this fix --
+    # made the live engine STRICTER than the rules it is meant to mirror, which
+    # is the same class of divergence in the opposite direction: a run of quick
+    # stop-outs would have frozen new entries for days. Exits are processed
+    # before entries on a given day in both engines, so a position exiting today
+    # is already gone by the time this cap is evaluated.
+    recent_entries = sum(
+        1 for p in _entry_hist
+        if p["entry_date"] >= _cutoff
+        and (p["exit_date"] is None or p["exit_date"] > today.isoformat())
+    )
 
     prev_equity = cash + sum(float(p["cost_basis"]) for p in open_positions)
     # Score-ranked, like the backtest's queue: when a cap bites it must defer the

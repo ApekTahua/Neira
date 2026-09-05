@@ -62,6 +62,33 @@ def test_daily_cap_and_ranking():
     print(f"[OK] cluster cap holds at {bt.MAX_ENTRIES_PER_CLUSTER_WINDOW} per {bt.ENTRY_CLUSTER_WINDOW_DAYS} days")
 
 
+
+def _count_recent(entry_hist, cutoff, today):
+    """Mirrors paper_monitor.py's `recent_entries` sum exactly."""
+    return sum(
+        1 for p in entry_hist
+        if p["entry_date"] >= cutoff
+        and (p["exit_date"] is None or p["exit_date"] > today)
+    )
+
+
+def test_cluster_window_counts_only_still_open():
+    # The backtest's cluster cap sums over `positions`, the list of CURRENTLY
+    # held positions, so an entry that stopped out inside the window is gone and
+    # blocks nothing. The first version of the live fix counted every entry in
+    # the window regardless of outcome, which made live STRICTER than the rules
+    # it mirrors -- a run of quick stop-outs would have frozen new entries.
+    hist = [
+        {"entry_date": "2026-09-01", "exit_date": "2026-09-02"},  # stopped out inside the window
+        {"entry_date": "2026-09-02", "exit_date": None},          # still open
+        {"entry_date": "2026-09-03", "exit_date": "2026-09-05"},  # exits today -> already gone
+        {"entry_date": "2026-08-01", "exit_date": None},          # open, but before the cutoff
+    ]
+    got = _count_recent(hist, cutoff="2026-09-01", today="2026-09-05")
+    assert got == 1, f"only the still-open in-window entry counts, got {got}"
+    print("[OK] cluster window counts only positions still open, matching the backtest")
+
+
 def test_live_no_day_exceeds_cap():
     url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY")
     if not (url and key):
@@ -89,5 +116,6 @@ def test_live_no_day_exceeds_cap():
 
 if __name__ == "__main__":
     test_daily_cap_and_ranking()
+    test_cluster_window_counts_only_still_open()
     test_live_no_day_exceeds_cap()
     print("\n[DONE] entry-cap self-check passed")
