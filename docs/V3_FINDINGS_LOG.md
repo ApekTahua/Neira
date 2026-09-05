@@ -8321,3 +8321,52 @@ and not yet reconciled.
 The owner's **stable entry band** point survives all of this independently. It is
 a property of how a signal is expressed, not of which shape it hunts, and the
 SGER sequence (ranked 9th at 600, 2nd at 660) is what its absence costs.
+
+## The bandar-aware stop: the council's one concrete idea, and it does not work
+## (2026-09-05, night)
+
+The leak is located: 49 of the 120 positions with a >+25% run available were
+stopped out first at a median -8.75%, on names that went on to offer a median
++50%. The council's single concrete proposal was a stop that consults broker
+flow rather than price alone -- hold while accumulation continues, leave when
+distribution starts.
+
+That only works if the flow separates the two kinds of stop-out **in advance**.
+Run 37's 168 stop-loss exits, split by whether `mover_score` or `accdist_score`
+was positive in the five sessions up to and including the stop, then measured on
+what the name did in the 40 sessions AFTER:
+
+| at the stop | n | P(runs >+25% after) | median run | mean run |
+|---|---|---|---|---|
+| accumulation present | 48 | **18.8%** | +9.90% | +19.31% |
+| accumulation absent | 120 | **33.3%** | +15.93% | +26.41% |
+
+Gap **-14.39pp, 95% CI [-28.25, +0.34], not significant** -- 143 distinct exit
+dates behind 168 exits, so the interval is wide by construction.
+
+**The idea fails.** Not significantly refuted, but with the point estimate
+pointing the wrong way: names still showing accumulation when they stopped us out
+ran LESS afterwards, not more. There is nothing here for a bandar-aware stop to
+hold onto.
+
+This also partly reconciles the tension left open earlier today. Broker flow
+predicts the right tail among names that already passed the entry gates, looking
+forward 20 sessions (+2.87pp for `mover_score`). It does not predict recovery
+after a stop-out. Those are different questions and the flow answers only the
+first.
+
+### What the day actually produced
+
+Died: the coiling/multibagger premise (two directions, both significant against);
+the bandar-aware stop (above); the cooldown as a live lever (it bound exactly
+once in 24 days, so a parallel run could never distinguish it).
+
+Survived: the tail edge itself (16.4% vs 7.5%, significant, holds under a
+date-level cluster bootstrap); the sector gate (+1.52pp, earns its place, at a
+cost of 41% of candidates and a third of tail events); `mover_score` and
+`accdist_score` carrying real tail signal while `concentration` -- the only one
+wired into production -- is a genuine null, checked for a broken column and it is
+not broken.
+
+Still unfixed and now precisely located: **41% of the tail draws are cut by the
+stop before they run, and no mechanism tested today recovers them.**
