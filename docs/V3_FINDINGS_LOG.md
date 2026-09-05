@@ -8241,3 +8241,83 @@ The honest next question is not "add mover_score to the score". It is whether a
 feature that fires on 13% of days can carry an entry at all, or whether it belongs
 as a re-ranking term the way the price-range test was built -- and that has to be
 answered forward, not here.
+
+## The coiling hypothesis, tested from both directions -- and what it does NOT
+## test (2026-09-05, evening)
+
+The owner proposed that the current quant signal is a swing/trend-riding tool,
+that forcing it to also find multibaggers asks one instrument to do two jobs, and
+that a separate method should hunt the opposite shape: sideways, being
+accumulated, moving averages squeezed together. He added a sharp design point --
+such a signal should be STABLE day to day, an entry AREA ("500-525") that does
+not move tomorrow, which is a direct fix for the score-rises-with-price problem
+behind the repeated SGER complaint.
+
+### Forward test: every liquid stock-day, P(>+50% within 60 sessions)
+
+Baseline 11.93% across 439,564 liquid stock-days.
+
+| feature | decile 1 | decile 10 | direction |
+|---|---|---|---|
+| `ma_squeeze` (MAs tight -> wide) | 6.64% | **21.97%** | monotone, AGAINST coiling |
+| `atr_ratio` (quiet -> volatile) | 2.87% | **20.62%** | monotone, AGAINST |
+| `range_pos` (near low -> near high) | 8.89% | **21.68%** | AGAINST, with a slight smile at the low end |
+| `weekly_ma_spread` (what we demand) | 13.85% | **26.10%** | U-shaped; the deep-downtrend decile is also elevated |
+
+The owner's rule as a conjunction -- coiled AND quiet AND bandar-active -- scores
+**5.96% against an 11.93% baseline, a gap of -6.15pp, CI [-6.66, -5.63]**. Half
+the base rate.
+
+### But that test cannot answer the question, and saying so matters
+
+Three ways it is rigged before it starts:
+
+1. **"Rises 50% in 60 sessions" is arithmetically easier for a name that moves 5%
+   a day than one that moves 1.8%.** `atr_ratio` predicting the tail is close to
+   a definition, not a finding.
+2. **`ma_squeeze` widens BECAUSE price moved.** It is a lagging read of a move
+   already underway, not a forecast.
+3. **A base that coils for eight months contributes ~150 failure days and one
+   success.** Measuring forward from every day is biased against slow setups by
+   construction.
+
+### Backward test, which is not tautological
+
+Take the runs that actually happened and look at what those names were 20
+sessions BEFORE ignition -- requiring the prior 20 sessions to be flat-to-mild
+(under +10%), so this catches ignition rather than the middle of a move.
+
+| | n | `ma_squeeze` | `atr_ratio` | bandar-active |
+|---|---|---|---|---|
+| before a >+50% run | 28,144 | **0.0924** | **0.0598** | 9.2% |
+| everything else | 268,360 | 0.0584 | 0.0412 | 10.1% |
+
+Both differences significant (+0.0340 [+0.0325, +0.0355] and +0.0186 [+0.0181,
++0.0191]). **Names that go on to run big were already wider and noisier than
+average, even with the prior month required to be flat.** Both directions agree,
+so this is not an artifact of the forward design.
+
+**The coiling hypothesis is not supported.** It is consistent with everything
+else measured on this data: the extension gate failed 9 of 9 thresholds and its
+loosest setting cost the most alpha, because the stretched names are where the
+fat tail lives.
+
+### What has NOT been tested, and this is the honest limit
+
+A **>+50% run in 60 sessions is not a multibagger.** A real multibagger is 10x
+over two to five years. The cached dataset is 2021-01 to 2026-06 -- 1,233
+sessions, barely enough to hold one such move end to end, and the sample of
+completed ones would be tiny. Nothing above says coiling fails to find
+multibaggers. It says coiling fails to find three-month runs, which is a
+different animal and happens to be the only animal this data can see.
+
+An unresolved tension also goes on the record rather than being smoothed over:
+`mover_score` and `accdist_score` were significant on the tail (+2.87pp and
++2.28pp) among names already past the current gates at a 20-session horizon,
+yet bandar activity 20 sessions before ignition on the full universe is slightly
+LOWER than baseline (9.2% vs 10.1%). Different conditioning, different horizon,
+and not yet reconciled.
+
+The owner's **stable entry band** point survives all of this independently. It is
+a property of how a signal is expressed, not of which shape it hunts, and the
+SGER sequence (ranked 9th at 600, 2nd at 660) is what its absence costs.
