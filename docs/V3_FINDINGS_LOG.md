@@ -8124,3 +8124,64 @@ blocks re-entry into a name for ten trading days after it stops us out. Against
 re-entry ban is a specific, testable, and possibly expensive choice. That is the
 next thing to measure, and it is the first version of the re-entry hypothesis
 (defined 2026-09-03) that names a parameter instead of a feeling.
+
+## LUCY, and whether the sector gate throws away the tail (2026-09-05, later)
+
+The user asked why Neira never named LUCY, which ran 224 -> 585 (+161%) between
+3 August and 4 September 2026. Checked: **zero signals, ever** -- not in the
+backtest, not in any paper run, not one day in `daily_qualifying_signals`.
+
+Day by day, what actually blocked it:
+
+| period | blocked by | numbers |
+|---|---|---|
+| 3-28 Aug | the volatility cap | atr/price 0.264 falling to 0.083, cap 0.08 |
+| 31 Aug - 4 Sep | **the sector gate, alone** | passed liquidity (ADTV 16-27bn) and volatility (0.080 -> 0.059) |
+
+On 4 September its own `weekly_ma_spread` was **54.35 against a cut of 3.69** --
+the 98th percentile of the entire universe -- while `sector_rs_momentum` was
+**-0.0225 against a required +0.0127**. Negative every single day. The stock
+screamed; its sector did not; the rule needs both, so it never reached ranking.
+
+Also worth stating plainly, because it is a real gap between what this system
+was built for and what it does: **broker flow is not part of the entry decision
+at all.** `concentration`, `mover_score`, `accdist_score` are carried alongside
+each candidate but the score is only the weekly-trend component plus the sector
+component. Bandarmology decides position SIZE (BANDAR_SIZING), never which
+stock. Bandar-as-entry was tested once (42.5% win rate, judged insufficient) and
+has not been revisited since.
+
+### Is the sector gate worth what it costs?
+
+One story proves nothing, so: among stock-days that already pass liquidity, the
+volatility cap and the weekly-trend cut, split by sector momentum into deciles
+and measure the probability of a >+50% run within 20 sessions. Deliberately not
+a threshold test -- picking a cut invites the same best-of-N problem as
+everything else.
+
+| decile | sector momentum | n | tail rate |
+|---|---|---|---|
+| 1 | -0.0591 | 6,583 | 4.34% |
+| 3 | -0.0183 | 6,582 | 4.44% |
+| 5 | +0.0039 | 6,579 | 4.47% |
+| 8 | +0.0448 | 6,585 | 5.79% |
+| 10 | +0.1236 | 6,575 | **8.02%** |
+
+Negative sector 4.36% vs positive 5.87%; gap **+1.52pp, 95% CI [+1.09, +1.93],
+significant** under a date-level bootstrap. Broadly monotonic.
+
+**The gate earns its place.** LUCY is not evidence of a broken rule; it is the
+price of a rule that pays.
+
+But the price is not small, and it should be stated rather than waved away: the
+gate **discards 41% of candidates and 34% of the tail events with them** -- 1,183
+of 3,454 runs above +50% sit in the negative-sector half. It keeps two thirds of
+the tail for four fifths of... no: it keeps 66% of the tail while cutting 41% of
+the candidates. A favourable trade, not a free one.
+
+LUCY itself sat in decile 3, where roughly one name in 22 runs more than +50%.
+Below average, not zero.
+
+Whether the gate should be *relaxed* rather than removed -- a softer penalty
+instead of a hard cut, the way the price-range term is a re-ranking rather than a
+filter -- is a real question and cannot be answered on these windows.
