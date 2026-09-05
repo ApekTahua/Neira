@@ -8175,9 +8175,8 @@ price of a rule that pays.
 
 But the price is not small, and it should be stated rather than waved away: the
 gate **discards 41% of candidates and 34% of the tail events with them** -- 1,183
-of 3,454 runs above +50% sit in the negative-sector half. It keeps two thirds of
-the tail for four fifths of... no: it keeps 66% of the tail while cutting 41% of
-the candidates. A favourable trade, not a free one.
+of 3,454 runs above +50% sit in the negative-sector half. It keeps 66% of the
+tail while cutting 41% of the candidates. A favourable trade, not a free one.
 
 LUCY itself sat in decile 3, where roughly one name in 22 runs more than +50%.
 Below average, not zero.
