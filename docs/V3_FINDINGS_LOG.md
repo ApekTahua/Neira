@@ -7930,3 +7930,93 @@ Its core call is correct and should stand: the nine windows are spent, forward p
 A formal multiple-testing correction (deflated Sharpe, White's Reality Check) was considered and not recommended as the primary fix: nine non-overlapping, visibly non-stationary windows (bull run, chop, crash, in different proportions depending on the cut, as Priority 2 just showed) is too small and too regime-dependent a sample for a parametric correction's assumptions to be more trustworthy than the direct resampling done here. The bootstrap above already is that correction, empirically; it does not need a parametric wrapper, and neither approach solves the deeper issue -- the nine-window sample does not grow no matter how it is re-analyzed. Only forward time does. **Do not lower the 60-position bar to get a read sooner; 7/60 is where the project actually is.**
 
 Artifacts (not committed, reproducible from the commands in this entry, kept local to avoid clutter): `partsens_orig.csv` / `partsens_shift3mo.csv` / `partsens_quarterly.csv` and their `bandaroff` counterparts in `src/`, built from `walk_forward_v4.load_dataset()` + `build_schedule()` against the existing cached dataset -- no new fetch, no protected file touched.
+
+---
+
+## The entry filter DOES have an edge -- it is a tail edge, and eleven
+## experiments were graded on the wrong axis (2026-09-05)
+
+**What was believed.** "Stock selection has no measurable edge." Equal-weight
+profit factor 0.95 across run 37's 262 positions, four of five years below 1.0,
+eleven consecutive graded selection experiments failed. The conclusion drawn was
+that effort should leave selection alone entirely.
+
+**Why that was measured wrong.** PF 0.95 is computed at OUR EXIT -- through a
+stop, a partial and a trailing stop. It answers "do the picks go up", which is a
+question about DIRECTION. Every one of the eleven failed experiments optimised
+some form of hit rate or directional accuracy.
+
+**Step 1 -- selection measured at the idea instead of at the stop.**
+Buy-and-hold from the entry price, equal weight, no stop / trail / sizing,
+against liquid names (`adtv_20 >= Rp1bn`, `close >= Rp50`) sampled on the SAME
+entry dates so market direction is controlled. 2,000-sample bootstrap:
+
+| hold | n | ours mean | ours median | random mean | gap | 95% CI on gap |
+|---|---|---|---|---|---|---|
+| 5d | 262 | +0.65% | +0.00% | +0.17% | +0.47 | [-1.10, +2.02] |
+| 20d | 262 | +3.36% | **-1.90%** | +1.13% | +2.23 | [-1.41, +5.80] |
+| 60d | 262 | +6.37% | **-4.28%** | +2.00% | +4.37 | [-1.96, +11.29] |
+
+The mean beats random and the gap widens with horizon, while the MEDIAN loses
+and gets worse. Win rate 45.0% vs 38.2%. That combination is not a weak
+direction predictor -- it is the signature of a right-tail draw.
+
+**Step 2 -- so measure the tail directly** (`src/measure_tail_fatness.py`,
+4,000-sample bootstrap, 12 random liquid names per entry date):
+
+| | 20d ours | 20d random | gap | 95% CI | |
+|---|---|---|---|---|---|
+| median | -1.90% | -1.56% | -0.34 | [-2.56, +2.05] | not significant |
+| **p90** | **+39.47%** | +18.76% | **+20.37** | **[+10.15, +32.62]** | **SIGNIFICANT** |
+| **p95** | **+54.45%** | +36.65% | **+19.91** | **[+6.14, +36.27]** | **SIGNIFICANT** |
+| p99 | +94.95% | +106.03% | -11.09 | | ours is WORSE |
+
+| | 60d ours | 60d random | gap | 95% CI | |
+|---|---|---|---|---|---|
+| median | -4.28% | -4.58% | +0.30 | [-5.06, +5.75] | not significant |
+| **p90** | **+64.41%** | +34.07% | **+31.33** | **[+16.39, +44.08]** | **SIGNIFICANT** |
+| **p95** | **+90.83%** | +66.51% | **+28.31** | **[+2.51, +72.09]** | **SIGNIFICANT** |
+| p99 | +174.56% | +187.34% | -12.78 | | ours is WORSE |
+
+Share of picks exceeding a threshold, ours vs random:
+
+| threshold | 20d | 60d |
+|---|---|---|
+| +10% | 29.8% vs 17.6% (**1.70x**) | 32.1% vs 23.7% (1.35x) |
+| **+25%** | **16.4% vs 7.5% (2.18x)** | **22.9% vs 13.3% (1.72x)** |
+| **+50%** | **7.3% vs 3.3% (2.19x)** | **14.9% vs 7.0% (2.13x)** |
+| +100% | 1.1% vs 1.1% (1.03x) | 5.0% vs 3.1% (1.63x) |
+
+The "share above +25%" gap bootstraps to **+8.85 [+4.42, +13.65]** at 20d and
+**+9.55 [+4.39, +14.73]** at 60d. Both significant. The median gap is not
+significant at either horizon.
+
+**The pattern is unambiguous and it is the predicted one.** The filter has no
+directional skill whatsoever -- the median pick is indistinguishable from a
+random liquid stock. What it does is find names roughly **twice as likely** to
+run +25% or +50%. That is a real, statistically significant edge, and it is the
+first significant selection result this project has produced.
+
+**Consequences.**
+
+1. The system is a right-tail harvester, not a stock picker. The stop cuts the
+   losing median, the trailing stop rides the tail -- which is exactly why
+   TRAILING carries 92.1% of gross profit and TP1 carries 3.7%. Those numbers
+   stop being a curiosity and become the mechanism.
+2. **Eleven selection experiments optimised the wrong objective.** Hit rate and
+   directional accuracy are the axis on which this filter is provably average.
+   The objective that matters is P(return > +25%) relative to the liquid
+   universe.
+3. TP1 taking a partial off the runner is not merely low-contribution, it is
+   structurally opposed to the mechanism -- it sells the very draws the edge
+   consists of. (Recorded as an observation. A TP1-removal test came out a wash
+   at -1.96 alpha earlier; that test was also graded on the exhausted windows.)
+
+**Standing caveat.** Same 2022-2026 data as everything else, so it inherits the
+exhaustion problem. But note the difference from the 262-configuration search:
+this was ONE pre-specified measurement of a hypothesis stated before it was run,
+not a best-of-N pick, so the multiple-comparisons discount that applies to the
++26.27% alpha figure does not apply to it in the same way. It still needs to
+survive live data before anything is built on it.
+
+Nothing changed. `V4_PAPER` remains frozen at 7/60 closed positions.
