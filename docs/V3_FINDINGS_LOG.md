@@ -8475,3 +8475,63 @@ matters:**
 
 The walk-forward sweep does model all three. That is the measurement to trust;
 this one only says the live book does not immediately contradict it.
+
+---
+
+## 2026-09-06 -- the stop-width frontier, far end: real curve, and one caveat above withdrawn
+
+Two runs after the frontier. Both tested predictions written down before the
+run, in `docs/EXPERIMENT_REGISTER.md`.
+
+### The sizing caveat in the section above is WRONG at 3 ATR
+
+Measured directly through `compute_entry_fill`, one representative entry
+(price 1000, ATR 3% of price, Rp 100m book):
+
+| SL_MULT | sl_price | lots | cost basis |
+|---|---|---|---|
+| 1.5 ATR | 955 | 96 | Rp 9,617,280 |
+| 3.0 ATR | 910 | **96** | **Rp 9,617,280** |
+| 99 ATR ("no stop") | **-1970** | **13** | Rp 1,302,340 |
+
+At 1.5 and 3 ATR the fill is identical: `ALLOC_PCT` binds and `lots_risk` is
+slack. So "a wider stop buys a smaller position for the same risk budget" does
+not apply at 3 ATR, and the smell-test caveat above is withdrawn for that width.
+
+At 99 ATR it does apply, hard. `sl_price` goes negative -- nothing floors it,
+`min(sl_price, entry*0.99)` is a ceiling and `round_to_tick` floors a negative
+straight through -- so `risk_per_share` balloons and the fill collapses.
+**The "no stop" cell therefore varies two things at once**, and its
+best-in-grid drawdown (-15.46 / -15.44 / -12.70) is a position-size result,
+not a portfolio-structure one. It is not the control I called it.
+
+### The inverted U is real, not a sizing artifact
+
+6 and 10 ATR extend the far end with the risk cap left slack (it stays slack to
+roughly 13.9 ATR on the representative entry). Mean walk-forward alpha:
+
+| width | orig | shift3mo | quarterly |
+|---|---|---|---|
+| 1.5 ATR (production) | +24.05 | +20.08 | +12.66 |
+| 3 ATR | **+36.74** | **+30.23** | **+17.44** |
+| 6 ATR | +26.58 | +20.00 | +14.51 |
+| 10 ATR | +26.02 | +20.96 | +13.06 |
+
+Pre-registered prediction was that a real inverted U would cost alpha at 10 ATR
+against 3 ATR on at least two of three partitions. It cost alpha on **three of
+three** (-10.72 / -9.27 / -4.38pp). The peak near 3 ATR is a property of the
+stop, not of the sizing formula.
+
+Trade counts confirm the cap stayed slack -- 297/279/269 on `orig` across
+3/6/10 ATR, a gentle decline, with no collapse of the kind 99 ATR would produce.
+
+Drawdown at 10 ATR is flat on `orig` (-21.03 vs -21.34) but better on the other
+two (-17.92 vs -26.91; -17.81 vs -20.39). So the far end trades alpha for
+drawdown rather than simply being worse -- a shape worth knowing, not a cell
+worth adopting.
+
+### Standing limits, unchanged
+
+These are the same nine windows. Rule 1 still applies: they can rule an idea
+out, they cannot let one in. Counting these runs, the grid has now graded
+roughly 290 configurations against them. V4_PAPER stays frozen at 1.5 ATR.

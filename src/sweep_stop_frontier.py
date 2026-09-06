@@ -70,14 +70,30 @@ def main():
     t = pd.DataFrame(rows)
     t.to_csv(os.path.join(SRC, "sweep_stop_frontier.csv"), index=False)
 
+    # Every cell below is a delta against PRODUCTION, so a grid that does not
+    # contain production has nothing to subtract. Say so and fall back to
+    # absolute levels: running a partial grid to extend one end of the curve
+    # (V4_SL_GRID="3.0,6.0,10.0", say) is normal, and crashing here threw away
+    # nine windows of finished work the first time it happened.
+    baseline = PRODUCTION in GRID
     print("\n--- THE FRONTIER: what each widening buys and what it costs ---")
+    if not baseline:
+        print(f"    (production {PRODUCTION:g} ATR is not in this grid -- "
+              f"showing absolute alpha and drawdown, not deltas)")
     print(f"{'width':>10}" + "".join(f"{p:>26}" for p in parts))
     for m in GRID:
         cells = []
         for pname in parts:
-            a = t[(t.partition == pname) & (t.sl_mult == m)].iloc[0]
-            b = t[(t.partition == pname) & (t.sl_mult == PRODUCTION)].iloc[0]
-            cells.append(f"{a.alpha_mean - b.alpha_mean:+8.2f}pp /DD{a.worst_dd - b.worst_dd:+7.2f}")
+            sub = t[(t.partition == pname) & (t.sl_mult == m)]
+            if sub.empty:
+                cells.append("--")
+                continue
+            a = sub.iloc[0]
+            if baseline:
+                b = t[(t.partition == pname) & (t.sl_mult == PRODUCTION)].iloc[0]
+                cells.append(f"{a.alpha_mean - b.alpha_mean:+8.2f}pp /DD{a.worst_dd - b.worst_dd:+7.2f}")
+            else:
+                cells.append(f"{a.alpha_mean:+8.2f}%  /DD{a.worst_dd:+7.2f}")
         lab = "no stop" if m >= 99 else f"{m:g} ATR"
         print(f"{lab:>10}" + "".join(f"{c:>26}" for c in cells))
 
