@@ -136,6 +136,41 @@ silently exclude V5_PAPER from tracking, or worse, merge its rows into V4's
 numbers. Scoring on this project lives in database views, so this is a real
 failure mode and not a hypothetical one.
 
+### Amendment, same day, before any data exists: the ramp-up breaks the pairing
+
+Written while building the workflows, before the arm had run once. The rule
+above says "V4 and V5 buy the same names on the same days and differ only in
+exit". **That is not true at the start, and pretending otherwise would have
+produced a confident wrong answer in five months.**
+
+V4_PAPER is at 6 of 6 positions right now -- the screener has been showing
+"Portfolio full (6/6)" -- so it takes no new entry until one closes. V5 starts
+with an empty book and full cash, so it takes everything the screener offers.
+For the first weeks the two arms therefore hold *different names*, not the same
+names with different stops.
+
+Consequences, stated rather than discovered later:
+
+1. **A pair requires the same stock AND the same entry date in BOTH arms.** That
+   was already the definition; the ramp just means very few pairs exist early.
+   The 30-pair bar will take materially longer than "about half of 60 closed
+   positions" implies.
+2. **The arms' capacity states diverge structurally, not only their exits.**
+   Holding different names means slots free on different days, so even at steady
+   state alignment is partial rather than guaranteed.
+3. **If genuine pairs stay too rare to reach 30, the paired test cannot be run.**
+   The fallback is an unpaired comparison of the two books, which is far weaker
+   -- it re-admits all the entry-selection variance the pairing was meant to
+   remove -- and would need a much larger sample to say anything. If that is
+   where this lands, the honest report is "this arm could not answer the
+   question", not a softer test on the same data.
+
+Deliberately NOT fixed by cloning V4's six open positions into V5 with wider
+stops. That would give six clean pairs on day one and it was tempting, but the
+arm would then hold positions it never took, at prices it never filled at, and
+this project's whole claim is that its published book is what actually happened.
+A slower honest answer beats a fast manufactured one.
+
 ### What this experiment cannot answer
 
 Occupancy cost. A position held through a dip occupies a slot a fresh signal
