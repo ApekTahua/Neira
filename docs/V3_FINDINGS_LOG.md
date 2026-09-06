@@ -8602,3 +8602,83 @@ The relationship is not monotone in either direction, so there is no simple
 
 Same nine windows. Rule 1: this rules an idea OUT, which is what it did.
 V4_PAPER stays frozen at 1.5 ATR, 8 of 60 closed positions.
+
+---
+
+## 2026-09-06 (night) -- the council's "widen after profit" variant loses, on measurement
+
+Pre-registered before the run. The council's peer review proposed a targeted
+alternative to a flat wider stop: widen the stop only AFTER a position shows
+unrealised profit, which would address the diagnosed leak without adding
+variance to positions that never work. Testing whether it is even coherent
+produced a cleaner answer than expected -- against it.
+
+### The MIN_HOLD asymmetry is real, and is NOT the leak
+
+`cfg.MIN_HOLD_DAYS = 3` carries the comment "TP1/Trailing ditahan N hari bursa;
+SL selalu aktif", and `simulate_window()` gates TP1 and the trailing stop on
+`hold_ok` while the SL branch is evaluated first and ungated. For three sessions
+a position therefore has all of its downside protection and none of its upside
+capture. That asymmetry is real and was not documented anywhere.
+
+It is not what costs the money. Across run 37's 168 stopped positions, measured
+on CLOSES (not intraday highs) over the lockout window:
+
+| | |
+|---|---|
+| ever in profit during the lockout | **41.7%** |
+| mean peak gain in the lockout | **-0.53%** |
+| median peak gain in the lockout | **-0.81%** |
+
+The typical stopped position never got above water at all before it was stopped.
+There was no profit to protect, so a rule that triggers on profit has nothing to
+fire on and would touch fewer than half of stop-outs.
+
+**A number I published earlier the same day was misleading and is corrected
+here.** I reported that stopped positions "peaked at +7.75% on average" before
+the stop. That used intraday highs across the whole hold, which cannot say WHEN
+the peak happened and flatters it badly. On closes, inside the window that
+matters, the median is negative.
+
+### What the leak actually is: shaken out before the move
+
+Same 168 stopped positions, looking at the 90 calendar days AFTER the stop:
+
+| | |
+|---|---|
+| recovered above our entry price | **68.5%** |
+| ran +25% or more above our entry | **28.6%** |
+| median peak after the stop, vs entry | **+8.77%** |
+
+We exit at a mean -8.67%, and then two in three of those names trade back above
+where we bought, with nearly three in ten running +25%. The mechanism is not
+"gave back profit". It is "stopped out before the move started".
+
+That is the instrument test, and it settles it: a profit-triggered widening is
+aimed at a thing that does not happen, while a flat wider stop is aimed at the
+thing that does -- it keeps the position alive through the dip so it is still
+open when the recovery comes.
+
+It also explains the mean-vs-median split in the stop-width frontier
+mechanically rather than as an anomaly: a wider stop captures more of this
+recovery tail (mean up on 3/3 partitions) while holding ordinary losers longer
+for nothing (median down on 2/3).
+
+### Limits, stated
+
+- "Recovered after the stop" does NOT establish that a 3 ATR stop would have
+  survived the dip -- it may have been hit too, deeper. Only the walk-forward
+  sweep answers that, and it is the sweep, not this, that carries the alpha
+  numbers.
+- 90 calendar days is a generous recovery window and was chosen before looking.
+- The occupancy cost is real and unpriced here: a position held through a dip
+  occupies a slot that a fresh signal could have used.
+
+### Effect on the council's plan
+
+Its step 1 was "test the widen-after-profit variant first, because if it
+dominates, that is what the forward arm should carry". Tested: it does not
+dominate. **The forward arm, if built, carries the flat 3 ATR stop.**
+
+Nine windows, so Rule 1 still holds: this rules an instrument OUT. V4_PAPER
+stays frozen at 1.5 ATR, 8 of 60 closed positions.
