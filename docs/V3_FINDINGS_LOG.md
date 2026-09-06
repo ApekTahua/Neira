@@ -8535,3 +8535,70 @@ worth adopting.
 These are the same nine windows. Rule 1 still applies: they can rule an idea
 out, they cannot let one in. Counting these runs, the grid has now graded
 roughly 290 configurations against them. V4_PAPER stays frozen at 1.5 ATR.
+
+---
+
+## 2026-09-06 (evening) -- ARA entries: ruled out, and a unit error corrected
+
+Pre-registered in `docs/EXPERIMENT_REGISTER.md` before the run. Motivated by
+the benchmark finding that nothing in this system knows about IDX auto-reject.
+
+### The bands are real and were derived, not assumed
+
+From our own EOD history since 2025-01-01, the maximum close-to-close gain by
+price tier lands exactly on: **35% below Rp200, 25% Rp200-5,000, 20% above**.
+That matches the published IDX rule, so the tagging below is trustworthy.
+(Large negative outliers are corporate actions, not ARB.)
+
+### The answer: 3 of 262 positions. Not worth acting on.
+
+Run 37 (published v4, 2022-01-05..2026-01-28), legs combined share-weighted
+into positions:
+
+| signal day closed | positions | mean | median | win rate |
+|---|---|---|---|---|
+| at ARA | **3** | -4.34% | -13.91% | 33.3% |
+| not at ARA | 259 | +0.21% | -5.97% | 30.1% |
+
+Three events cannot support any claim about returns. What they do settle is
+the size of the prize: **an ARA entry filter would have changed 3 positions in
+four years.** Whatever its sign, it cannot matter, and it is not a reason to
+unfreeze anything.
+
+### A unit error in my own earlier report, corrected
+
+Earlier the same day I reported signals landing on an ARA close at **2.31%
+(5 of 216) against a 0.648% base rate, 3.6x**. That is real, but it measures
+the **qualifying signal list**. This measures **positions actually bought**,
+where the rate is 1.15%. The top-2 rule filters nearly all of them out before
+they become trades -- and indeed none of the five live ARA signals was ever
+bought (four ranked 7-13, the fifth was already an open position).
+
+Quoting the 3.6x as if it described the book would have been the same
+list-vs-position error already logged here twice.
+
+### Exploratory, NOT pre-registered, and not a finding
+
+Widening to a gradient gives bigger cells but no usable signal:
+
+| signal day move | positions | mean | median | win rate | >= +25% |
+|---|---|---|---|---|---|
+| flat or down | 130 | +0.46% | -6.04% | 26.9% | 9.2% |
+| up, under 30% of band | 99 | -1.73% | -6.16% | 28.3% | 3.0% |
+| 30-60% of band | 19 | +6.36% | +3.20% | 63.2% | 10.5% |
+| 60-100% of band | 11 | +4.02% | -6.26% | 27.3% | 18.2% |
+| at ARA | 3 | -4.34% | -13.91% | 33.3% | 0.0% |
+
+The 30-60% bucket has a 63.2% win rate and would make a good screenshot. It is
+19 positions, and it is the best of five buckets graded at once. This repo has
+already graded roughly 290 configurations against these same windows; a
+best-of-5 cell at n=19 is exactly the shape of a false positive here. Recorded
+so nobody rediscovers it and believes it.
+
+The relationship is not monotone in either direction, so there is no simple
+"buy strength" or "avoid strength" rule hiding in this.
+
+### Standing limits
+
+Same nine windows. Rule 1: this rules an idea OUT, which is what it did.
+V4_PAPER stays frozen at 1.5 ATR, 8 of 60 closed positions.
