@@ -261,16 +261,26 @@ def main():
     # so pulling enough of it to see six distinct DATES means thousands of rows
     # (and a limit sized by guesswork). The index has exactly one row per
     # trading day, so a limit of N rows is a limit of N sessions.
+    #
+    # Sessions strictly BEFORE today, not "on or before". This monitor runs
+    # 09:00-17:00 and index_eod does not get today's row until the EOD job at
+    # 17:30, so a "<= today" query silently returns yesterday as its newest
+    # session for the entire trading day. The window then measured back from
+    # YESTERDAY and came out one session too wide -- the third live/backtest
+    # divergence found in this same block, and the same shape as the first two.
+    # Anchoring on today and counting back over prior sessions gives the same
+    # answer whether or not today's row exists yet.
     _cal = _retry(lambda: supabase.table("index_eod").select("trade_date").eq(
         "index_code", "COMPOSITE"
-    ).lte("trade_date", today.isoformat()).order(
+    ).lt("trade_date", today.isoformat()).order(
         "trade_date", desc=True
     ).limit(bt.ENTRY_CLUSTER_WINDOW_DAYS + 5).execute()).data
-    _days = sorted({r["trade_date"] for r in _cal}, reverse=True)
-    # _days[0] is today (or the last session on or before it); the window is
-    # the ENTRY_CLUSTER_WINDOW_DAYS sessions before that, matching the
-    # backtest's `day_idx - p["entry_day_idx"] <= ENTRY_CLUSTER_WINDOW_DAYS`.
-    _cutoff = _days[min(bt.ENTRY_CLUSTER_WINDOW_DAYS, len(_days) - 1)] if _days else today.isoformat()
+    _prior = sorted({r["trade_date"] for r in _cal}, reverse=True)
+    # The backtest counts `day_idx - entry_day_idx <= ENTRY_CLUSTER_WINDOW_DAYS`,
+    # which is today plus the N sessions before it. _prior[N-1] is the oldest of
+    # those N, so `entry_date >= _cutoff` spans exactly the same set.
+    _cutoff = (_prior[min(bt.ENTRY_CLUSTER_WINDOW_DAYS - 1, len(_prior) - 1)]
+               if _prior else today.isoformat())
     # Still-open only, because that is what the backtest counts: its
     # `recent_entries` sums over `positions`, the list of CURRENTLY held
     # positions, so one that entered and stopped out inside the window has

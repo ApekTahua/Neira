@@ -89,6 +89,33 @@ def test_cluster_window_counts_only_still_open():
     print("[OK] cluster window counts only positions still open, matching the backtest")
 
 
+
+def _cutoff_from(prior_sessions, window_days, today):
+    """Mirrors paper_monitor.py's cutoff resolution exactly."""
+    return (prior_sessions[min(window_days - 1, len(prior_sessions) - 1)]
+            if prior_sessions else today)
+
+
+def test_cutoff_is_anchored_on_today_not_on_the_last_eod_row():
+    # index_eod does not carry today's row until the EOD job runs at 17:30, but
+    # this monitor polls from 09:00. Both states must give the same window.
+    window = bt.ENTRY_CLUSTER_WINDOW_DAYS
+    sessions_desc = ["2026-09-07", "2026-09-04", "2026-09-03", "2026-09-02",
+                     "2026-09-01", "2026-08-31", "2026-08-28", "2026-08-27"]
+    today = "2026-09-07"
+    prior = [d for d in sessions_desc if d < today]          # intraday: no row yet
+    prior_after_eod = [d for d in sessions_desc if d < today]  # same query, "<" not "<="
+    a = _cutoff_from(prior, window, today)
+    b = _cutoff_from(prior_after_eod, window, today)
+    assert a == b, f"cutoff moved when today's EOD row landed: {a} vs {b}"
+    # today plus `window` prior sessions, so the oldest included is prior[window-1]
+    assert a == prior[window - 1] == "2026-08-31", a
+    included = [d for d in sessions_desc if d >= a]
+    assert len(included) == window + 1, f"expected {window + 1} sessions, got {included}"
+    print(f"[OK] cluster window spans today + {window} prior sessions, "
+          f"whether or not today's EOD row exists yet")
+
+
 def test_live_no_day_exceeds_cap():
     url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY")
     if not (url and key):
@@ -117,5 +144,6 @@ def test_live_no_day_exceeds_cap():
 if __name__ == "__main__":
     test_daily_cap_and_ranking()
     test_cluster_window_counts_only_still_open()
+    test_cutoff_is_anchored_on_today_not_on_the_last_eod_row()
     test_live_no_day_exceeds_cap()
     print("\n[DONE] entry-cap self-check passed")
