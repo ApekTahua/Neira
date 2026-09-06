@@ -130,3 +130,8 @@ fill at the exact close with no spread and no market impact.
     answer a question about the exit design, not about the picks. To ask about
     the picks, measure buy-and-hold from entry against a same-date random
     baseline.
+14. Don't cap the test suite at a few minutes per file. Four of the 33 tests in
+    `src/test_*.py` run full backtests and legitimately need more than three
+    minutes each -- a 180s cap reported them as FAIL with empty logs, which
+    looks exactly like a crash. All 33 pass given time. If a test times out,
+    check `exit 124` before reporting a failure.
