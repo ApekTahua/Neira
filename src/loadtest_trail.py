@@ -68,6 +68,12 @@ def summarise(res):
     if t.empty:
         return dict(windows=0, alpha_mean=np.nan, alpha_med=np.nan,
                     worst_dd=np.nan, beat=0, pf=np.nan, wr=np.nan)
+    # trades and avg_n_positions ride along because run_schedule already returns
+    # them per window and leaving them out cost a real answer: the stop-width
+    # frontier (2026-09-06) found no-stop with the BEST drawdown of any cell and
+    # could not test the obvious portfolio-level explanation -- that a stop which
+    # frees a slot quickly causes MORE entries and more simultaneous exposure --
+    # because this function threw the counts away.
     return dict(
         windows=len(t),
         alpha_mean=t["alpha_pct"].mean(),
@@ -76,6 +82,9 @@ def summarise(res):
         beat=int((t["alpha_pct"] > 0).sum()),
         pf=t["profit_factor"].mean(),
         wr=t["win_rate"].mean(),
+        trades=int(t["trades"].sum()),
+        avg_positions=(t["avg_n_positions"].mean()
+                       if "avg_n_positions" in t.columns else float("nan")),
     )
 
 

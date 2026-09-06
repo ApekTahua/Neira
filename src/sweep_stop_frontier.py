@@ -42,7 +42,8 @@ from loadtest_trail import partitions, summarise  # noqa: E402
 
 # 99.0 is "no stop in practice" -- an ATR multiple no position can reach before
 # the trailing stop or the time cap takes it.
-GRID = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 99.0]
+GRID = [float(x) for x in os.environ.get(
+    "V4_SL_GRID", "1.0,1.5,2.0,2.5,3.0,4.0,99.0").split(",")]
 PRODUCTION = 1.5
 
 
@@ -65,7 +66,7 @@ def main():
             print(f"  {pname:>10} {tag:<22} alpha {s['alpha_mean']:+7.2f}%  "
                   f"med {s['alpha_med']:+7.2f}%  worstDD {s['worst_dd']:7.2f}%  "
                   f"beat {s['beat']}/{s['windows']}  PF {s['pf']:.2f}  "
-                  f"trades {int(s['windows'])}w")
+                  f"trades {s['trades']:>4}  avgPos {s['avg_positions']:.2f}")
     t = pd.DataFrame(rows)
     t.to_csv(os.path.join(SRC, "sweep_stop_frontier.csv"), index=False)
 
