@@ -8440,3 +8440,38 @@ told apart. **A stop width fires on every position**, so a second paper run
 differing only in `V4_SL_MULT` would diverge from V4_PAPER immediately and
 measurably. It is the first candidate for which a parallel forward test could
 actually answer the question.
+
+### Smell test on the live book (2026-09-06)
+
+Not evidence. Four stop-outs is not a sample, and this is recorded because it
+was cheap and because it uses the only forward data that exists.
+
+Replaying V4_PAPER's closed positions against a 2.5 ATR stop:
+
+| position | realised | under 2.5 ATR |
+|---|---|---|
+| WMPP | −13.89% (SL) | still stopped, unchanged |
+| GIAA | −10.81% (SL) | survives, currently −8.2% |
+| HATM | −14.96% (SL) | survives, currently −4.7% |
+| NICE | −8.33% (SL) | survives, currently −1.6% |
+
+Three of the four stop-outs survive, and all three currently sit above the loss
+that was actually taken. The other three closed positions exited on the trailing
+stop and are unaffected.
+
+**Three reasons this is weaker than it looks, and the third is the one that
+matters:**
+
+- Four stop-outs, and three of the counterfactuals are still open positions
+  marked at today's price rather than realised outcomes. They can still fall.
+- Holding losers longer occupies slots, so fewer new entries would have been
+  taken. Not modelled here.
+- **Position sizing is risk-based off the stop distance** --
+  `risk_per_share = entry_price - sl_price`, then `lots = min(lots, lots_risk)`
+  at `backtest_v4.py:2311-2315`. A 2.5 ATR stop means a materially SMALLER
+  position for the same risk budget. The per-position percentages above are
+  unaffected by that, but the portfolio arithmetic is, and this replay does not
+  model it at all.
+
+The walk-forward sweep does model all three. That is the measurement to trust;
+this one only says the live book does not immediately contradict it.
