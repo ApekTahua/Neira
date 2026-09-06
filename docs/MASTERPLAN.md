@@ -22,6 +22,32 @@ own TEBE base-rate research (932 historical episodes) found has a 35-39% win
 rate and negative median return. That specific question is closed. This
 section is the answer to the bigger one behind it.
 
+> **SUPERSEDED IN PART, 2026-09-06.** Two things in section A are now wrong and
+> a future reader must not act on them as written.
+>
+> **The trade-count bar is 60, not 25-30.** `docs/HOLDOUT_PROTOCOL.md`, written
+> 2026-09-02 before its own results were known, sets the bar at **60 closed
+> positions** on a bootstrap showing that below that the false-negative rate
+> exceeds 30%. The 25-30 figure here predates that work. Where the two documents
+> disagree, the protocol wins -- it was written under pre-registration and this
+> section was not. Status 2026-09-06: **8 closed**, 6 open, ~24 calendar days in.
+> At the observed rate of 0.33 closed/day that is roughly 5 more months.
+>
+> **The win-rate criterion below measures the wrong thing.** It calls a live win
+> rate "far below the 45-60% band this system's edge is built on" a stop signal.
+> The edge is not built on that band. Measured 2026-09-05, the backtest's own
+> POSITION-level win rate is **29.0%**, and the 45-60% figure came from
+> leg-level counting in which every TP1 partial is a winner by construction --
+> the same error that once inflated a published number from 26.3% to 49.3%.
+> Live is currently 25.0%, which sits at the 27.6th percentile of the backtest's
+> own 8-position sampling distribution: unremarkable, not a warning.
+>
+> Read as written, this criterion would have raised a false alarm on a system
+> behaving normally. The axis that actually carries the edge is the right tail --
+> the odds of a >+25% run, roughly doubled versus a random liquid stock and
+> statistically significant, where the median pick is indistinguishable from
+> random. Any future readiness judgement should be graded there.
+
 ### A. Live track record depth (the dominant gate -- can't be rushed)
 - [ ] **>= 25-30 CLOSED trades** on V4_PAPER (not open positions -- closed
       ones are what prove SL/TP1/trailing exits behave the way the backtest
@@ -43,6 +69,17 @@ section is the answer to the bigger one behind it.
       -- doesn't need to match exactly, but a live win rate far below the
       45-60% band this system's edge is built on, sustained over 20+ trades,
       is a stop signal, not noise to wait out.
+
+> **Clock reset again 2026-09-06.** Three live/backtest divergences were
+> introduced and fixed inside 48 hours, all in `paper_monitor.py`'s entry-cap
+> block and all mine: the caps were enforced where rows are created rather than
+> where fills happen (real, cost a 3-against-a-cap-of-2 day on 2026-09-03); the
+> first fix then counted closed positions in the cluster window, making live
+> STRICTER than the backtest; and the calendar query anchored on the last EOD row
+> instead of today, so during trading hours the window measured back from
+> yesterday and came out one session too wide. The third was found by replaying
+> the block against the live database rather than reading it -- it had been
+> pushed and had never executed.
 
 ### B. No new correctness bugs for a real observation window
 **Clock reset 2026-08-18**: a live-path audit found and fixed FIVE more
