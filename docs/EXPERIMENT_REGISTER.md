@@ -54,6 +54,97 @@ can only tell us that something we already believe is fragile.
 
 ---
 
+## Forward experiment: V5_PAPER (3 ATR stop), promotion rule
+
+Written 2026-09-06, **before any workflow file or database row exists**. This
+section is not part of the nine-window table above and Rule 1 does not apply to
+it: Rule 1 closes the historical windows, and this is precisely the forward
+evidence Rule 1 says is the only thing that can promote a change.
+
+The reason this is written first is the council's own finding: every advisor
+argued start-vs-wait, and none proposed a promotion rule, which would have
+relocated the exact discipline failure that produced V4's freeze five months
+into the future.
+
+### The arm
+
+V5_PAPER is V4_PAPER with **one** variable changed: `V4_SL_MULT` 1.5 -> 3.0.
+Both `V4_BANDAR_SIZING=1` and `V4_ATR_PRICE_RATIO_MAX=0.08` are copied across
+unchanged. Same screener, same signals, same days, same starting cash. Silent
+(no Telegram env vars on the run step; the failure-alert step keeps them).
+
+3.0 rather than 2.5: 2.5 wins only on `orig` (+13.17 vs +12.69) while 3.0 wins
+on `shift3mo` (+10.15 vs +6.98) and `quarterly` (+4.78 vs +3.85). And position
+size at 3 ATR is identical to production (measured: 96 lots both), so the arms
+differ in exactly one thing.
+
+### The unit of evidence: divergent pairs, not closed positions
+
+V4 and V5 buy the same names on the same days and differ only in exit, so this
+is a **paired** comparison. Two peer reviewers flagged independently that
+treating them as two independent samples is wrong, and that the 60-closed-
+position bar was written for grading ONE strategy, not for comparing two stop
+widths on shared entries.
+
+A pair is **divergent** when the two arms exit the same position differently
+(one stops and the other does not, or they exit on different dates). Pairs that
+exit identically carry no information about stop width and are excluded.
+
+Measured basis for the bar: 168 of 262 backtest positions (64.1%) exit via SL at
+1.5 ATR, and the live-book replay found 3 of 4 stop-outs surviving a wider stop,
+so roughly half of all positions should diverge. SD of position return is
+18.71pp. At **30 divergent pairs**, a paired test has ~80% power to detect a
+mean paired difference around 10pp. That is enough for a large effect and not a
+subtle one, which is the right sensitivity: nothing subtle would justify
+changing a frozen config.
+
+### The deciding metric (ONE, per Rule 3)
+
+**Mean paired difference in position-level return (V5 minus V4) across divergent
+pairs, with a bootstrap 95% CI.**
+
+- **Promotes** if the CI lies entirely above zero.
+- **Killed** if the CI lies entirely below zero.
+- **Neither** if the CI straddles zero -- in which case the arm keeps running and
+  is re-read at 60 divergent pairs, once, and then retired either way.
+
+Position-level, share-weighted across legs. Never leg-level: TP1 partials are
+winners by construction, and that error has already inflated a published win
+rate on this project from 26.3% to 49.3%.
+
+### Guardrails (may VETO a promotion, can never cause one)
+
+1. **Drawdown.** If V5's worst equity drawdown exceeds V4's by more than 5
+   percentage points over the same span, no promotion regardless of the metric.
+2. **Median.** If the median paired difference is negative while the mean is
+   positive, no promotion on this evidence alone. The backtest predicts exactly
+   this shape (mean up on 3/3 partitions, median down on 2/3), and a gain
+   carried entirely by a couple of outliers is the pattern this project has
+   already been burned by once.
+
+### No peeking
+
+The metric is not to be computed, reported, or acted on before 30 divergent
+pairs exist. Reading it early and stopping on a favourable number is optional
+stopping, and it would invalidate the whole exercise. Progress may be reported
+as a **count of divergent pairs only**.
+
+### Build-time check, before the arm is trusted
+
+Confirm no downstream view or query hard-codes a version allowlist that would
+silently exclude V5_PAPER from tracking, or worse, merge its rows into V4's
+numbers. Scoring on this project lives in database views, so this is a real
+failure mode and not a hypothetical one.
+
+### What this experiment cannot answer
+
+Occupancy cost. A position held through a dip occupies a slot a fresh signal
+could have used, and with both arms capped at the same maximum positions the
+wider-stop arm will take fewer entries (backtest: 364 -> 297 trades, about
+-18%). The paired metric prices the exits, not the entries forgone.
+
+---
+
 ## How to add a row
 
 Append the row, commit it, *then* start the run. A row added afterwards is
