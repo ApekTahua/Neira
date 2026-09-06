@@ -1,0 +1,69 @@
+name: "[Every 15 Min] - Paper Trading V5 Intraday Monitor"
+
+# Intraday leg of the V5_PAPER forward arm. See
+# paper_signal_scan_v5_trigger.yml for the full rationale, the pre-registered
+# promotion rule, and the reason this arm is silent.
+#
+# V5_PAPER is V4_PAPER with exactly one variable changed: V4_SL_MULT 1.5 -> 3.0.
+#
+# THE MONITOR NEEDS THAT VAR TOO, and the reason is not the obvious one. The
+# 15-minute stop check reads each position's STORED sl_price, so it does not
+# depend on the env var. But the monitor is also where PENDING orders get filled
+# -- it calls bt.compute_entry_fill(), and that is what computes and stores
+# sl_price in the first place. Most fills happen here, not in the daily scan.
+#
+# So omitting V4_SL_MULT here would not break the stop check; it would quietly
+# give every position filled by the monitor a 1.5 ATR stop while the arm claims
+# to be testing 3.0 -- a silent corruption of the comparison that would look
+# perfectly healthy in the logs.
+#
+# PAIRED WITH: paper_signal_scan_v5_trigger.yml. Mirror any V4 config change
+# into both or the two arms stop differing only in stop width.
+on:
+  schedule:
+    - cron: '*/15 2-4,6-8 * * 1-5'  # IDX hours, UTC -- same cadence as V4's monitor
+  workflow_dispatch:
+
+concurrency:
+  group: paper-trading-engine-v5
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ambil kode dari repository
+        uses: actions/checkout@v4
+        with:
+          ref: worktree-v2-hmm-screener
+
+      - name: Pasang Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Library Pendukung
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Jalankan Paper Trading Monitor (V5)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # No TELEGRAM_* on purpose -- notify() returns early without them, so
+          # this arm never posts. See the scan workflow's header.
+          PAPER_VERSION: V5_PAPER
+          # THE one variable under test. Required here as well as on the scan:
+          # this is what the 15-minute stop check reads.
+          V4_SL_MULT: '3.0'
+          # Copied verbatim from paper_monitor_v4_trigger.yml.
+          V4_BANDAR_SIZING: '1'
+          V4_ATR_PRICE_RATIO_MAX: '0.08'
+        run: python src/paper_monitor.py
+
+      # Deliberately no failure alert here -- same reasoning as V4's monitor:
+      # it fires every 15 minutes, and paper_monitor.py's own STALE_MINUTES
+      # guard is the real backstop. The daily scan's alert is what catches a
+      # genuinely broken arm.
