@@ -8370,3 +8370,73 @@ not broken.
 
 Still unfixed and now precisely located: **41% of the tail draws are cut by the
 stop before they run, and no mechanism tested today recovers them.**
+
+## The stop is set too tight, and the shape says so on all three partitions
+## (2026-09-06)
+
+The leak was located on 2026-09-05: 49 of the 120 positions with a >+25% run
+available were stopped out first at a median -8.75%, on names that went on to
+offer a median +50%. Three proposed fixes then died -- the cooldown binds once in
+24 live days, a bandar-aware stop has no signal to read, and the coiling premise
+failed in both directions.
+
+`V4_SL_MULT` itself had never been swept. 1.5 ATR was chosen, exactly as the
+trailing 0.08 was until two days ago. Pre-registered as a frontier rather than a
+search: every width reported, including no stop at all, so no single cell could
+be picked after the fact. Slippage ON.
+
+### Alpha against production (1.5 ATR), all three cuts
+
+| width | orig | shift3mo | quarterly |
+|---|---|---|---|
+| 1 ATR | -1.60pp | -2.23pp | +0.67pp |
+| **1.5 ATR (production)** | — | — | — |
+| 2 ATR | +3.40 | +10.14 | +3.50 |
+| 2.5 ATR | **+13.17** | +6.98 | +3.85 |
+| 3 ATR | +12.69 | **+10.15** | **+4.78** |
+| 4 ATR | +8.00 | +5.28 | +2.15 |
+| **no stop** | **-2.01** | **-3.46** | **-2.62** |
+
+**An inverted U, on every partition independently, peaking around 2.5-3 ATR.**
+Production sits at 1.5, on the tight side of the peak. And the no-stop endpoint
+is worse than production on all three cuts, so the stop earns its existence --
+what is mis-set is its width, not its presence. That endpoint is the control
+that makes the rest of the curve worth reading: a monotone "wider is always
+better" would have been the signature of a broken measurement.
+
+This is what the 49-of-120 leak predicted, and it is the first time a swept
+parameter in this project has produced a broad plateau across all three
+partitions rather than one cell winning by a fraction of a point.
+
+### What it costs
+
+Not drawdown, mostly -- the 2 to 4 ATR band moves worst drawdown by between
+-3.71pp and +1.41pp, noise-sized either way. The cost is **consistency**: on
+`orig`, windows beaten falls 7/9 at production to 5/9 at 2.5 ATR and 6/9 at 3
+ATR, and median alpha wobbles while mean alpha climbs. Win less often, win
+bigger. The same tail signature as everything else measured this week.
+
+### Two things this run does NOT establish
+
+- **No stop shows the BEST drawdown of any cell** (-15.46% / -15.44% / -12.70%
+  against production's -21.31% / -24.44% / -19.28%) while giving up alpha. The
+  likely mechanism is portfolio-level -- a stop that frees a slot quickly causes
+  MORE entries and more simultaneous exposure -- but `summarise()` does not
+  report trade counts, so that is a hypothesis and not a finding.
+- The sweep's own print labels the window count as "trades" (`trades {windows}w`).
+  Cosmetic, but it is a mislabel in output I read from, so it is recorded.
+
+### Status
+
+Config #263 and beyond on the closed nine windows. **It may not ship**
+(HOLDOUT_PROTOCOL Rule 1) and the strength of the shape does not change that --
+the whole point of the rule is that a convincing shape is exactly what 262 tries
+produces by chance.
+
+What it does change is the parallel-run question, which was closed on 2026-09-05
+for the wrong reason. That verdict was specific to the cooldown: it bound exactly
+once in 24 live days, so two configs differing only in cooldown could never be
+told apart. **A stop width fires on every position**, so a second paper run
+differing only in `V4_SL_MULT` would diverge from V4_PAPER immediately and
+measurably. It is the first candidate for which a parallel forward test could
+actually answer the question.
