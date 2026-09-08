@@ -5152,6 +5152,16 @@ meaningfully worse worst-case drawdown than baseline, one currently-solid window
 degrades consistently at every value, and the apparent best cell is shown directly (not
 just suspected) to be substantially a single-window artifact.
 
+**Re-proposed and re-declined 2026-09-08.** The owner asked for this by name --
+"bagus g fitur itu, if it is for better system yah aktifin aja" -- after noticing that SOCI
+had been signalled 17 times from 500 up to 685 without ever being bought, and asking why the
+system does not simply wait for a cheaper entry. His question is the right one and the
+mechanism does exactly what he wants; the condition he attached to it ("if it is for better
+system") is what fails. Nothing was enabled. The sweep below is the answer, and it was run
+before he asked, pre-registered, on the full walk-forward. Anyone who gets asked this again
+should quote the W9 column rather than re-run the grid: a currently-solid window degrades
+monotonically at every value, which is the shape of a real cost, not noise.
+
 **Verdict: NOT VALIDATED.** The mechanical claim behind the idea is correct and confirmed
 (pullback fills genuinely cost less, 0.8-1.5% on average, when they happen), and profit
 factor improves at every tested value -- a real secondary signal worth keeping in mind. But
