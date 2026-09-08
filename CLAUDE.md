@@ -1,8 +1,15 @@
 # Project context (read this first, every session)
 
 ## What this repo is
-IHSG (Indonesian stock exchange) screener + backtester. Live production
-bot posts daily signals to Telegram via GitHub Actions.
+IHSG (Indonesian stock exchange) screener + backtester.
+
+**V1 no longer posts anything.** `.github/workflows/run_screener.yml` was
+deleted 2026-09-08 on the owner's instruction ("buang aja V1") after 52 runs.
+It had been sending V1's daily signals to the same Telegram chat as V4, which
+made two systems with very different evidence behind them look like one voice
+-- and V1's entry signal was measured to have no edge on liquid stocks. The
+V1 source files below are still protected and still present; only the schedule
+that published them is gone. `git revert` restores it if that was wrong.
 
 ## Branch map
 - `main` (this branch) — V1 production: `src/screener.py`, `src/backtest.py`,
