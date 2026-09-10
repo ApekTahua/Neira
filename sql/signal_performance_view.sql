@@ -145,4 +145,13 @@ left join public.index_eod b10
 left join public.index_eod b20
   on b20.index_code = 'COMPOSITE' and b20.trade_date = a.d20_date;
 
+alter view public.signal_performance set (security_invoker = on);
+-- Audit finding SQL-3, fixed 2026-09-11. A view without this runs as its
+-- OWNER, so RLS on the underlying tables is bypassed for anyone who can
+-- select it. The live database already had it on signal_performance (applied
+-- during the 2026-09-03 audit) but this FILE did not, so replaying the file
+-- would have silently recreated the hole. Verified live afterwards with a
+-- real anon-key request returning real rows -- an empty 200 is what a
+-- silently-blocked read looks like, so row count is the check, not status.
+
 grant select on public.signal_performance to anon, authenticated, service_role;

@@ -69,3 +69,13 @@ select
     else null
   end as observed_limit_pct
 from per_stock;
+
+alter view public.stock_price_limit set (security_invoker = on);
+-- Audit finding SQL-3, fixed 2026-09-11. A view without this runs as its
+-- OWNER, so RLS on the underlying tables is bypassed for anyone who can
+-- select it. The live database already had it on signal_performance (applied
+-- during the 2026-09-03 audit) but this FILE did not, so replaying the file
+-- would have silently recreated the hole. Verified live afterwards with a
+-- real anon-key request returning real rows -- an empty 200 is what a
+-- silently-blocked read looks like, so row count is the check, not status.
+
