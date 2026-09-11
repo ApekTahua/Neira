@@ -413,6 +413,12 @@ def main():
         trade_record, cash_delta = bt.evaluate_position_exit(
             pos, (day_open, current_price, day_high, day_low), regime_hint, 0.0,
             today, prev_equity, cash, allow_pyramid=not breadth_crash,
+            # This monitor does not wire current_atr through, so if
+            # V4_TRAIL_ATR_ENABLED is ever switched on here the live book would
+            # silently run the flat-% trail instead of the validated ATR one.
+            # strict_atr makes that combination raise instead of drifting
+            # quietly. No effect while the flag is off, which it is.
+            strict_atr=True,
         )
         cash += cash_delta
 
