@@ -2494,11 +2494,23 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
         sell_qty = sell_lots * LOT_SIZE
         sell_cost_basis = pos["cost_basis"] * (sell_lots / pos["total_lots"])
         sell_participation = sell_qty / max(pos.get("avg_vol_20", 1.0), 1.0)
-        gross_return = apply_slippage(exit_price, "sell", sell_participation) * sell_qty
+        # One slipped price, computed once and reused. `pnl` (rupiah) used the
+        # slipped price while `pnl_pct` used the raw one, so the moment V4_SLIPPAGE
+        # is switched on the two disagree on every trade and /paper-trading shows a
+        # percentage that contradicts its own rupiah figure (audit finding T-12,
+        # which named one site -- there were four). Provably a no-op today:
+        # apply_slippage returns its input unchanged while SLIPPAGE_ENABLED is
+        # false, which it is on the live run.
+        #
+        # Still a PRICE return on purpose -- fees live in `pnl`, not here. Making
+        # pnl_pct fee-inclusive is defensible but would move every published live
+        # number while the holdout is open, so that stays an owner-level decision.
+        exit_price_net = apply_slippage(exit_price, "sell", sell_participation)
+        gross_return = exit_price_net * sell_qty
         fee = risk.apply_fee(gross_return, "sell", cfg.BUY_FEE, cfg.SELL_FEE)
         net_return = gross_return - fee
         pnl = net_return - sell_cost_basis
-        pnl_pct = (exit_price / pos["avg_price"] - 1) * 100
+        pnl_pct = (exit_price_net / pos["avg_price"] - 1) * 100
         cash_delta += net_return
         pos["remaining_lots"] -= sell_lots
         if sell_lots > 0:
@@ -2858,11 +2870,12 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
         sell_qty = sell_lots * LOT_SIZE
         sell_cost_basis = pos["cost_basis"] * (sell_lots / pos["total_lots"])
         sell_participation = sell_qty / max(pos.get("avg_vol_20", 1.0), 1.0)
-        gross_return = apply_slippage(exit_price, "sell", sell_participation) * sell_qty
+        exit_price_net = apply_slippage(exit_price, "sell", sell_participation)
+        gross_return = exit_price_net * sell_qty
         fee = risk.apply_fee(gross_return, "sell", cfg.BUY_FEE, cfg.SELL_FEE)
         net_return = gross_return - fee
         pnl = net_return - sell_cost_basis
-        pnl_pct = (exit_price / pos["avg_price"] - 1) * 100
+        pnl_pct = (exit_price_net / pos["avg_price"] - 1) * 100
         cash += net_return
         pos["remaining_lots"] -= sell_lots
         trades.append({
@@ -3151,11 +3164,12 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
                     # exists, so it gets participation=1.0 (not an estimate off
                     # avg_vol_20, which is meaningless for a name that isn't
                     # trading) rather than silently skipping slippage here.
-                    gross_return = apply_slippage(exit_price, "sell", 1.0) * sell_qty
+                    exit_price_net = apply_slippage(exit_price, "sell", 1.0)
+                    gross_return = exit_price_net * sell_qty
                     fee = risk.apply_fee(gross_return, "sell", cfg.BUY_FEE, cfg.SELL_FEE)
                     net_return = gross_return - fee
                     pnl = net_return - sell_cost_basis
-                    pnl_pct = (exit_price / pos["avg_price"] - 1) * 100
+                    pnl_pct = (exit_price_net / pos["avg_price"] - 1) * 100
                     cash += net_return
                     pos["remaining_lots"] -= sell_lots
                     trades.append({
@@ -3320,11 +3334,12 @@ def simulate_window(df, idx_df, train_end, test_start, test_end, label="", diag=
         exit_qty = pos["remaining_lots"] * LOT_SIZE
         exit_cost_basis = pos["cost_basis"] * (pos["remaining_lots"] / pos["total_lots"])
         end_participation = exit_qty / max(pos.get("avg_vol_20", 1.0), 1.0)
-        gross_return = apply_slippage(exit_price, "sell", end_participation) * exit_qty
+        exit_price_net = apply_slippage(exit_price, "sell", end_participation)
+        gross_return = exit_price_net * exit_qty
         fee = risk.apply_fee(gross_return, "sell", cfg.BUY_FEE, cfg.SELL_FEE)
         net_return = gross_return - fee
         pnl = net_return - exit_cost_basis
-        pnl_pct = (exit_price / pos["avg_price"] - 1) * 100
+        pnl_pct = (exit_price_net / pos["avg_price"] - 1) * 100
         cash += net_return
         trades.append({
             "stock_code": pos["stock_code"], "entry_date": pos["entry_date"], "exit_date": final_date,
