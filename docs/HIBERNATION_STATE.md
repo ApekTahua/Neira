@@ -11,10 +11,39 @@ VERIFIED**. Nothing is marked done on the strength of intent.
 
 ---
 
+## THE ONE GATE STILL OPEN
+
+> **The watchdog's alarm has never been heard. Until it has, this system has no
+> proven failure alert.**
+>
+> Everything the watchdog *decides* is verified against live data. The two
+> paths that carry the decision outward - the Telegram HTTP send and the GitHub
+> Actions API read - have never run, because their credentials are GitHub
+> secrets and were unavailable where this was built. A watchdog whose alarm has
+> never fired is a promise, not a guarantee, and this session already found one
+> bug that lived in exactly that gap: the alert text crashed the notifier on a
+> console that could not encode it, losing the message and replacing it with a
+> traceback.
+>
+> **To close it**, after merging (order in section 2 - script first):
+> Actions -> *[Daily 19:30 WIB] - Unattended Health Watchdog* -> **Run
+> workflow**. Then check the phone. A green workflow is **not** the test; a
+> message arriving is. If nothing arrives, read the Actions log - `_notify`
+> prints every alert verbatim, so the log is the fallback when Telegram itself
+> is the broken thing.
+>
+> Until somebody has seen that message, treat the alerting half as
+> **UNVERIFIED** and do not rely on silence meaning health.
+
+---
+
 ## 1. Can it run on its own?
 
-**Yes — with one P0 to close before sealing, and a dead-man's switch now in
-place for the failures nobody would otherwise see.**
+**Yes, with one gate still open.** The P0 this section was written around - the
+n8n token expiring mid-hibernation - was answered by the owner and is closed
+(no expiry, deliberately; see below for what that changes rather than removes).
+A dead-man's switch now covers the failures nobody would otherwise see, but its
+alarm is still unproven: see **THE ONE GATE STILL OPEN** above.
 
 ### The clock it runs on
 
