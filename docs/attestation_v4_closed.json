@@ -1,0 +1,21 @@
+{
+  "columns": [
+    "id",
+    "stock_code",
+    "signal_date",
+    "entry_date",
+    "exit_date",
+    "entry_price_original::text",
+    "avg_price::text",
+    "total_lots",
+    "exit_price::text",
+    "exit_reason",
+    "pnl::text",
+    "pnl_pct::text"
+  ],
+  "cutoff": "2026-09-11",
+  "generated_at": "2026-09-12T10:43:36.583375+00:00",
+  "note": "T-10. Digest of V4_PAPER positions CLOSED on or before `cutoff`. Those rows are the published track record and must never change again; new closures land past the cutoff and do not affect this. A mismatch means history was edited. Advance the cutoff deliberately, in a reviewed commit, never automatically.",
+  "rowcount": 11,
+  "sha256": "90d36eaf012a19712ebc3f8cd0f3c398842fac4ecabff8f11915bce84728dde5"
+}

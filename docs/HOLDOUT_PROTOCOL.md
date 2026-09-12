@@ -160,3 +160,110 @@ published therefore assumes a fill at the exact close with no spread paid and no
 market impact, on an exchange where the strategy's own exits are market-on-close
 in names trading a billion rupiah a day. Any number reported outside an explicit
 cost-sensitivity study runs with slippage **on**.
+
+---
+
+# Amendment, 2026-09-12: what n=60 can and cannot do, and what promotion means
+
+Written **before any holdout result was looked at** (V4_PAPER stood at 11 closed
+positions), at the reviewer's instruction, so that neither rule below can be
+read as a rationalisation of an outcome. Pre-registration, not post-hoc.
+
+## Rule 5 - n=60 is a FAIL-ONLY gate. It cannot promote anything.
+
+"The bar, declared now" above already conceded that 60 puts the false-negative
+rate above 30% and that 90 is the number for a confident read. It then said the
+holdout is *scored* at 60, which quietly contradicts that. This rule removes the
+contradiction by naming the consequence instead of only the caveat.
+
+**Independent recomputation, 2026-09-12**, arriving at the same place as the
+2026-09-01 bootstrap by a different route. The measured edge is a tail property:
+P(+25% over 20 sessions) of **16.4%** against **7.5%** for a random liquid stock
+sampled on the same dates. One-sample test against that fixed baseline, alpha
+0.05:
+
+| closed positions | power | expected tail events | reached (at 10.8/month) |
+|---|---|---|---|
+| 11 | 28% | 1.8 | 2026-09-12, today |
+| **60** | **68%** | 9.8 | ~2027-01-28 |
+| **87** | **80%** | 14.3 | ~2027-04-14 |
+| 90 (this doc's own bootstrap) | 81% | 14.8 | ~2027-04-22 |
+
+That two independent methods land on 87 and 90 is the useful part: the number is
+not an artifact of either one.
+
+**Therefore, and this is the rule:**
+
+1. **At n=60 the holdout may only RULE OUT.** A result inside the failure bands
+   in "The bar" above is actionable. A result that merely fails to clear them is
+   **not evidence of no edge** - at 68% power roughly one real edge in three
+   fails to show. Recording "V4 did not clear its holdout" at n=60 as a verdict
+   on V4 would be the same error as promoting on the nine windows, pointed the
+   other way.
+2. **Promotion requires n>=87** against the fixed baseline, or the concurrent
+   control route in Rule 6. No exceptions on the grounds that the number looks
+   good earlier - that is the "reading the live record early" this protocol
+   already forbids.
+3. **Effective N is smaller than raw N, and the count must say so.** The table
+   above assumes 60 independent draws. They are not independent: the same names
+   recur constantly - SOCI appeared on **20 of 22** trading days in
+   2026-08-12..09-11, and its overlapping 20-session windows share most of their
+   price action. So the real power at any raw N is **below** the figure quoted.
+   Nobody has computed the effective N; until someone does, treat every power
+   number here as a ceiling, not an estimate. Computing it (a cluster-robust or
+   block-bootstrap count, clustering on ticker) is itself a post-hibernation
+   ticket.
+
+## Rule 6 - the promotion mechanism, stated explicitly
+
+The protocol forbade promotion on the nine windows and said only forward data
+may promote. It never said what forward evidence is *sufficient*. With
+V3_PAPER and V3.1_PAPER both retired, **V4_PAPER is the only forward arm
+running**, so there is no concurrent comparison - and the rule was silent on
+whether one is required. That silence made promotion structurally impossible
+while appearing to be merely pending. Naming the three routes ends that.
+
+**Route A - fixed-baseline, one-sample.** Grade V4_PAPER's own closed positions
+on tail rate against the 7.5% random-liquid baseline. Needs **n>=87**, reached
+around **2027-04-14**. Cheapest, and available without changing anything today.
+Its weakness is that the baseline is itself an estimate and is not sampled from
+the same market conditions as the live run, so a market-wide regime shift lands
+entirely in the result.
+
+**Route B - concurrent control arm.** Grade against a second forward arm running
+over the identical dates. This is the only route that separates the strategy
+from the market. Two-proportion test at the same alpha and power needs
+**~207 per arm**:
+
+| | positions needed | reached |
+|---|---|---|
+| V4 arm (from 11 today) | +196 | ~2028-03-17 |
+| a control arm started today (from 0) | +207 | ~2028-04-17 |
+
+**That is 19 months, not 5.** And the arithmetic only starts if the control arm
+begins now - every month it is not running pushes that date out by a month. This
+is the consequence the reviewer asked to be recorded as a conscious owner
+decision rather than a discovery made later: **the owner chose on 2026-09-12 not
+to start a control arm.** Route B therefore is not available on any near horizon,
+and that was decided deliberately, with the date known.
+
+**Route C - no promotion.** Treat V4_PAPER's config as terminal. Use forward
+data only to remove things that fail, never to add. This is a legitimate
+position and costs nothing; it just has to be chosen rather than arrived at by
+default, which is what would otherwise happen.
+
+**Until one of these is chosen in writing, the live config stays frozen.** A
+change that cannot state which route licenses it does not ship.
+
+## Rule 7 - the gate must announce itself
+
+Scored **once, at the threshold** only works if somebody knows the threshold was
+crossed. Nothing counted closed positions and said so, and the system is about
+to run unattended for months, so the gate would have been crossed in silence and
+read late - which is its own selection effect, since "late" means after the
+number has been visible for a while.
+
+`src/hibernation_watchdog.py` now sends a Telegram message when V4_PAPER's
+closed-position count reaches 60, and again at 87. It reports the count only -
+never the win rate, profit factor or P&L - so being told the gate is open cannot
+become an early read of the result Rule 5 forbids.

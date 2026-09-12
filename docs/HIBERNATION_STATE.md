@@ -126,6 +126,8 @@ rotate the token.
   | newest `ihsg_eod` row vs today (>3 days) | n8n's 17:30 EOD job dying |
   | newest `daily_scoreboard` row vs newest EOD | the 18:10 scan not finishing - invisible from the site, which just shows yesterday |
   | age of the last **successful** `paper_monitor_v4_trigger` run on a trading day (>24h) | the monitor no longer being called, PAT expiry included |
+  | digest of V4_PAPER positions closed on or before the attestation cutoff | **T-10** - an already-closed position being edited or deleted |
+  | count of V4_PAPER closed positions vs 60 and 87 | **HOLDOUT_PROTOCOL Rule 7** - the sample gate being crossed unnoticed |
 
   The scoreboard signal was checked rather than assumed: `daily_scoreboard` is
   written by `paper_signal_scan.py:520`, and **only V4's scan still has a
@@ -139,14 +141,36 @@ rotate the token.
   looking healthy - a watchdog that goes quiet when it breaks is worse than
   none. `python src/hibernation_watchdog.py --selftest` passes.
 
-  **UNTESTED: the alert path itself.** The self-check covers the decision
-  logic only. The Telegram send and the Actions API call have never been
-  exercised - their credentials are GitHub secrets, unavailable from the
-  machine this was written on. A watchdog whose alarm has never been heard is
-  the exact failure it was built to prevent, so **on the first manual run,
-  confirm a message actually arrives** before trusting it. The `if: failure()`
-  step is the one to watch: it fires on any fault, so a deliberately broken run
-  (or simply reading the Actions log) proves the path end to end.
+  **What is now proven, and what is still not.** The earlier draft of this file
+  called the whole alert path untested. That was true then; most of it has
+  since been exercised against live data.
+
+  | Path | State |
+  |---|---|
+  | decision logic, every branch | **VERIFIED** - `--selftest`, 20 assertions |
+  | Supabase reads (`ihsg_eod`, `daily_scoreboard`, `backtest_runs`, `paper_positions`) | **VERIFIED** - full run against live data returned `healthy -- eod=2026-09-11 scoreboard=2026-09-11 closed=11 attested=True` |
+  | attestation digest | **VERIFIED** - 11 rows, `90d36eaf...`, identical on a second run |
+  | fault path with no credentials | **VERIFIED** - shouts and exits 1, does not exit clean |
+  | fault path with an unreachable database | **VERIFIED** - shouts and exits 1 |
+  | **Telegram HTTP delivery** | **NOT VERIFIED** - the bot token is a GitHub secret, unavailable locally |
+  | **GitHub Actions API call** | **NOT VERIFIED** - same reason |
+
+  **A real bug came out of testing the failure path**, which is the argument for
+  testing it rather than only the happy one. The alert text is prefixed with an
+  emoji; on a console that cannot encode it the fallback `print()` raised
+  `UnicodeEncodeError` **inside the notifier**, so the alarm was lost and a
+  traceback took its place. `_notify` now never raises, degrades unrenderable
+  characters instead of dying, falls back to printing when Telegram refuses or
+  is unreachable, and carries a regression assertion. A watchdog whose alarm
+  crashes while firing is the exact failure it exists to prevent.
+
+  **Still required before trusting it:** on the first manual run
+  (Actions -> *[Daily 19:30 WIB] - Unattended Health Watchdog* -> *Run
+  workflow*), **confirm a Telegram message actually arrives**, not merely that
+  the workflow went green. Until that is seen, treat the alerting half as
+  UNVERIFIED. The Actions log also carries every alert verbatim, because
+  `_notify` prints on every path - so the log is the fallback if Telegram is
+  the thing that is broken.
 
   **What it deliberately does not use:** `paper_positions.updated_at`. That
   looked like the obvious liveness signal and is not one - the column defaults
@@ -188,12 +212,18 @@ unattended for that whole period for the holdout to mean anything.
 
 #### Two problems with the gate itself, raised 2026-09-12, NOT resolved
 
-**(a) Nothing announces when 60 is reached.** No job counts closed positions
-and says so. During an unattended period the gate will be crossed in silence,
-and the only way anyone learns is by opening the site and counting. The
-watchdog already queries Supabase daily, so adding the count is a few lines -
-deliberately **not** added without the owner's word, because the seal was
-already approved when this was noticed.
+**(a) Nothing announced when 60 was reached - FIXED 2026-09-12.** No job
+counted closed positions, so during an unattended period the gate would have
+been crossed in silence and read late, which is its own selection effect. The
+watchdog now sends a Telegram notice at 60 and again at 87. It reports **the
+count only** - never win rate, profit factor or P&L - because being told the
+gate is open must not become the early read of the result that Rule 5 forbids.
+A self-check asserts that no performance figure can leak into that message.
+
+It fires every day once a threshold is passed, not only on the crossing day.
+Deliberate: there is no state store, and a gate that matters once in five
+months should nag rather than risk being missed because the single day it spoke
+was the day nobody read Telegram.
 
 **(b) 60 may be the wrong number.** The measured edge is a tail property:
 P(+25% over 20 sessions) of **16.4%** against **7.5%** for a random liquid
@@ -218,9 +248,14 @@ control arm** rather than a fixed baseline, it would need about **207 per arm**.
 This does not mean the gate is wrong to exist - it is far better than promoting
 on the 262-times-reused historical windows. It means **60 is strong enough to
 rule an idea OUT and weak enough that failing to clear it is not evidence of no
-edge.** Whoever resumes should decide deliberately whether to hold at 60 or
-extend to ~87, and should write that decision down before looking at the
-results, not after.
+edge.**
+
+**Decided and written down 2026-09-12, before any result was visible** (the run
+stood at 11 closed positions): `HOLDOUT_PROTOCOL.md` **Rule 5** now states that
+n=60 is a fail-only gate and that promotion requires n>=87, and **Rule 6** names
+the three routes by which anything may be promoted at all. That was
+pre-registered precisely so neither can later be read as a rationalisation of an
+outcome.
 
 ---
 
@@ -354,14 +389,42 @@ config. Every one is post-hibernation work.
 | **T-15** | P1 | The live daily drift threshold differs from the backtest's fixed-window one. Data is in `daily_scoreboard`; nobody has measured the gap. | measurement |
 | **T-13** | P1 | Proxy high/low on the live path biases exit timing against the backtest. | measurement |
 | **T-11** | P1 | The broker-sanity band (0.7 / 1.3 / 10×) was never calibrated. The fail-safe **direction** is already verified correct; only the thresholds are unjustified. | calibration |
-| **T-10** | P1 | No attestation that the published live track record matches what actually happened. | integrity |
+| **T-10** | P1 | No attestation that the published live track record matches what actually happened. | integrity - **NOW BUILT**, see below |
 | **SQL-1** | P1 | The rolling Bandarmology window spans data gaps, so a window crossing a gap silently reads stale. | correctness |
 | **phase0i** | P2 | The permutation significance test measures the **mean**, while this system's edge is in the **tail**. Legacy: it graded the wrong statistic. | legacy |
 | **phase0-horizon** | P2 | `shift(-h)` steps by row, not by trading day. Minor, but it makes horizons uneven across gaps. | minor |
 | **T-5** | P2 | The Telegram payload carries no position sizing and no gap-standdown notice. | completeness |
 | **T-6b** | P3 | The `RISK_PCT` floor-clamp behaviour is undocumented. | documentation |
 
-Two of these deserve a note beyond their one-liner:
+**T-10 was built this session** rather than left on the list, because the
+reviewer's point held: it is the only one of the nine whose cost *grows* with
+the unattended period. The site publishes a live track record for months with
+nobody checking it still matches what happened.
+
+`docs/attestation_v4_closed.json` holds a SHA-256 over the immutable fields of
+every V4_PAPER position closed on or before a cutoff date - id, ticker, the
+three dates, entry and average price, lots, exit price, exit reason, P&L and
+P&L%. Baseline as of 2026-09-12: **11 rows, cutoff 2026-09-11, digest
+`90d36eaf012a1971...`**. The watchdog recomputes it daily and alerts on any
+difference.
+
+Three details that make it an attestation rather than a checksum:
+
+- **It lives in git, not next to the data.** A digest stored beside the rows it
+  attests can be rewritten by whoever rewrites the rows.
+- **Only rows past the cutoff are hashed**, so ordinary new closures append
+  without touching it. A mismatch therefore means *history changed*, which is
+  the one thing that must never happen - not merely that the table grew.
+- **Numbers are read as `::text`.** PostgREST renders `numeric` as a JSON
+  number, and a float round-trip could move the digest without the data moving,
+  or hide a small edit. A 0.0001 change is asserted to move the hash.
+
+Advancing the cutoff is deliberate and manual:
+`python src/hibernation_watchdog.py --emit-attestation <date>`, then review the
+diff and commit it. It never regenerates itself - a baseline that rewrites
+itself attests nothing.
+
+Two of the remaining eight deserve a note beyond their one-liner:
 
 - **phase0i** is the same trap `HOLDOUT_PROTOCOL.md` and S-1 both warn about,
   found in a different place: grading on the mean (or the hit rate) when the
