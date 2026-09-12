@@ -161,6 +161,28 @@ unattended for that whole period for the holdout to mean anything.
 | New-signal badge, retired-version labels, trend-only risk | newscraper.ai | `7a24284` | **branch pushed, NOT merged** |
 | This file + `POST_HIBERNATION_STUDIES.md` | Neira | this commit | branch `docs/hibernation-closeout` |
 
+### MERGE ORDER MATTERS — read before clicking
+
+`.github/workflows/hibernation_watchdog.yml` lives on `main` and runs
+`src/hibernation_watchdog.py`, which it checks out from
+`worktree-v2-hmm-screener`. **Merge the script first.** If the workflow lands on
+`main` while the script is not yet on the work branch, its first scheduled run
+fails at the self-check step and sends a Telegram alert — loud rather than
+silent, which is the intended failure mode, but it is avoidable noise.
+
+Correct order:
+
+1. `Neira` → `docs/hibernation-closeout` into `worktree-v2-hmm-screener`
+   (carries `src/hibernation_watchdog.py` and both documents)
+2. `Neira` → `ops/hibernation-watchdog` into `main` (the workflow)
+3. `newscraper.ai` → `ui/plain-language-sweep` into `main`
+4. `newscraper.ai` → `audit/sql-repo-reproduces-live` into `main`
+
+3 and 4 are independent of each other and of 1-2; they touch different files in
+a different repo. After step 2, trigger the watchdog once by hand
+(Actions → *[Daily 19:30 WIB] - Unattended Health Watchdog* → *Run workflow*)
+and confirm it reports healthy rather than waiting for the first 19:30 run.
+
 ### Branches awaiting a merge
 
 The GitHub CLI is not authenticated in this environment and reading a stored
@@ -168,9 +190,16 @@ credential is blocked, so **no pull request object could be opened from here**,
 and the merge into `newscraper.ai`'s `main` was blocked as well. The branches
 are pushed and ready; merging them is a manual step:
 
-- `newscraper.ai` → `ui/plain-language-sweep` (`7a24284`)
-- `newscraper.ai` → `audit/sql-repo-reproduces-live` (`f712802`)
-- `Neira` → `docs/hibernation-closeout`
+| Repo | Branch | Head | Carries |
+|---|---|---|---|
+| Neira | `docs/hibernation-closeout` | `8857199` | the watchdog script, `HIBERNATION_STATE.md`, `POST_HIBERNATION_STUDIES.md` |
+| Neira | `ops/hibernation-watchdog` | `9b66d61` | the watchdog workflow (branched from `main`) |
+| newscraper.ai | `ui/plain-language-sweep` | `2fd29e3` | the plain-language sweep and every UI change |
+| newscraper.ai | `audit/sql-repo-reproduces-live` | `f712802` | the prune migration, byte-identical to live |
+
+Build state at those heads: `tsc --noEmit` clean, `next build` clean on all 16
+routes, re-run after the final commit. Verified against the **branch heads**,
+not against a merged `main` — the merges could not be performed from here.
 
 ### T-7's out-of-order deployment — closed
 
