@@ -2341,7 +2341,7 @@ def compute_entry_fill(sig: dict, entry_price: float, cash: float, prev_equity: 
 def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: float,
                             trade_date, prev_equity: float, cash: float,
                             prev_close=None, observed_max_move=None, allow_pyramid: bool = True,
-                            current_atr: float = None):
+                            current_atr: float = None, strict_atr: bool = False):
     """SL/TP1/TRAILING/CHECKPOINT/TIME exit decision + the TP1/TP2 pyramid-add-on, for ONE
     open position on ONE day. Extracted so the live paper-trading monitor
     (src/paper_monitor.py) makes exit decisions through the exact same code path as this
@@ -2479,8 +2479,32 @@ def evaluate_position_exit(pos: dict, bar: tuple, regime: str, trend_strength: f
             # current_atr isn't usable (flag off, or a real data gap), never crashes and
             # never reuses a stale entry-day ATR. See TRAIL_ATR_ENABLED's own module-level
             # comment.
-            if TRAIL_ATR_ENABLED and current_atr is not None and current_atr > 0 and not (
-                    isinstance(current_atr, float) and np.isnan(current_atr)):
+            _atr_usable = current_atr is not None and current_atr > 0 and not (
+                isinstance(current_atr, float) and np.isnan(current_atr))
+            # Audit finding T-14. The silent fallback below is CORRECT for the
+            # backtest -- atr_14 is genuinely NaN during its own rolling warmup
+            # and on thin names, and crashing a nine-window sweep over that
+            # would be worse than using the flat-% trail for a day.
+            #
+            # It is NOT correct live. The trailing stop is where ~92% of this
+            # strategy's gross profit comes from, so if TRAIL_ATR is ever
+            # promoted and the live monitor cannot supply today's ATR, the book
+            # would quietly run a DIFFERENT exit rule than the one that was
+            # validated -- the most expensive kind of drift there is, and
+            # invisible. `strict_atr` is passed only by paper_monitor.py.
+            #
+            # Inert today: TRAIL_ATR_ENABLED defaults off, so this cannot fire.
+            # It is a tripwire for the day the flag is turned on, not a change
+            # to the flat-% path, which is untouched.
+            if TRAIL_ATR_ENABLED and strict_atr and not _atr_usable:
+                raise ValueError(
+                    f"TRAIL_ATR_ENABLED is on but current_atr={current_atr!r} is unusable for "
+                    f"{pos.get('stock_code')} on {trade_date}. Live exits must not silently fall "
+                    f"back to the flat-% trail: that is a different exit rule from the validated "
+                    f"one, on the mechanism that carries most of the strategy's profit. Wire "
+                    f"today's atr_14 through paper_monitor.py, or turn V4_TRAIL_ATR_ENABLED off."
+                )
+            if TRAIL_ATR_ENABLED and _atr_usable:
                 trailing_stop = pos["highest_price"] - current_atr * TRAIL_ATR_KEY_VALUE
             else:
                 trailing_stop = pos["highest_price"] * (1 - cfg.TRAILING_PCT)
