@@ -1,0 +1,70 @@
+name: "[Daily 19:30 WIB] - Unattended Health Watchdog"
+
+# Dead-man's switch for the period nobody is watching. See
+# src/hibernation_watchdog.py for what it checks and, more importantly, what it
+# deliberately does NOT use as a liveness signal.
+#
+# Lives on `main` because GitHub only schedules workflows from the default
+# branch. The script it runs lives on `worktree-v2-hmm-screener`, same split as
+# every other trigger workflow here.
+#
+# Runs on GitHub's own schedule on purpose. The failure it exists to catch is
+# the GitHub PAT inside n8n's `Trigger Paper Monitor` node expiring -- so it
+# must not depend on anything n8n dispatches, or it would die in the same
+# outage it is supposed to report.
+on:
+  schedule:
+    - cron: '30 12 * * *'  # 19:30 WIB -- after EOD 17:30, the 18:10 scan, and the 19:00 pg_cron refresh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read  # reads paper_monitor_v4_trigger.yml's own run history
+
+concurrency:
+  group: hibernation-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ambil kode dari repository
+        uses: actions/checkout@v4
+        with:
+          ref: worktree-v2-hmm-screener
+
+      - name: Pasang Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Library Pendukung
+        run: python -m pip install --upgrade pip requests
+
+      - name: Verifikasi logika watchdog sebelum dipakai
+        # If the decision logic is broken, the alarm is worthless. Fail here
+        # rather than report "healthy" from a watchdog that cannot think.
+        run: python src/hibernation_watchdog.py --selftest
+
+      - name: Jalankan Health Watchdog
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python src/hibernation_watchdog.py
+
+      - name: Alert kalau watchdog sendiri crash
+        # A watchdog that dies silently is the thing it was built to prevent.
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_USER_ID}" \
+            -d parse_mode="Markdown" \
+            -d text="🚨 *[WATCHDOG] The health watchdog itself failed or reported faults* on $(date -u +'%Y-%m-%d %H:%M UTC'). Read the Actions log, then docs/HIBERNATION_STATE.md."
