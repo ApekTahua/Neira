@@ -49,18 +49,37 @@ token expires, n8n's own run still succeeds, GitHub never hears from it, and
 **open positions stop being checked against their stop and target with no
 alarm.** That is a real-money failure during a period when nobody is looking.
 
-**Its expiry date is NOT recorded here, and I could not read it.** Extracting
-the credential from the n8n workflow was blocked by this environment's
-permission classifier - correctly, it is a credential read. So this is stated
-as an unknown rather than guessed:
+**ANSWERED BY THE OWNER, 2026-09-12: the token was created with NO EXPIRATION
+DATE, deliberately.** This file previously carried an open action asking for
+that date, because the expiry could not be read from here - extracting the
+credential from the n8n workflow was blocked by the environment's permission
+classifier, correctly, since it is a credential read. The question is now
+closed, and the risk it described has changed shape rather than gone away.
 
-> **ACTION FOR THE OWNER, before sealing:** open
-> <https://github.com/settings/tokens>, find the token used by the
-> `Trigger Paper Monitor` node in n8n workflow `eZD9l8Ch1juESJdg`, and write its
-> expiry date into this file. Until that line exists, treat the expiry as
-> unknown.
+**What that removes.** There is no clock. The token will not silently lapse
+mid-hibernation, which was the specific failure this section was written
+around. Good: that was the single most likely silent failure, and it is off the
+table.
+
+**What it leaves.** A non-expiring credential sitting in cleartext in an
+internet-facing n8n node, readable by a plain API GET, for as long as the
+system runs. The failure mode flips from *"it stops working"* to *"if it ever
+leaks, it never stops working for whoever has it"* - and with `Actions: write`
+on this repo, whoever has it can dispatch workflows against the trading engine.
+There is no revocation clock to limit that window.
+
+**The owner has accepted this risk explicitly and it is his to accept.** One
+change would keep the convenience and remove most of the blast radius, if he
+ever wants it: make the token **fine-grained, scoped to `ApekTahua/Neira` only,
+with `Actions: write` and nothing else**, still with no expiry. Same
+never-breaks property, far smaller reach if it leaks. Better still, move it out
+of the node parameter into an n8n credential so a workflow GET stops returning
+it at all - flagged 2026-09-01, still not done.
 
 #### How to check and rotate it
+
+*(Kept because a token with no expiry can still be revoked, scope-changed, or
+edited out of the node by accident - "no expiry" is not "cannot fail".)*
 
 1. **Check it is still alive.** In n8n, open workflow `eZD9l8Ch1juESJdg`
    (*15 Min Inject ihsg_realtime*), then the `Trigger Paper Monitor` node at the
@@ -90,7 +109,13 @@ rotate the token.
   runs under load - it is a second path, not the only one. **VERIFIED** by
   reading the workflow. So a dead PAT degrades the cadence rather than stopping
   it outright. It is still a fault worth an alarm.
-- **A dead-man's switch now exists.** `.github/workflows/hibernation_watchdog.yml`
+- **A dead-man's switch now exists**, and it still earns its place even with
+  the expiry question closed. PAT expiry was the failure it was designed
+  around, but it was never the only one it catches: the three signals below
+  fire on the n8n EOD job dying, on the 18:10 scan not finishing, and on the
+  monitor stopping for **any** reason - a revoked or scope-changed token, an
+  n8n outage, a Stockbit `buildId` break, a GitHub Actions incident, or a
+  crash in the script itself. `.github/workflows/hibernation_watchdog.yml`
   (on `main`, branch `ops/hibernation-watchdog`) plus
   `src/hibernation_watchdog.py` (here). Daily at 19:30 WIB, on **GitHub's own
   schedule** so it cannot die in the outage it reports, it checks three things
@@ -102,11 +127,26 @@ rotate the token.
   | newest `daily_scoreboard` row vs newest EOD | the 18:10 scan not finishing - invisible from the site, which just shows yesterday |
   | age of the last **successful** `paper_monitor_v4_trigger` run on a trading day (>24h) | the monitor no longer being called, PAT expiry included |
 
+  The scoreboard signal was checked rather than assumed: `daily_scoreboard` is
+  written by `paper_signal_scan.py:520`, and **only V4's scan still has a
+  schedule** - `paper_signal_scan_trigger.yml` and `paper_signal_scan_v31_trigger.yml`
+  both have their cron removed. So a fresh scoreboard row proves V4's own 18:10
+  scan ran, not merely that something did.
+
   It reads the Actions API with the workflow's own `GITHUB_TOKEN`, never the
   n8n PAT. It runs its decision logic through a self-check before trusting it,
   and it alerts if it cannot reach the database rather than exiting clean and
   looking healthy - a watchdog that goes quiet when it breaks is worse than
   none. `python src/hibernation_watchdog.py --selftest` passes.
+
+  **UNTESTED: the alert path itself.** The self-check covers the decision
+  logic only. The Telegram send and the Actions API call have never been
+  exercised - their credentials are GitHub secrets, unavailable from the
+  machine this was written on. A watchdog whose alarm has never been heard is
+  the exact failure it was built to prevent, so **on the first manual run,
+  confirm a message actually arrives** before trusting it. The `if: failure()`
+  step is the one to watch: it fires on any fault, so a deliberately broken run
+  (or simply reading the Actions log) proves the path end to end.
 
   **What it deliberately does not use:** `paper_positions.updated_at`. That
   looked like the obvious liveness signal and is not one - the column defaults
@@ -145,6 +185,42 @@ unfreezing the config is **60 closed**. At the observed rate (11 closed in the
 31 days since 2026-08-12) that is roughly **five more months**. Nothing should
 touch the frozen config before then, and the system has to keep running
 unattended for that whole period for the holdout to mean anything.
+
+#### Two problems with the gate itself, raised 2026-09-12, NOT resolved
+
+**(a) Nothing announces when 60 is reached.** No job counts closed positions
+and says so. During an unattended period the gate will be crossed in silence,
+and the only way anyone learns is by opening the site and counting. The
+watchdog already queries Supabase daily, so adding the count is a few lines -
+deliberately **not** added without the owner's word, because the seal was
+already approved when this was noticed.
+
+**(b) 60 may be the wrong number.** The measured edge is a tail property:
+P(+25% over 20 sessions) of **16.4%** against **7.5%** for a random liquid
+stock. Treating that as a one-sample test against the fixed 7.5% baseline, at
+alpha 0.05:
+
+| closed positions | statistical power | expected tail events |
+|---|---|---|
+| 11 (today) | 28% | 1.8 |
+| **60 (the gate)** | **68%** | **9.8** |
+| 87 | 80% | 14.3 |
+| 120 | 89% | 19.7 |
+
+**60 positions carries roughly a one-in-three chance of missing a real edge.**
+80% power needs about **87**. And that arithmetic is optimistic twice over: it
+assumes the 7.5% baseline is known exactly rather than estimated, and it
+assumes 60 independent draws - but the same tickers recur constantly (SOCI was
+listed on 20 of 22 trading days), so the effective independent sample is
+smaller than the count. If the gate were instead graded against a **concurrent
+control arm** rather than a fixed baseline, it would need about **207 per arm**.
+
+This does not mean the gate is wrong to exist - it is far better than promoting
+on the 262-times-reused historical windows. It means **60 is strong enough to
+rule an idea OUT and weak enough that failing to clear it is not evidence of no
+edge.** Whoever resumes should decide deliberately whether to hold at 60 or
+extend to ~87, and should write that decision down before looking at the
+results, not after.
 
 ---
 
