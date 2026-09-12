@@ -30,6 +30,17 @@
 -- A matview cannot carry security_invoker -- that option does not exist for
 -- them -- so access is by grant. The content derives entirely from public EOD
 -- prices that anon can already read directly.
+--
+-- ACL NOTE, so this file is not read as the whole truth. The grants at the
+-- bottom say SELECT, but live these objects carry arwdDxtm for anon --
+-- because this project's pg_default_acl grants ALL on tables in public to
+-- anon/authenticated/service_role, and that fires at CREATE before the
+-- explicit grant runs. Identical on disclosures_flat, market_marquee,
+-- signal_base_rate and stock_price_limit, so it is the project's standing
+-- posture, not something introduced here. The extra letters are inert:
+-- Postgres rejects all DML on a materialized view, and stock_split_factor is
+-- not auto-updatable (UNION ALL + window functions). Narrowing it belongs in
+-- a project-wide pass over every object, not a one-object exception.
 
 create materialized view public.corporate_action_split as
 with seq as (
