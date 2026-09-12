@@ -159,6 +159,16 @@ justify a rule.
 
 ---
 
+## The reviewer's nine, recorded elsewhere
+
+`HIBERNATION_STATE.md` carries T-15, T-13, T-11, T-10, SQL-1, phase0i,
+phase0-horizon, T-5 and T-6b as a table, with their contents supplied by the
+reviewer after this session reported it had no committed source for them. They
+are not restated here. Two of them touch the same nerve as the studies below --
+**phase0i** grades the mean when the edge is in the tail, which is the exact
+error S-1 is designed to avoid, and **T-11**'s thresholds are uncalibrated
+though its fail-safe direction is already verified.
+
 ## S-1 -- Should broker tier affect rank, not just size?
 
 **Status:** NOT STARTED. Pre-registration required.

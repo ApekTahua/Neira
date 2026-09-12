@@ -13,7 +13,8 @@ VERIFIED**. Nothing is marked done on the strength of intent.
 
 ## 1. Can it run on its own?
 
-**Yes, with one hard dependency and two things that will go wrong silently.**
+**Yes — with one P0 to close before sealing, and a dead-man's switch now in
+place for the failures nobody would otherwise see.**
 
 ### The clock it runs on
 
@@ -41,21 +42,88 @@ day:
 | `broker_summary` (DB2) | 2026-09-11 | 15,374 |
 | `bandarmology_flow_daily` (DB2) | 2026-09-11 | 161,883 |
 
-### What will break quietly
+### P0 - the GitHub PAT inside n8n
+
+**Raised from "known issue" to P0 on the owner's call, 2026-09-12.** If this
+token expires, n8n's own run still succeeds, GitHub never hears from it, and
+**open positions stop being checked against their stop and target with no
+alarm.** That is a real-money failure during a period when nobody is looking.
+
+**Its expiry date is NOT recorded here, and I could not read it.** Extracting
+the credential from the n8n workflow was blocked by this environment's
+permission classifier - correctly, it is a credential read. So this is stated
+as an unknown rather than guessed:
+
+> **ACTION FOR THE OWNER, before sealing:** open
+> <https://github.com/settings/tokens>, find the token used by the
+> `Trigger Paper Monitor` node in n8n workflow `eZD9l8Ch1juESJdg`, and write its
+> expiry date into this file. Until that line exists, treat the expiry as
+> unknown.
+
+#### How to check and rotate it
+
+1. **Check it is still alive.** In n8n, open workflow `eZD9l8Ch1juESJdg`
+   (*15 Min Inject ihsg_realtime*), then the `Trigger Paper Monitor` node at the
+   end, then *Execute node*. A `204` is healthy; `401` means the token is dead.
+   Do not copy the token out of the node - it is stored there in cleartext, so
+   anything it is pasted into becomes a secret too.
+2. **Check GitHub's side instead, which is safer.** Actions ->
+   *[Every 15 Min] - Paper Trading V4 Intraday Monitor* -> confirm
+   `workflow_dispatch` runs are still appearing every ~15 minutes on trading
+   days. Those dispatches are n8n. Their absence is the symptom.
+3. **Rotate.** Create a fine-grained PAT scoped to `ApekTahua/Neira` only, with
+   *Actions: write* and nothing else. Paste it into the node's `Authorization`
+   header as `Bearer <token>`. Save, then **deactivate and reactivate** the
+   workflow - a schedule change does not take effect otherwise.
+4. **Better than rotating: stop storing it in the node.** Move it into an n8n
+   credential so a plain workflow GET stops returning it in cleartext. This was
+   first flagged 2026-09-01 and has not been done.
+
+#### Mitigation that IS in place
+
+Partly. Two things reduce the blast radius, and neither removes the need to
+rotate the token.
+
+- **The V4 monitor has its own GitHub cron.** `paper_monitor_v4_trigger.yml`
+  carries `cron: '*/15 2-4,6-8 * * 1-5'`, so it does not depend solely on the
+  n8n dispatch. The n8n path exists because GitHub delays or drops scheduled
+  runs under load - it is a second path, not the only one. **VERIFIED** by
+  reading the workflow. So a dead PAT degrades the cadence rather than stopping
+  it outright. It is still a fault worth an alarm.
+- **A dead-man's switch now exists.** `.github/workflows/hibernation_watchdog.yml`
+  (on `main`, branch `ops/hibernation-watchdog`) plus
+  `src/hibernation_watchdog.py` (here). Daily at 19:30 WIB, on **GitHub's own
+  schedule** so it cannot die in the outage it reports, it checks three things
+  and sends Telegram on any fault:
+
+  | Signal | Catches |
+  |---|---|
+  | newest `ihsg_eod` row vs today (>3 days) | n8n's 17:30 EOD job dying |
+  | newest `daily_scoreboard` row vs newest EOD | the 18:10 scan not finishing - invisible from the site, which just shows yesterday |
+  | age of the last **successful** `paper_monitor_v4_trigger` run on a trading day (>24h) | the monitor no longer being called, PAT expiry included |
+
+  It reads the Actions API with the workflow's own `GITHUB_TOKEN`, never the
+  n8n PAT. It runs its decision logic through a self-check before trusting it,
+  and it alerts if it cannot reach the database rather than exiting clean and
+  looking healthy - a watchdog that goes quiet when it breaks is worse than
+  none. `python src/hibernation_watchdog.py --selftest` passes.
+
+  **What it deliberately does not use:** `paper_positions.updated_at`. That
+  looked like the obvious liveness signal and is not one - the column defaults
+  to `now()` but has **no trigger**, and `paper_monitor.py` never writes it on
+  its per-poll `day_high`/`day_low` update. **Measured 2026-09-12:** OPEN rows
+  last stamped 2026-09-10 17:45, a **40.9-hour** gap, on a system that was
+  working correctly. An alarm built on that column would have cried wolf on day
+  one and been muted by day three.
+
+### Other things that will break quietly
 
 1. **Stockbit's `buildId`.** `ihsg_realtime` scrapes a Next.js data API whose
    build hash changes when Stockbit redeploys. The workflow re-scrapes it and
    caches it in `app_scrape_state`, so it usually self-heals — but a site-wide
    scrape failure is almost always a stale `buildId`, not credentials or
    network. Check that before anything else.
-2. **The GitHub PAT inside n8n.** The `Trigger Paper Monitor` node carries a
-   personal access token as a literal `Authorization` header value, so a plain
-   workflow GET returns it in cleartext. It has not been moved into an n8n
-   credential. **When it expires, the V4 monitor stops being dispatched and
-   nothing announces it** — paper positions will simply stop being checked
-   against their stop and target. This is the single most likely silent
-   failure during hibernation.
-3. **The 15-minute sweep takes ~14.5 minutes.** Measured 818–914s against a
+2. **The 15-minute sweep takes ~14.5 minutes.** Measured 818–914s against a
    900s interval, scraping all 985 stocks with a 0.1s throttle. Runs nearly
    touch. A given stock's `updated_at` can lag the run start by up to ~15 min,
    so `ihsg_realtime` is a rolling sweep, not a snapshot. Do not read all its
@@ -155,33 +223,90 @@ functions). Listed under known issues below.
 |---|---|
 | **T-1** (realistic-fill flags) | The capital-scaling gate, and the last item by design. Needs the 60-closed-position holdout first. |
 | **T-12 follow-up** (fee-inclusive `pnl_pct`) | Ships **with** T-1 or not at all. Making `pnl_pct` fee-inclusive now would move every already-published live number while the holdout is open, which `HOLDOUT_PROTOCOL.md` forbids. The slipped-price half is already in and is a provable no-op while `V4_SLIPPAGE` is off. |
+| **/saved** | **DECIDED 2026-09-12 — keep it, with the per-device disclaimer.** The owner accepted the recommendation. The page stores the price at the moment of saving, so it answers "what has this done since I got interested" — the only page that can. Disclaimer now appears in two places: on the page, and on the Save button itself at the moment of clicking. No accounts, so cross-device is out of scope. |
 | **T-8b** (ESLint) | **P2, open, deferred — NOT resolved.** This project has no ESLint config at all, so `ignoreDuringBuilds: true` is masking "no config", not masking findings. Order: add `next/core-web-vitals`, fix what it surfaces, *then* flip the flag. Owner's explicit adjudication: do not record this as closed. |
 | **T-18** (`SCORE_NORM="train_sd"`) | Needs pre-registration plus a 3-partition walk-forward. It is not a patch. → **S-3**. |
 | **T-7 phase 2** (rights issues) | 31 events; ratios cannot be inferred from price and must be read from filings. → **S-4**. |
 | **T-7 phase 2b** (use the factors) | The factor table exists and is live but nothing consumes it. → **S-5**. |
-| **FE-3** (BUMI in two groups) | BUMI is listed under both Salim and Bakrie in `lib/konglo.ts`. Held pending the same two-source ownership check RATU got. Salim did historically hold a large BUMI stake, so this is not obviously wrong. |
-| **RATU under Prajogo Pangestu** | Owner's call, not a defect to fix unilaterally: either drop it, or keep it and state that a KONGLO group means affiliation rather than control. |
+| **FE-3** (BUMI in two groups) | **HOLD, confirmed by the owner 2026-09-12: do not touch before hibernation without the ownership check.** BUMI is listed under both Salim and Bakrie in `lib/konglo.ts`, so it double-counts across two equal-weight group indices — and it is far more liquid than RATU was, so it distorts harder. Needs the same two-source discipline RATU got. Salim did historically hold a large BUMI stake, so this is not obviously wrong in either direction. |
+| **RATU under Prajogo Pangestu** | **DECIDED 2026-09-12 — remove, and already removed.** The owner ruled: groups are named per controlling individual, so the "affiliation" reading does not apply; RAJA's 68.68% is control and CDIA's 4.99% is below even the 5% disclosure threshold. `lib/konglo.ts` already carries the removal (done 2026-09-12) with the three-source evidence in a comment above it. **Verified today: RATU appears only under Happy Hapsoro. No further change needed.** |
 
-### Never verified — say so rather than guess
+### Supplied by the reviewer after the gap was reported — now on record
 
-**T-5, T-6b, T-10, T-11, T-13, T-15, phase0i, phase0-horizon, SQL-1.**
+These nine came from the external (Kiro) audit, which was pasted into a
+conversation and never committed to either repo. This session refused to give
+them a status, because there was no committed source to check them against and
+a plausible-sounding guess would have been worse than an admitted gap. **The
+reviewer then supplied their contents directly (2026-09-12), and they are
+recorded here so they cannot be lost again.**
 
-These came from the external (Kiro) audit, which was pasted into a
-conversation and never committed to either repo. They were not verified
-against the code in that session and were not reached in this one. **I cannot
-state what they contain from any committed source, so I am not assigning them
-a status.** Whoever resumes should get the audit text from the owner first.
-Do not treat their absence from the "done" list as evidence either way.
+Their titles and priorities are the reviewer's. **None of them has been
+verified against the code by me**, and none may touch the frozen V4_PAPER
+config. Every one is post-hibernation work.
+
+| Ticket | Priority | What it says | Kind |
+|---|---|---|---|
+| **T-15** | P1 | The live daily drift threshold differs from the backtest's fixed-window one. Data is in `daily_scoreboard`; nobody has measured the gap. | measurement |
+| **T-13** | P1 | Proxy high/low on the live path biases exit timing against the backtest. | measurement |
+| **T-11** | P1 | The broker-sanity band (0.7 / 1.3 / 10×) was never calibrated. The fail-safe **direction** is already verified correct; only the thresholds are unjustified. | calibration |
+| **T-10** | P1 | No attestation that the published live track record matches what actually happened. | integrity |
+| **SQL-1** | P1 | The rolling Bandarmology window spans data gaps, so a window crossing a gap silently reads stale. | correctness |
+| **phase0i** | P2 | The permutation significance test measures the **mean**, while this system's edge is in the **tail**. Legacy: it graded the wrong statistic. | legacy |
+| **phase0-horizon** | P2 | `shift(-h)` steps by row, not by trading day. Minor, but it makes horizons uneven across gaps. | minor |
+| **T-5** | P2 | The Telegram payload carries no position sizing and no gap-standdown notice. | completeness |
+| **T-6b** | P3 | The `RISK_PCT` floor-clamp behaviour is undocumented. | documentation |
+
+Two of these deserve a note beyond their one-liner:
+
+- **phase0i** is the same trap `HOLDOUT_PROTOCOL.md` and S-1 both warn about,
+  found in a different place: grading on the mean (or the hit rate) when the
+  measured edge is the right tail. The median pick here is indistinguishable
+  from random while the odds of a +25% run over 20 sessions are roughly doubled
+  (16.4% vs 7.5%). Any re-run of that significance test should grade the tail.
+- **T-11**'s framing is the useful part: the direction is verified and only the
+  numbers are arbitrary. That makes it a calibration job with a known-safe
+  fallback, not a redesign — cheaper than its P1 label suggests.
 
 ---
 
 ## 4. Known issues to watch while it runs alone
 
 1. **The n8n PAT** (section 1) — the highest-probability silent failure.
-2. **Live ACLs are wider than the repo's grant lines** (section 2). Inert, but
-   if `public` ever gains a genuinely writable view, the default ACL will make
-   it writable by `anon`. A project-wide pass is the right fix, not a
-   per-object exception.
+2. **Live ACLs are wider than the repo's grant lines - TESTED, and RLS holds.**
+   Section 2 flagged that `anon` carries `arwdDxtm` (which includes INSERT,
+   UPDATE and DELETE) on every view and matview in `public`, against repo files
+   that say `grant select`. The owner's question was the right one: is that
+   actually reachable, or does RLS stop it? **Answered by probing the live REST
+   API with the real anon key**, the same method as the 2026-09-03 audit:
+
+   | Probe (as `anon`) | Result |
+   |---|---|
+   | `POST disclosure_summary_queue` - the one auto-updatable view | **blocked**, `42501` row-level security |
+   | `POST ihsg_eod` | **blocked**, `42501` |
+   | `PATCH disclosure_extracts` on a row anon **can** see, no-op value | **blocked**, 0 rows changed |
+   | `DELETE disclosure_extracts` on a row anon **can** see | **blocked**, 0 rows deleted, row survived |
+   | `POST corporate_action_split` (matview) | **blocked**, `42809` cannot change a materialized view |
+   | `SELECT stock_split_factor` (control) | works, as intended |
+
+   The first two probes of the session used filters matching **no rows**, and
+   returned `200 []` - which means "zero rows", not "denied". Those were
+   inconclusive and were re-run against real, anon-visible rows; only the
+   re-runs above are evidence. The UPDATE and DELETE probes used a no-op value
+   and a disposable row created and removed for the purpose, so no production
+   data was at risk. Probe row cleaned up, verified `remaining: 0`.
+
+   **Why it holds:** RLS is ON for every base table in `public`, and **every
+   policy is `SELECT`-only** (17 policies, all `cmd = SELECT`) - Postgres denies
+   a command with no matching policy, so the table-level grant never gets a
+   chance to matter. All ten views carry `security_invoker=on`, so even the one
+   auto-updatable view (`disclosure_summary_queue`) writes as the caller and
+   hits the same RLS wall rather than the owner's privileges.
+
+   **Verdict: the wide ACL is cosmetic, not a write hole.** It is still worth
+   narrowing project-wide, because the protection currently rests entirely on
+   RLS - the day someone adds a table and forgets `enable row level security`,
+   the default ACL makes it anon-writable. That is a housekeeping ticket, not
+   an open vulnerability.
 3. **43% of recent filings cannot be read at all.** Measured 2026-09-12:
    `disclosure_extracts` is 1,341 `pdf_text` / 370 `failed`, no `ocr`. Of
    filings whose text extracted, **100% are summarised** (69 of 69 in the last
@@ -197,12 +322,32 @@ Do not treat their absence from the "done" list as evidence either way.
 6. **The nine walk-forward windows are closed for promotion.** At least 262
    configurations have been graded against them. They can rule an idea out;
    they cannot let one in.
-7. **Visual verification was not possible this session.** The Playwright and
-   Chrome DevTools MCP servers both failed to connect (`CONNECT_TIMEOUT`). The
-   UI changes were verified by `tsc --noEmit` (clean, 29 app files) and a full
-   `next build` (clean, all 16 routes) — **but no screenshot was taken.** This
-   project has caught real visual bugs by screenshot before that grep and tsc
-   both missed. Treat the UI as build-verified, not eye-verified.
+7. **UI is BUILD-VERIFIED, NOT EYE-VERIFIED.** The Playwright and Chrome
+   DevTools MCP servers both failed to connect (`CONNECT_TIMEOUT`), so **no
+   screenshot was taken of any change.** What was verified: `tsc --noEmit`
+   clean across 29 app files, and a full `next build` clean on all 16 routes,
+   re-run after the final commit. What was not verified: that anything looks
+   right.
+
+   This matters more than usual because the sweep replaced roughly 40
+   user-visible strings, several of them **longer than what they replaced
+   inside fixed-width grid cells** - exactly the class of regression a
+   screenshot catches and a type-checker cannot. This project has already
+   caught real visual bugs this way that grep and tsc both missed.
+
+   **Check these first, in this order** - ranked by how many strings changed
+   and how tight the layout is:
+
+   | Page | Why it is the riskiest | What to look at |
+   |---|---|---|
+   | `/screener` | most strings changed; the level block is a 3-column grid of 10px uppercase labels | "First sell" / "Cut loss at" / "No fixed price" cells, the new-signal and Repeat badges wrapping beside the tier pill, the hold-days line |
+   | `/stock/[ticker]` | gate checklist lines grew from 3-4 words to full sentences | "The whole market is rising" row, "First sell price" / "Cut loss at" grid, the live market-condition banner |
+   | `/backtest` | exit badges went from 3-letter codes to phrases | exit pills in the trades table, the filter chips row (`Sold off the peak: 12 (4.1%)`), the retired-version notices |
+   | `/paper-trading` | alert table column widths | the `Cut loss` / `First sell` / `Follows the price up` pills, "Now sells on / a fall from its peak" |
+   | `/konglo` | SVG axis labels are positioned, not flowed | "Stronger than IHSG" and "Getting stronger" must stay inside the viewBox |
+   | `/disclosures` | one new control | the "Major actions only" chip, and that the row count stays consistent when it is on |
+
+   Everything else changed one or two labels and is low risk.
 
 ---
 
