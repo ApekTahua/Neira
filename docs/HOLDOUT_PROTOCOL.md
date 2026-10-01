@@ -160,3 +160,49 @@ published therefore assumes a fill at the exact close with no spread paid and no
 market impact, on an exchange where the strategy's own exits are market-on-close
 in names trading a billion rupiah a day. Any number reported outside an explicit
 cost-sensitivity study runs with slippage **on**.
+
+---
+
+# Amendment, 2026-10-01: a 13-day infrastructure gap, recorded as a gap — not as "the gate correctly rejected every day"
+
+**What happened.** The n8n ingestion workflow that writes `index_eod` broke
+silently on 2026-09-15 (two independent bugs in the index branch: wrong URL,
+wrong field path on the response shape — see the audit ledger's F-023). It
+stayed broken through 2026-09-30 — 13 trading days. `ihsg_eod` (per-stock
+data) kept loading normally the entire time, so `paper_signal_scan.py`'s exit
+evaluation never missed a beat. But `regime_by_date.get(today, "NEUTRAL")`
+has no way to distinguish "the index genuinely read neutral" from "there is
+no index row for today at all" — both default identically — so
+`daily_gate_summary` recorded `regime=NEUTRAL, regime_ok=false` for all 13
+days, and zero new candidates were ever considered in that window.
+
+**Why this is not a holdout data point in either direction.** It is tempting
+to read 13 days of `regime_ok=false` as "the gate correctly stayed out of a
+bad market." It did not evaluate the market at all — the input it needed was
+missing. It is equally wrong to read it as "the system failed to trade a
+regime it should have caught" — whether the real market was BULLISH enough to
+qualify during those 13 days is **unknown and unknowable in hindsight**;
+reconstructing it now from today's data would be exactly the retroactive,
+hindsight-selected holdout declaration Rule 2 (partition re-cutting) and this
+document's opening paragraph both exist to forbid.
+
+**Rule 5 — an infrastructure gap in the holdout window is recorded as a gap,
+with its exact date range, and is excluded from any pass/fail reading of the
+bar below — not backfilled, not treated as 13 "clean" no-signal days, and not
+treated as 13 "missed opportunity" days either.**
+
+Gap: **2026-09-14 through 2026-09-30 inclusive** (13 IDX trading days —
+2026-09-14 itself also predates the fix, see F-023 for the exact session-by-
+session breakdown). Fixed 2026-10-01; `index_eod` backfilled for display
+purposes only (`daily_scoreboard`/`daily_gate_summary`, read-only history, no
+effect on `paper_positions`/`paper_account`), and a guard added to
+`paper_signal_scan.py` (branch `fix/index-eod-missing-guard`) so a future
+index outage skips regime computation entirely instead of defaulting to a
+fabricated NEUTRAL.
+
+**Holdout position count, corrected.** This document's "Currently at 5" line
+(written 2026-09-02) is stale. As of 2026-10-01: **16 closed, filled
+positions** (verified via `paper_positions`/`backtest_trades`, `run_id=36`).
+Still well short of the 60-position bar — this gap does not change that
+math, since the gap produced zero candidates either way, not candidates that
+were lost.
