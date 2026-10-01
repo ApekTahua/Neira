@@ -212,6 +212,25 @@ def main():
     print(f"[SCAN] {today} -- run_id={run_id}, cash=Rp{cash:,.0f}")
     print("[FETCH] Building full dataset through today (add_features/sector-RS/weekly-trend) ...")
     df, idx_df = bt.build_full_dataset(supabase)
+    # F-023 (2026-09-14..09-30, 13 trading days): the n8n index_eod ingest
+    # silently stopped writing rows while ihsg_eod (per-stock) kept loading
+    # normally -- a pure data-availability failure, invisible from inside this
+    # script because regime_by_date.get(today, "NEUTRAL") below has no way to
+    # distinguish "the index genuinely read neutral today" from "there is no
+    # index row for today at all". Both defaulted identically, so
+    # daily_gate_summary/daily_scoreboard quietly reported a fabricated
+    # "regime=NEUTRAL" for 13 straight sessions and no new candidates were ever
+    # considered, with nothing in any log loud enough to notice. Detect the
+    # missing-row case explicitly and refuse to treat it as a market read.
+    index_missing_today = idx_df.empty or not (idx_df["trade_date"] == today).any()
+    if index_missing_today:
+        pc.notify(f"\U0001F6A8 *[{pc.PAPER_VERSION}] index_eod has no row for {today}* -- "
+                  f"ihsg_eod loaded normally but the index feed did not. Regime/"
+                  f"daily_gate_summary/daily_scoreboard/new-candidate generation are "
+                  f"being SKIPPED this run so a data outage can't be misread as a real "
+                  f"NEUTRAL regime (today's open-position exits below are unaffected -- "
+                  f"those only need ihsg_eod). Will retry in full on the next catch-up "
+                  f"schedule slot today once index_eod is fixed.")
     regime_by_date, bullish_streak_by_date, trend_strength_by_date = bt.compute_regime_with_hysteresis(idx_df)
     regime = regime_by_date.get(today, "NEUTRAL")
     trend_strength = trend_strength_by_date.get(today, 0.0)
@@ -483,7 +502,7 @@ def main():
     # same point in the flow as the old inline call, so zero drift in what
     # actually gets queued.
     scored = []
-    if regime_ok:
+    if regime_ok and not index_missing_today:
         day_data = df[df["trade_date"] == today]
         scored = bt.score_candidates(day_data, weekly_cut, sector_cut, top_n=15,
                                       weekly_comp_abs_cap=weekly_comp_abs_cap)
@@ -497,23 +516,33 @@ def main():
     score_p90 = train_scores.quantile(0.90) if len(train_scores) > 0 else 1.0
     if not np.isfinite(score_p90) or score_p90 <= 0:
         score_p90 = 1.0
-    scoreboard = bt.score_full_universe(df[df["trade_date"] == today], weekly_cut, sector_cut, score_p90, regime_ok)
+    scoreboard = (bt.score_full_universe(df[df["trade_date"] == today], weekly_cut, sector_cut, score_p90, regime_ok)
+                  if not index_missing_today else [])
 
     # Persist the actual thresholds applied today so the frontend can show a
     # real per-gate pass/fail breakdown for any ticker instead of only the
     # final label -- see daily_gate_summary_schema.sql. Written even when
     # regime_ok is False / scoreboard is empty, since "why is everything
     # WAIT today" is exactly the case this needs to answer too.
-    # Retry-safe: upsert on an explicit on_conflict target -- replaying the
-    # same write after a lost response re-applies the identical row.
-    _retry(lambda: supabase.table("daily_gate_summary").upsert({
-        "trade_date": today.isoformat(), "regime": regime,
-        "bullish_streak": int(bullish_streak_by_date.get(today, 0)),
-        "trend_strength": float(trend_strength), "regime_ok": bool(regime_ok),
-        "weekly_cut": float(weekly_cut), "sector_cut": float(sector_cut),
-        "score_p90": float(score_p90), "atr_ratio_max": float(bt.ATR_PRICE_RATIO_MAX),
-        "adtv_min": float(cfg.ADTV_MIN),
-    }, on_conflict="trade_date").execute())
+    #
+    # F-023: skipped entirely when the index itself is missing for today --
+    # writing this row with today's defaulted regime="NEUTRAL" is exactly the
+    # fabricated-reading bug this guard exists to stop. Leaving no row for
+    # today is the honest state (the frontend already treats a missing
+    # daily_gate_summary row for a trading day as "scan hasn't run yet /
+    # data not in"), and a later catch-up slot that succeeds will upsert the
+    # real row once index_eod is actually there.
+    if not index_missing_today:
+        # Retry-safe: upsert on an explicit on_conflict target -- replaying the
+        # same write after a lost response re-applies the identical row.
+        _retry(lambda: supabase.table("daily_gate_summary").upsert({
+            "trade_date": today.isoformat(), "regime": regime,
+            "bullish_streak": int(bullish_streak_by_date.get(today, 0)),
+            "trend_strength": float(trend_strength), "regime_ok": bool(regime_ok),
+            "weekly_cut": float(weekly_cut), "sector_cut": float(sector_cut),
+            "score_p90": float(score_p90), "atr_ratio_max": float(bt.ATR_PRICE_RATIO_MAX),
+            "adtv_min": float(cfg.ADTV_MIN),
+        }, on_conflict="trade_date").execute())
 
     if scoreboard:
         # Retry-safe: same reasoning -- upsert on an explicit on_conflict target.
@@ -732,9 +761,13 @@ def main():
     # date, corrupting the equity curve/drawdown history this same function
     # reads on every subsequent run. Same insert-safety reasoning as
     # backtest_trades.insert() in _close_position() above.
+    # F-023: equity/drawdown itself is real (computed off ihsg_eod closes, not
+    # the index) even on an index-missing day -- only the `regime` label on
+    # this row would be the fabricated default, so mark it explicitly instead
+    # of writing a bare "NEUTRAL" indistinguishable from a real neutral read.
     supabase.table("backtest_equity").insert({
         "run_id": run_id, "date": today.isoformat(), "portfolio_value": total_equity,
-        "drawdown_pct": drawdown_pct, "regime": regime,
+        "drawdown_pct": drawdown_pct, "regime": (regime if not index_missing_today else "UNKNOWN_INDEX_MISSING"),
     }).execute()
     # Retry-safe: absolute overwrite keyed by this run's own id.
     _retry(lambda: supabase.table("backtest_runs").update({
@@ -757,6 +790,9 @@ def main():
         f"Equity: Rp{total_equity:,.0f} ({net_profit_pct:+.2f}%)",
         f"Open positions: {len(still_open)} | Win rate: {win_rate:.1f}% ({wins}/{total_positions} positions closed)",
     ]
+    if index_missing_today:
+        lines.append("\u26A0\uFE0F index_eod missing for today -- regime/scoreboard/new candidates "
+                     "SKIPPED, not defaulted to NEUTRAL. See the alert sent earlier this run.")
     # Real-capital readiness gate (docs/MASTERPLAN.md criterion A) -- surfaced
     # daily so it can't quietly go stale in the roadmap docs again (2026-08-26
     # council finding: a 9-day gap between real work and any visible record of
