@@ -173,3 +173,45 @@ published therefore assumes a fill at the exact close with no spread paid and no
 market impact, on an exchange where the strategy's own exits are market-on-close
 in names trading a billion rupiah a day. Any number reported outside an explicit
 cost-sensitivity study runs with slippage **on**.
+
+---
+
+# Amendment, 2026-10-01: a 5-trading-day gap in the holdout record, caused by an infra outage, is permanent and unrecoverable
+
+Between 2026-09-14 and 2026-09-30 (13 trading days), the `index_eod` ingestion silently broke
+(audit finding F-023), causing `daily_gate_summary` to default to `regime=NEUTRAL, regime_ok=false`
+for all 13 days regardless of the real market state. After the ingestion bug was fixed, the real
+regime for those 13 days was recomputed by replaying `backtest_v4.py`'s actual scoring functions
+against backfilled index data (not a reimplementation — the same functions the live pipeline
+calls), and validated against a known-good anchor date just before the outage (2026-09-11, exact
+match).
+
+**The recompute split the 13 days into two groups, and only one of them matters to this holdout:**
+
+| Dates | Real regime | Real `regime_ok` | Qualifying signals that existed | Consequence for the holdout record |
+|---|---|---|---|---|
+| 2026-09-14 .. 09-18 (5 days) | BULLISH | **true** | 15/day, real | **V4_PAPER missed 5 real trading opportunities live.** This is a genuine gap, not a null result. |
+| 2026-09-21 .. 09-24 (4 days) | BULLISH | false | 0 | Would have produced zero signals even with working infra — inconsequential. |
+| 2026-09-25 .. 09-30 (4 days) | BEARISH | false | 0 | Same — inconsequential. |
+
+**This gap cannot be closed, and must not be closed by inference.** Whatever entries would have
+been taken on 2026-09-14..09-18 under a working pipeline cannot be added to `paper_positions`,
+`backtest_trades`, or `paper_account` after the fact. Doing so would be hindsight-selected: the
+entries would be chosen with full knowledge of how those five days of real price action actually
+played out, which is precisely the kind of contamination this entire protocol exists to prevent.
+**The holdout record for 2026-09-14..09-18 is permanently missing those 5 days of real opportunity,
+full stop.** The sample-size bar in "The bar, declared now" above is not adjusted to compensate —
+a smaller true sample is the honest cost of the outage, not something to paper over by counting
+differently.
+
+What *was* corrected, because it is display/diagnostic data never read back into trading
+decisions, not part of the holdout's trade record itself: `daily_scoreboard` (full-universe scores,
+4,325 rows for the 13-day window), `daily_gate_summary` (the regime diagnostic itself, now showing
+the true computed values instead of the broken NEUTRAL default), and `daily_qualifying_signals`
+(the real 15/day entry-candidate lists for the 5 BULLISH days, 75 rows total — shown on
+`/screener` and `/leaderboard` for historical accuracy, never fed back into `paper_signal_scan.py`).
+
+The root-cause bug (a silently-missing index feed defaulting to a fabricated NEUTRAL regime instead
+of halting) is fixed and guarded against recurrence (`T-GUARD-1`, branch
+`fix/index-eod-missing-guard`): any future occurrence will now skip scoring entirely and alert,
+rather than silently producing a wrong regime that looks like a normal day.
