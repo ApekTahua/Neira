@@ -97,6 +97,32 @@ RETIRED_PAPER_VERSIONS = ("V3_PAPER", "V3.1_PAPER")
 # [PAPER_VERSION] prefix so a shared Telegram chat stays distinguishable.
 PRIMARY_PAPER_VERSION = "V4_PAPER"
 
+# F-003: the holdout bar in docs/HOLDOUT_PROTOCOL.md is "60 closed
+# positions". paper_signal_scan.py's own stale-PENDING expiry (see that
+# script's "Expire stale PENDING orders" block) writes status='CLOSED' for
+# an order that was queued but never filled (exit_reason='UNFILLED_EXPIRED',
+# entry_date/filled_at both NULL, pnl=0) -- a real event worth recording, but
+# not a traded position, and `count(*) where status='CLOSED'` silently
+# counts it toward the bar anyway (VERIFIED 2026-09-13: inflated V4_PAPER's
+# count 11 -> 10, a 10% overstatement). A prior ad-hoc script
+# (scratch_v4paper_live_record_pull.py) happened to exclude it by filtering
+# `entry_date >= 2026-08-12`, which only works because an unfilled expiry's
+# entry_date is NULL -- correct by accident of a NULL, not by a written
+# rule. This is the one, explicit, single-source-of-truth definition every
+# holdout-progress script and query should use instead of reinventing it.
+HOLDOUT_BAR_FILTER = "status = 'CLOSED' and filled_at is not null"
+
+
+def is_filled_closed_position(position: dict) -> bool:
+    """Python-side equivalent of HOLDOUT_BAR_FILTER, for scripts that already
+    pulled rows via the Supabase client rather than hand-writing SQL. A
+    position counts toward the holdout bar only once it was both closed AND
+    actually filled -- an UNFILLED_EXPIRED order (queued, never filled) is
+    real information about live executability, but it is not a traded
+    position and must not inflate the progress count toward the 60-position
+    bar docs/HOLDOUT_PROTOCOL.md declares."""
+    return position.get("status") == "CLOSED" and position.get("filled_at") is not None
+
 # Real broker fee structure reported by the user, on top of config.py's
 # existing percentage BUY_FEE/SELL_FEE (0.18% / 0.28%) -- a flat surcharge
 # on any single buy transaction over Rp10,000,000. Paper-trading-specific:

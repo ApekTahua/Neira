@@ -48,7 +48,20 @@ untouched data is data that has not happened yet.
 Minimum sample: **60 closed positions.** Below that the bootstrap done on
 2026-09-01 puts the false-negative rate above 30%, which is not a test. 90 is
 the number for a confident read; 60 is the point at which a result becomes worth
-looking at at all. Currently at 5.
+looking at at all. Currently at 16 (see the 2026-10-01 amendment below).
+
+**"Closed position" means FILLED and closed, not merely `status='CLOSED'`
+(F-003, 2026-09-13).** A queued order that expires unfilled before ever
+getting a fill also lands in `status='CLOSED'` (`exit_reason=
+'UNFILLED_EXPIRED'`, `entry_date`/`filled_at` both NULL, `pnl=0`) — real
+information about live executability, but never a traded position. The
+explicit, single-source-of-truth filter is
+`paper_common.is_filled_closed_position()` in Python, or
+`status = 'CLOSED' and filled_at is not null` in SQL
+(`paper_common.HOLDOUT_BAR_FILTER`) — every script or query reporting
+progress toward the 60-position bar must use one of these two, not a raw
+`count(*) where status='CLOSED'`. Report unfilled expiries as their own line
+alongside the bar count; don't drop them, they just don't count toward it.
 
 Judged against the historical distribution the walk-forward produced:
 
