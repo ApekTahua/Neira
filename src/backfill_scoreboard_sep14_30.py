@@ -91,12 +91,16 @@ BACKFILL_DATES = [
     date(2026, 9, 24), date(2026, 9, 25), date(2026, 9, 28), date(2026, 9, 29),
     date(2026, 9, 30),
 ]
+# Reusable for later gaps without editing code: BACKFILL_DATES_CSV="2026-10-22,2026-10-23,..."
+# and ANCHOR_DATE_ISO="2026-10-21" (a recent date whose live gate row is known-good).
+if os.environ.get("BACKFILL_DATES_CSV"):
+    BACKFILL_DATES = [date.fromisoformat(x.strip()) for x in os.environ["BACKFILL_DATES_CSV"].split(",") if x.strip()]
 # Known-good anchor: the last date before the outage, already has a correct
 # live daily_gate_summary/daily_scoreboard row (regime=BULLISH confirmed
 # earlier this session). Recomputed here too and cross-checked -- if THIS
 # date doesn't match, the recompute methodology itself is wrong and nothing
 # past it can be trusted either.
-ANCHOR_DATE = date(2026, 9, 11)
+ANCHOR_DATE = date.fromisoformat(os.environ.get("ANCHOR_DATE_ISO", "2026-09-11"))
 
 
 def recompute_gate_and_scoreboard(df, idx_df, trade_date):
