@@ -48,7 +48,7 @@ untouched data is data that has not happened yet.
 Minimum sample: **60 closed positions.** Below that the bootstrap done on
 2026-09-01 puts the false-negative rate above 30%, which is not a test. 90 is
 the number for a confident read; 60 is the point at which a result becomes worth
-looking at at all. Currently at 16 (see the 2026-10-01 amendment below).
+looking at at all. Currently at 6 (see "Count and review date" below).
 
 **"Closed position" means FILLED and closed, not merely `status='CLOSED'`
 (F-003, 2026-09-13).** A queued order that expires unfilled before ever
@@ -62,6 +62,21 @@ explicit, single-source-of-truth filter is
 progress toward the 60-position bar must use one of these two, not a raw
 `count(*) where status='CLOSED'`. Report unfilled expiries as their own line
 alongside the bar count; don't drop them, they just don't count toward it.
+
+### Count and review date
+
+**What counts.** Closed positions with a filled entry on or after 2026-09-03.
+Today that is 6 of 60. The 10 positions that entered before 2026-09-03 are
+kept for reference and are not counted. As SQL:
+`status = 'CLOSED' AND filled_at IS NOT NULL AND entry_date >= '2026-09-03'`
+(`paper_common.HOLDOUT_BAR_FILTER`).
+
+**Review date: 2027-09-03.** If there are fewer than 60 counted positions by
+then, we publish the count as it is and call the result too small to judge.
+Nothing gets promoted. The bar stays 60.
+
+**If the market stays bearish and the system stays in cash, that is fine.** It
+is not a reason to change the gate, the bar, or the config.
 
 Judged against the historical distribution the walk-forward produced:
 
