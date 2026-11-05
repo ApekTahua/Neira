@@ -33,6 +33,15 @@ on:
     - cron: '10 11 * * 1-5'  # 18:10 WIB, primary -- needs today's fresh ihsg_eod
     - cron: '10 13 * * 1-5'  # 20:10 WIB, catch-up
     - cron: '10 15 * * 1-5'  # 22:10 WIB, last resort
+    # MORNING SAFETY NET (2026-11-01). 2026-10-22's index data never loaded and
+    # ihsg_eod then stopped after 10-23 (dead Browserless credential); the three
+    # evening slots above can only work with data that exists by 22:10. n8n's
+    # "EOD self-heal" workflow runs at 05:30 WIB Tue-Sat and loads any missing
+    # day, then dispatches this workflow; this slot is the backstop if that
+    # dispatch is lost. 22:40 UTC Mon-Fri = 05:40 WIB Tue-Sat. The scan no-ops
+    # if the day is already processed, and the heal step below repairs display
+    # rows for any day whose data arrived after its own scan.
+    - cron: '40 22 * * 1-5'  # 05:40 WIB next morning
   workflow_dispatch:
 
 # Own concurrency group -- independent run, disjoint run_id-scoped rows, no
@@ -71,6 +80,17 @@ jobs:
           V4_BANDAR_SIZING: '1'
           V4_ATR_PRICE_RATIO_MAX: '0.08'
         run: python src/paper_signal_scan.py
+      # Repairs ONLY the three display tables (gate, scoreboard, qualifying list)
+      # for days whose prices/index arrived after that day's scan. Never touches
+      # paper_positions / paper_account. Needs src/heal_scoreboard.py on the
+      # worktree-v2-hmm-screener branch (PR fix/eod-safety-net) -- merge that first.
+      - name: Heal display tables for late-arriving days
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          V4_BANDAR_SIZING: '1'
+          V4_ATR_PRICE_RATIO_MAX: '0.08'
+        run: python src/heal_scoreboard.py
 
       - name: Alert on failure
         if: failure()
