@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from supabase import create_client  # noqa: E402
+import paper_common as pc  # noqa: E402
 
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
@@ -26,13 +27,27 @@ if len(pdf):
     print(pdf["status"].value_counts())
 
 closed = pdf[pdf["status"] == "CLOSED"].copy() if len(pdf) else pdf
-print(f"\n[CLOSED] n={len(closed)}")
+print(f"\n[CLOSED, all statuses incl. unfilled expiries] n={len(closed)}")
+
+# F-003: the holdout bar is FILLED closed positions, not raw status='CLOSED'
+# -- a stale PENDING order that expired unfilled also lands in CLOSED
+# (exit_reason='UNFILLED_EXPIRED', entry_date/filled_at both NULL, pnl=0) and
+# is real information about live executability, but it never became a
+# traded position and must not inflate progress toward the 60-position bar.
+# paper_common.is_filled_closed_position() is the single-source-of-truth
+# definition -- this used to rely on an `entry_date >= 2026-08-12` filter
+# that only excluded the expiry by accident of its entry_date being NULL,
+# not by an explicit rule (see paper_common.py's own comment on this).
 if len(closed):
-    closed["entry_date"] = pd.to_datetime(closed["entry_date"])
-    closed["exit_date"] = pd.to_datetime(closed["exit_date"])
-    since = pd.Timestamp("2026-08-12")
-    live_since = closed[closed["entry_date"] >= since]
-    print(f"\n[CLOSED, entry_date >= 2026-08-12] n={len(live_since)}")
+    unfilled_expiries = closed[~closed.apply(pc.is_filled_closed_position, axis=1)]
+    if len(unfilled_expiries):
+        print(f"\n[UNFILLED EXPIRIES, excluded from the holdout bar] n={len(unfilled_expiries)}")
+        print(unfilled_expiries[["stock_code", "signal_date", "exit_date", "exit_reason"]].to_string(index=False))
+
+    live_since = closed[closed.apply(pc.is_filled_closed_position, axis=1)].copy()
+    live_since["entry_date"] = pd.to_datetime(live_since["entry_date"])
+    live_since["exit_date"] = pd.to_datetime(live_since["exit_date"])
+    print(f"\n[HOLDOUT BAR -- filled, closed positions] n={len(live_since)} (of 60 required)")
     print(live_since[["stock_code", "entry_date", "exit_date", "avg_price", "exit_price", "pnl", "pnl_pct", "exit_reason"]].to_string(index=False))
     wins = (live_since["pnl"] > 0).sum()
     if len(live_since):
