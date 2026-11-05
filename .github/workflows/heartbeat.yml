@@ -1,0 +1,25 @@
+name: "Heartbeat - data freshness (external to n8n)"
+
+# Checks DB1 freshness from outside n8n. A failing run emails the repo owner.
+# 13:30 UTC = 20:30 WIB (Mon-Sat), 23:30 UTC = 06:30 WIB (Mon-Sat mornings).
+# Read-only: anon key, SELECT over the public REST API. Audit L-004.
+on:
+  schedule:
+    - cron: '30 13 * * 1-6'
+    - cron: '30 23 * * 0-5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check data freshness
+        env:
+          HEARTBEAT_DB1_URL: ${{ secrets.HEARTBEAT_DB1_URL }}
+          HEARTBEAT_DB1_ANON_KEY: ${{ secrets.HEARTBEAT_DB1_ANON_KEY }}
+        run: python3 .github/scripts/heartbeat.py
