@@ -110,7 +110,13 @@ PRIMARY_PAPER_VERSION = "V4_PAPER"
 # entry_date is NULL -- correct by accident of a NULL, not by a written
 # rule. This is the one, explicit, single-source-of-truth definition every
 # holdout-progress script and query should use instead of reinventing it.
-HOLDOUT_BAR_FILTER = "status = 'CLOSED' and filled_at is not null"
+#
+# 2026-11-05: only entries on or after HOLDOUT_COUNT_FROM count toward the 60
+# (docs/HOLDOUT_PROTOCOL.md, "Count and review date"). Reporting only; no
+# trading code reads this.
+HOLDOUT_COUNT_FROM = "2026-09-03"
+HOLDOUT_BAR_FILTER = (f"status = 'CLOSED' and filled_at is not null "
+                      f"and entry_date >= '{HOLDOUT_COUNT_FROM}'")
 
 
 def is_filled_closed_position(position: dict) -> bool:
@@ -122,6 +128,14 @@ def is_filled_closed_position(position: dict) -> bool:
     position and must not inflate the progress count toward the 60-position
     bar docs/HOLDOUT_PROTOCOL.md declares."""
     return position.get("status") == "CLOSED" and position.get("filled_at") is not None
+
+
+def counts_toward_holdout(position: dict) -> bool:
+    """Python-side equivalent of HOLDOUT_BAR_FILTER: filled, closed, and
+    entered on or after HOLDOUT_COUNT_FROM."""
+    ed = position.get("entry_date")
+    return (is_filled_closed_position(position) and ed is not None
+            and str(ed)[:10] >= HOLDOUT_COUNT_FROM)
 
 # Real broker fee structure reported by the user, on top of config.py's
 # existing percentage BUY_FEE/SELL_FEE (0.18% / 0.28%) -- a flat surcharge

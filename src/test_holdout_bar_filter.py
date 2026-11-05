@@ -59,7 +59,11 @@ def test_sql_filter_string_matches_the_python_rule():
     # pasted into a WHERE clause -- this just locks its exact wording so a
     # future edit to one side doesn't silently drift from the other without
     # a test failing.
-    assert pc.HOLDOUT_BAR_FILTER == "status = 'CLOSED' and filled_at is not null"
+    assert pc.HOLDOUT_BAR_FILTER == ("status = 'CLOSED' and filled_at is not null "
+                                     "and entry_date >= '2026-09-03'")
+    assert pc.counts_toward_holdout({**FILLED_CLOSED, "entry_date": "2026-09-03"}) is True
+    assert pc.counts_toward_holdout({**FILLED_CLOSED, "entry_date": "2026-09-02"}) is False
+    assert pc.counts_toward_holdout(UNFILLED_EXPIRY) is False
     print("[OK] HOLDOUT_BAR_FILTER wording matches is_filled_closed_position()'s own rule")
 
 
