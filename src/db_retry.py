@@ -19,7 +19,28 @@ the live trading path -- doesn't have to carry an odd dependency on it.
 import random
 import time
 
+import httpx
 from postgrest.exceptions import APIError
+
+
+# Transient transport failures only -- a dropped/stale connection, not a
+# server-side rejection. 2026-11-18 10:37 UTC (and 2026-11-12 13:39 UTC):
+# paper_signal_scan.py died with httpx.ReadError ([Errno 32] Broken pipe) in
+# data_fetch._fetch_chunk, i.e. inside retry() below, after all 4 attempts
+# (~18s of total backoff) hit the same dead connection. The retry existed but
+# gave up too fast for a Supabase/PostgREST hiccup that lasts longer.
+
+TRANSIENT_HTTPX_ERRORS = (
+    httpx.ReadError, httpx.WriteError, httpx.ConnectError, httpx.TimeoutException,
+    httpx.RemoteProtocolError, httpx.CloseError,
+)
+
+
+# Network errors get more, longer-spaced attempts than other errors (2s, 4s, 8s,
+# 16s, 30s + jitter = ~60s total): a dropped connection usually recovers within a
+# minute, while a deterministic error (bad query, 57014) gains nothing from waiting.
+TRANSIENT_ATTEMPTS = 6
+TRANSIENT_MAX_DELAY = 30.0
 
 
 def retry(fn, attempts=4, base_delay=2.0):
@@ -32,33 +53,31 @@ def retry(fn, attempts=4, base_delay=2.0):
     network blip) makes the next incident's log immediately diagnosable
     instead of needing a full GitHub Actions log pull to identify, like this
     one did."""
-    for i in range(attempts):
+    transient = 0  # network errors seen so far
+    other = 0      # every other kind of error seen so far
+    while True:
         try:
             return fn()
+        except TRANSIENT_HTTPX_ERRORS:
+            transient += 1
+            if transient >= TRANSIENT_ATTEMPTS:
+                raise
+            delay = min(TRANSIENT_MAX_DELAY, base_delay * (2 ** (transient - 1)))
+            print(f"  [RETRY] network error (attempt {transient}/{TRANSIENT_ATTEMPTS}), waiting ~{delay:.0f}s.")
+            time.sleep(delay + random.uniform(0, base_delay))
         except APIError as e:
-            if i == attempts - 1:
+            other += 1
+            if other >= attempts:
                 raise
             if e.code == "57014":
-                print(f"  [RETRY] Postgres statement timeout (57014) on attempt {i + 1}/{attempts} -- "
+                print(f"  [RETRY] Postgres statement timeout (57014) on attempt {other}/{attempts} -- "
                       f"likely a missing/inadequate index, not a transient blip.")
-            time.sleep(base_delay * (i + 1) + random.uniform(0, base_delay))
+            time.sleep(base_delay * other + random.uniform(0, base_delay))
         except Exception:
-            if i == attempts - 1:
+            other += 1
+            if other >= attempts:
                 raise
-            time.sleep(base_delay * (i + 1) + random.uniform(0, base_delay))
-
-
-# Transient transport failures only -- a dropped/stale connection, not a
-# server-side rejection. 2026-11-18: paper_signal_scan.py crashed with
-# httpx.ReadError ([Errno 32] Broken pipe) on a bare INSERT after a ~6 minute
-# dataset build left the pooled connection idle; the scan had no retry there
-# on purpose (see insert_idempotent's reason) so one blip lost the whole day.
-import httpx  # noqa: E402
-
-TRANSIENT_HTTPX_ERRORS = (
-    httpx.ReadError, httpx.WriteError, httpx.ConnectError, httpx.TimeoutException,
-    httpx.RemoteProtocolError, httpx.CloseError,
-)
+            time.sleep(base_delay * other + random.uniform(0, base_delay))
 
 
 def insert_idempotent(supabase, table, row, key, attempts=3, base_delay=2.0):

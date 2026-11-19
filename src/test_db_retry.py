@@ -152,4 +152,51 @@ assert "Jual ASII di Rp5.000: kena batas rugi (stop loss)." in txt
 assert "Antre beli TLKM" in txt and "normal selama" not in txt
 print("[PASS] daily summary, day with position, exit and entry")
 
+# ---- retry(): network errors get longer backoff, other errors keep the old budget ----
+import db_retry
+import httpx as _httpx
+
+db_retry.time.sleep = lambda s: None  # don't actually wait in the test
+n = {"c": 0}
+
+
+def broken_pipe_x4():
+    n["c"] += 1
+    if n["c"] <= 4:  # the old budget (4 attempts) would have given up here
+        raise _httpx.ReadError("[Errno 32] Broken pipe")
+    return "ok"
+
+
+assert retry(broken_pipe_x4, attempts=4, base_delay=2.0) == "ok" and n["c"] == 5
+print("[PASS] retry survives 4 consecutive httpx.ReadError (the 2026-11-18 crash shape)")
+
+n["c"] = 0
+
+
+def always_broken():
+    n["c"] += 1
+    raise _httpx.ReadError("[Errno 32] Broken pipe")
+
+
+try:
+    retry(always_broken, attempts=4, base_delay=2.0)
+    raise AssertionError("expected ReadError after the network budget")
+except _httpx.ReadError:
+    assert n["c"] == db_retry.TRANSIENT_ATTEMPTS, n
+    print("[PASS] retry gives up after TRANSIENT_ATTEMPTS network errors")
+
+n["c"] = 0
+
+
+def always_value_error():
+    n["c"] += 1
+    raise ValueError("deterministic")
+
+
+try:
+    retry(always_value_error, attempts=4, base_delay=2.0)
+except ValueError:
+    assert n["c"] == 4, n
+    print("[PASS] non-network errors still use attempts=4")
+
 print("\nAll insert_idempotent / plain-alert checks passed.")

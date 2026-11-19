@@ -113,8 +113,7 @@ def _close_position(supabase, run_id: int, position_id: int, pos: dict, trade_re
     # No unique constraint on backtest_trades, so a blind retry could double-count
     # a trade. insert_idempotent() retries only on a transient network error and
     # first checks whether the earlier attempt already landed (same run/stock/
-    # entry/exit/reason). 2026-11-18: a bare insert here-style call crashed a scan
-    # with httpx.ReadError (Broken pipe).
+    # entry/exit/reason).
     insert_idempotent(supabase, "backtest_trades", {
         "run_id": run_id, "stock_code": trade_record["stock_code"],
         "entry_date": trade_record["entry_date"].isoformat(), "exit_date": trade_record["exit_date"].isoformat(),
@@ -797,8 +796,7 @@ def main():
     # repo. The last_signal_date == today guard at the top of main() stops a second
     # RUN from re-inserting; the helper makes a retry inside THIS run safe (it only
     # retries on a transient network error, after checking the first attempt did not
-    # already land). This is the call most likely behind the 2026-11-18 crash: with
-    # the gate closed it is the only bare write left after a ~6 min dataset build.
+    # already land).
     # F-023: equity/drawdown itself is real (computed off ihsg_eod closes, not
     # the index) even on an index-missing day -- only the `regime` label on
     # this row would be the fabricated default, so mark it explicitly instead
