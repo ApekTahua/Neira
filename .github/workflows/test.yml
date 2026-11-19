@@ -68,5 +68,4 @@ jobs:
         run: |
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_USER_ID}" \
-            -d parse_mode="Markdown" \
-            -d text="🚨 *worktree-v2-hmm-screener test suite FAILED* on push $(date -u +'%Y-%m-%d %H:%M UTC') -- advisory only, live paper-trading workflows are NOT blocked by this. Check the GitHub Actions log before trusting the next scheduled run."
+            -d text="Tes otomatis Neira gagal setelah perubahan kode baru. Ini hanya peringatan: scan dan pantau harga tetap jalan seperti biasa. Cek log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

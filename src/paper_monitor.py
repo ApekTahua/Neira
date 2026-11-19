@@ -34,7 +34,7 @@ os.environ.setdefault("V4_TEST_END", date.today().isoformat())
 import config as cfg  # noqa: E402
 import backtest_v4 as bt  # noqa: E402
 import paper_common as pc  # noqa: E402
-from db_retry import retry as _retry  # noqa: E402
+from db_retry import retry as _retry, insert_idempotent  # noqa: E402
 from supabase import create_client  # noqa: E402
 
 LOT_SIZE = bt.LOT_SIZE
@@ -207,18 +207,19 @@ def main():
     if freshest:
         age_min = (datetime.now(timezone.utc) - _parse_timestamptz(freshest)).total_seconds() / 60
         if age_min > STALE_MINUTES:
-            msg = f"⚠️ ihsg_realtime feed is {age_min:.0f} min stale (>{STALE_MINUTES}m) -- skipping this poll."
+            msg = (f"Data harga live terlambat {age_min:.0f} menit (batas {STALE_MINUTES} menit). "
+                   f"Pantau harga putaran ini dilewati, tidak ada transaksi.")
             print(f"[MONITOR] {msg}")
-            pc.notify(msg)
+            pc.notify(msg, markdown=False)
             return
 
     breadth_crash, breadth_frac, breadth_n = _detect_breadth_crash(supabase)
     if breadth_crash:
-        msg = (f"🔴 *MARKET BREADTH CRASH*: {breadth_frac*100:.0f}% of {breadth_n} liquid tickers down "
-               f"{BREADTH_CRASH_DROP_PCT:.0f}%+ right now -- pausing new fills and pyramid-adds this poll. "
-               f"Existing SL/TP1/trailing stops stay active.")
+        msg = (f"Pasar jatuh tajam: {breadth_frac*100:.0f}% dari {breadth_n} saham likuid turun "
+               f"{BREADTH_CRASH_DROP_PCT:.0f}% atau lebih. Pembelian baru dan tambah posisi dihentikan "
+               f"sementara. Stop loss dan target jual posisi yang ada tetap jalan.")
         print(f"[MONITOR] {msg}")
-        pc.notify(msg)
+        pc.notify(msg, markdown=False)
 
     # ---- Fill PENDING candidates at today's open ----
     #
@@ -351,7 +352,7 @@ def main():
         _persist_cash()
         filled_today += 1
         recent_entries += 1
-        pc.notify(f"\U0001F7E2 *FILLED* {row['stock_code']} @ Rp{entry_price:,.0f} x {fill['lots']} lot(s)")
+        pc.notify(f"Beli terisi: {row['stock_code']} di Rp{entry_price:,.0f}, {fill['lots']} lot.", markdown=False)
         print(f"[MONITOR] FILLED {row['stock_code']} @ {entry_price:.0f} x{fill['lots']}lot cash_out=Rp{cash_out:,.0f}")
 
     # ihsg_intraday is an independent pg_cron job polling every 3 min, so its
@@ -400,11 +401,11 @@ def main():
         # no-op behavior.
         prev_close_for_guard = float(row["last_valid_close"]) if row.get("last_valid_close") is not None else float(row["avg_price"])
         if pc.looks_like_unadjusted_corporate_action(prev_close_for_guard, current_price):
-            msg = (f"⚠️ *{row['stock_code']}*: live price Rp{current_price:,.0f} vs last known "
-                   f"Rp{prev_close_for_guard:,.0f} looks like an unadjusted split/corporate "
-                   f"action -- SKIPPING SL/TP check this poll, please verify manually.")
+            msg = (f"Harga {row['stock_code']} tidak wajar: Rp{prev_close_for_guard:,.0f} jadi Rp{current_price:,.0f}. "
+                   f"Kemungkinan pemecahan saham (split), bukan harga asli. Cek stop loss dan target jual "
+                   f"dilewati putaran ini. Tolong cek manual.")
             print(f"[MONITOR][CORP-ACTION-GUARD] {msg}")
-            pc.notify(msg)
+            pc.notify(msg, markdown=False)
             # Retry-safe: absolute day_high/day_low overwrite, not additive.
             _retry(lambda: supabase.table("paper_positions").update({"day_high": day_high, "day_low": day_low}).eq("id", row["id"]).execute())
             continue
@@ -445,30 +446,26 @@ def main():
                 "exit_reason": trade_record["exit_reason"], "pnl": trade_record["pnl"], "pnl_pct": trade_record["pnl_pct"],
                 "exited_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", row["id"]).execute())
-            # Deliberately NOT wrapped in retry: this is a bare INSERT with no
-            # idempotency key (no unique constraint on run_id/stock_code/exit_date etc in
-            # sql/paper_trading_schema.sql). If the first attempt actually succeeded
-            # server-side and only the response was lost to a transient blip, a retry
-            # would silently create a second identical backtest_trades row for the same
-            # exit, double-counting this trade in win-rate/profit-factor/frontend charts
-            # -- worse than the status quo (an uncaught exception here crashes the run,
-            # exactly like before this change; run_guarded() alerts and the next poll
-            # picks up cleanly since paper_positions is already CLOSED). Unlike the
-            # update()s above, there's no absolute-value replay that makes a retry safe
-            # here without an on_conflict target.
-            supabase.table("backtest_trades").insert({
+            # insert_idempotent(): retries only on a transient network error, after checking
+            # the first attempt did not already land (no unique constraint to upsert on).
+            insert_idempotent(supabase, "backtest_trades", {
                 "run_id": run_id, "stock_code": trade_record["stock_code"],
                 "entry_date": trade_record["entry_date"].isoformat(), "exit_date": today.isoformat(),
                 "entry_price": float(trade_record["entry_price"]), "exit_price": float(trade_record["exit_price"]),
                 "lots": int(trade_record["lots"]), "pnl": float(trade_record["pnl"]), "pnl_pct": float(trade_record["pnl_pct"]),
                 "exit_reason": trade_record["exit_reason"], "trigger": trade_record["trigger"],
                 "hold_days": int(trade_record["hold_days"]),
-            }).execute()
+            }, key={"run_id": run_id, "stock_code": trade_record["stock_code"],
+                    "entry_date": trade_record["entry_date"].isoformat(), "exit_date": today.isoformat(),
+                    "exit_reason": trade_record["exit_reason"]})
             _persist_cash()
 
-        emoji = "\U0001F534" if trade_record["pnl"] < 0 else "\U0001F7E2"
-        pc.notify(f"{emoji} *{trade_record['exit_reason']}* {trade_record['stock_code']} @ "
-                  f"Rp{trade_record['exit_price']:,.0f} pnl=Rp{trade_record['pnl']:+,.0f}")
+        alasan = {"SL": "kena batas rugi (stop loss)", "TP1": "ambil untung sebagian", "TRAILING": "trailing stop kena",
+                  "TIME": "batas waktu tahan", "CHECKPOINT": "cek hari ke-N tidak lolos"}.get(
+                      trade_record["exit_reason"], trade_record["exit_reason"])
+        hasil = "rugi" if trade_record["pnl"] < 0 else "untung"
+        pc.notify(f"Jual {trade_record['stock_code']} di Rp{trade_record['exit_price']:,.0f}: {alasan}. "
+                  f"Hasil {hasil} Rp{abs(trade_record['pnl']):,.0f}.", markdown=False)
         print(f"[MONITOR] {trade_record['exit_reason']} {trade_record['stock_code']} pnl={trade_record['pnl']:+,.0f}")
 
     _persist_cash()  # redundant with the write-through calls above when the loop completes
