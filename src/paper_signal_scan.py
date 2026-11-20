@@ -43,6 +43,7 @@ import config as cfg  # noqa: E402
 import backtest_v4 as bt  # noqa: E402
 import paper_common as pc  # noqa: E402
 from db_retry import retry as _retry, insert_idempotent  # noqa: E402
+import entry_scenarios as es  # noqa: E402
 from supabase import create_client  # noqa: E402
 
 LOT_SIZE = bt.LOT_SIZE
@@ -177,7 +178,7 @@ def _signal_scorecard(supabase, today: date) -> list[str]:
     return ["\U0001F9FE *How past signals actually did*", *out] if out else []
 
 
-_BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+_BULAN = es.BULAN
 _ALASAN_KELUAR = {
     "SL": "kena batas rugi (stop loss)", "TP1": "ambil untung sebagian", "TRAILING": "trailing stop kena",
     "TIME": "batas waktu tahan", "CHECKPOINT": "cek hari ke-N tidak lolos", "ROTATE": "diganti saham lain",
@@ -830,6 +831,14 @@ def main():
         equity=total_equity, profit_pct=net_profit_pct,
         confirm_days=bt.REGIME_CONFIRM_DAYS, trend_min=bt.TREND_STRENGTH_MIN,
     )
+    # "When could the gate open?" -- same engine function, same numbers as the website card. Reporting
+    # only: any failure here must never touch the scan result, so it is swallowed.
+    if idx_close is not None and not regime_ok:
+        try:
+            lines[-1:-1] = es.summary_lines(idx_df, bt.compute_regime_with_hysteresis,
+                                            bt.REGIME_CONFIRM_DAYS, bt.TREND_STRENGTH_MIN, idx_close)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[SCENARIOS] skipped -- {type(exc).__name__}: {exc}")
     # A retired run (pc.RETIRED_PAPER_VERSIONS) never has new_candidates_notes
     # (stop_new_entries gates that above) -- so on a day where none of its
     # remaining open positions exited either, this EOD summary is pure
