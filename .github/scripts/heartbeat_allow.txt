@@ -1,0 +1,3 @@
+# Permanent data gaps that cannot be repaired from the source. One per line: DATE TABLE  # why
+# TABLE is ihsg_eod, index_eod, daily_gate_summary, daily_scoreboard, or hari_hilang (a day missing from every table).
+# Keep this empty unless a gap is documented in the audit ledger; a date here silences the completeness check for it.

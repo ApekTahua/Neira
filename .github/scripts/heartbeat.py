@@ -8,6 +8,7 @@ Env: HEARTBEAT_DB1_URL, HEARTBEAT_DB1_ANON_KEY
 """
 import json
 import os
+import statistics
 import sys
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
@@ -88,6 +89,60 @@ else:
     if rt < need:
         fails.append(f"Harga live terakhir masuk {rt.astimezone(WIB):%Y-%m-%d %H:%M} WIB, seharusnya ada setelah {need:%Y-%m-%d %H:%M}. Pengisian harga live (n8n) mungkin mati.")
 
+# (d) completeness over the last 30 trading days (2026-11-20 audit: a whole day, 2026-06-24, was
+# missing from every table for 5 months and no freshness check could see it).
+# Open day = COMPOSITE row exists OR any ihsg_eod row. A weekday with no data anywhere is a holiday.
+# A day that vanished from every table is caught by the COMPOSITE continuity check below
+# (today's `previous` must equal the previous stored close).
+def count_on(table, d):
+    req = urllib.request.Request(f"{URL}/rest/v1/{table}?select=trade_date&trade_date=eq.{d}&limit=1",
+                                 headers={"apikey": KEY, "Authorization": f"Bearer {KEY}", "Prefer": "count=exact"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return int(r.headers["Content-Range"].split("/")[1])
+def rows(path):
+    req = urllib.request.Request(f"{URL}/rest/v1/{path}", headers={"apikey": KEY, "Authorization": f"Bearer {KEY}"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+allow = set()  # (date, table) pairs documented as permanent gaps, see heartbeat_allow.txt
+_allow_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "heartbeat_allow.txt")
+if os.path.exists(_allow_file):
+    for _line in open(_allow_file, encoding="utf-8"):
+        _p = _line.split("#")[0].split()
+        if len(_p) >= 2:
+            allow.add((_p[0], _p[1]))
+last = max(eod, idx)
+cands = [last - timedelta(days=i) for i in range(46) if (last - timedelta(days=i)).weekday() < 5]
+comp = {r["trade_date"]: r for r in rows("index_eod?select=trade_date,previous,close&index_code=eq.COMPOSITE&order=trade_date.desc&limit=70")}
+stock_n = {d: count_on("ihsg_eod", d.isoformat()) for d in cands}
+open_days = sorted(d for d in cands if stock_n[d] > 0 or d.isoformat() in comp)[-30:]
+pending = open_days[-1] if evening and open_days[-1] == today else None  # evening catch-up slots still running
+start = open_days[0].isoformat()
+med = statistics.median(stock_n[d] for d in open_days if stock_n[d] > 0)
+idx_n = {}
+for r in rows(f"index_eod?select=trade_date&trade_date=gte.{start}&limit=1000"):
+    idx_n[r["trade_date"]] = idx_n.get(r["trade_date"], 0) + 1
+gate_days = {r["trade_date"] for r in rows(f"daily_gate_summary?select=trade_date&trade_date=gte.{start}&limit=1000")}
+missing = {"ihsg_eod": [], "index_eod": [], "daily_gate_summary": [], "daily_scoreboard": []}
+for d in open_days:
+    s = d.isoformat()
+    if stock_n[d] < 0.9 * med:
+        missing["ihsg_eod"].append(f"{s} ({stock_n[d]} dari sekitar {int(med)} saham)")
+    if d == pending:
+        continue
+    if idx_n.get(s, 0) != 13:
+        missing["index_eod"].append(f"{s} ({idx_n.get(s, 0)} dari 13 indeks)")
+    if s not in gate_days:
+        missing["daily_gate_summary"].append(s)
+    if count_on("daily_scoreboard", s) == 0:
+        missing["daily_scoreboard"].append(s)
+for table, items in missing.items():
+    items = [i for i in items if (i[:10], table) not in allow]
+    if items:
+        fails.append(f"Data {table} tidak lengkap di hari bursa: {', '.join(items)}.")
+comp_dates = sorted(comp)
+for a, b in zip(comp_dates, comp_dates[1:]):
+    if b >= start and abs(float(comp[b]["previous"]) - float(comp[a]["close"])) > 0.0015 and (b, "hari_hilang") not in allow:
+        fails.append(f"Ada hari bursa yang hilang dari semua tabel di antara {a} dan {b} (kolom previous {b} tidak sama dengan close {a}).")
 for w in warns:
     print(f"::warning::{w}")
 if fails:
