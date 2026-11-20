@@ -80,8 +80,8 @@ def is_idx_trading_day(d: date) -> bool:
         return False
     if d.year == 2026:
         return d not in IDX_HOLIDAYS_2026
-    notify(f"⚠️ IDX_HOLIDAYS_{d.year} not in paper_common.py -- holiday guard is blind for {d.isoformat()}, "
-           f"falling back to staleness-only. Add {d.year}'s IDX holiday calendar to paper_common.py.")
+    notify(f"Kalender libur bursa {d.year} belum ada di program, jadi hari libur tidak dikenali. "
+           f"Scan tetap jalan seperti hari biasa. Perlu ditambahkan ke paper_common.py.", markdown=False)
     return True
 
 # Single source of truth for "this run stopped taking new capital" -- used by
@@ -254,7 +254,18 @@ def trading_days_elapsed(supabase, since_date, as_of_date) -> int:
 TELEGRAM_API = "https://api.telegram.org/bot"
 
 
-def notify(text: str) -> None:
+_SENT_TEXTS = set()
+
+
+def run_url() -> str:
+    """Link to the current GitHub Actions run, or "" outside Actions."""
+    repo, rid = os.environ.get("GITHUB_REPOSITORY"), os.environ.get("GITHUB_RUN_ID")
+    if not repo or not rid:
+        return ""
+    return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repo}/actions/runs/{rid}"
+
+
+def notify(text: str, markdown: bool = True) -> None:
     """Same requests-based Telegram pattern as src/notifier.py, kept as
     an independent copy since notifier.py is a frozen V1 live file.
     Tags the message with PAPER_VERSION when it isn't PRIMARY_PAPER_VERSION,
@@ -266,32 +277,73 @@ def notify(text: str) -> None:
     separate chat -- is the only thing that ever distinguished them.
     PRIMARY_PAPER_VERSION moved from V3_PAPER to V4_PAPER 2026-08-15 when
     V3_PAPER was retired (same reason V3.1_PAPER's messages already carried
-    a tag): purely cosmetic re-tagging, not a config change."""
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_USER_ID")
-    if not token or not chat_id:
-        print("WARNING: TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID not set.")
-        return
-    if PAPER_VERSION != PRIMARY_PAPER_VERSION:
-        text = f"[{PAPER_VERSION}] {text}"
-    url = f"{TELEGRAM_API}{token}/sendMessage"
+    a tag): purely cosmetic re-tagging, not a config change.
+
+    2026-11-19: markdown=False sends plain text (file names with underscores
+    break Telegram's Markdown parser and the whole message is silently
+    dropped). The same text is never sent twice in one run. Never raises:
+    a failed alert must not crash the job it reports on."""
     try:
-        resp = requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=15)
+        token = os.environ.get("TELEGRAM_BOT_TOKEN")
+        chat_id = os.environ.get("TELEGRAM_USER_ID")
+        if not token or not chat_id:
+            print("WARNING: TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID not set.")
+            return
+        if text in _SENT_TEXTS:
+            return
+        _SENT_TEXTS.add(text)
+        if PAPER_VERSION != PRIMARY_PAPER_VERSION:
+            text = f"[{PAPER_VERSION}] {text}"
+        url = f"{TELEGRAM_API}{token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text}
+        if markdown:
+            payload["parse_mode"] = "Markdown"
+        resp = requests.post(url, json=payload, timeout=15)
         resp.raise_for_status()
     except Exception as e:
-        print(f"WARNING: Failed to send Telegram message: {e}")
+        print(f"WARNING: Failed to send Telegram message: {type(e).__name__}")
+
+
+# script -> (what it is called in the alert, what a failure means)
+_SCRIPT_LABELS = {
+    "paper_signal_scan.py": ("Scan harian", "Hari ini belum ada scan, tidak ada order baru."),
+    "paper_monitor.py": ("Pemantau harga", "Satu putaran pantau harga terlewat."),
+}
+
+
+def plain_failure_reason(exc: BaseException) -> str:
+    """One short Indonesian phrase for why a run died -- no traceback."""
+    try:
+        import httpx
+        from postgrest.exceptions import APIError
+        if isinstance(exc, httpx.TransportError):
+            return "koneksi ke database putus"
+        if isinstance(exc, APIError):
+            return "database menolak permintaan"
+    except Exception:
+        pass
+    return "ada error di program"
 
 
 def run_guarded(main_fn, script_name: str) -> None:
-    """Runs main_fn(); on any uncaught exception, sends a Telegram alert
-    (GitHub Actions already emails on a failed run, but that's easy to
-    miss for days -- this makes a broken paper-trading job impossible to
-    miss) and re-raises so the workflow still shows red.
+    """Runs main_fn(); on any uncaught exception, sends a one-line plain
+    Indonesian Telegram alert (GitHub Actions already emails on a failed run,
+    but that's easy to miss for days -- this makes a broken paper-trading job
+    impossible to miss) and re-raises so the workflow still shows red. The
+    full traceback goes to the Actions log only, never into the message.
     """
     try:
         main_fn()
-    except Exception:
-        tb = traceback.format_exc()
-        print(tb, file=sys.stderr)
-        notify(f"\U0001F6A8 *{script_name} crashed*\n```\n{tb[-500:]}\n```")
+    except Exception as exc:
+        print(traceback.format_exc(), file=sys.stderr)
+        try:
+            label, impact = _SCRIPT_LABELS.get(script_name, (script_name, ""))
+            link = run_url()
+            msg = (f"{label} gagal jalan: {plain_failure_reason(exc)}. {impact} "
+                   f"Akan dicoba lagi otomatis di jadwal berikutnya.").replace("  ", " ")
+            if link:
+                msg += f" Kalau sampai malam belum ada kabar, cek log: {link}"
+            notify(msg, markdown=False)
+        except Exception:
+            pass
         raise

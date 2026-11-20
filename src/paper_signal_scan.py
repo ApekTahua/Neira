@@ -42,7 +42,7 @@ os.environ.setdefault("V4_TEST_END", date.today().isoformat())
 import config as cfg  # noqa: E402
 import backtest_v4 as bt  # noqa: E402
 import paper_common as pc  # noqa: E402
-from db_retry import retry as _retry  # noqa: E402
+from db_retry import retry as _retry, insert_idempotent  # noqa: E402
 from supabase import create_client  # noqa: E402
 
 LOT_SIZE = bt.LOT_SIZE
@@ -110,25 +110,21 @@ def _close_position(supabase, run_id: int, position_id: int, pos: dict, trade_re
         "hold_days": trade_record["hold_days"],
         "exited_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", position_id).execute())
-    # Deliberately NOT wrapped in retry: bare INSERT with no idempotency key
-    # (no unique constraint on run_id/stock_code/exit_date etc in
-    # sql/paper_trading_schema.sql -- backtest_trades predates that file and
-    # isn't defined there at all). If the first attempt actually succeeded
-    # server-side and only the response was lost to a transient blip, a
-    # retry would silently create a second identical backtest_trades row for
-    # the same exit, double-counting this trade in win-rate/profit-factor/
-    # frontend charts -- worse than the status quo (an uncaught exception
-    # here crashes the run, run_guarded() alerts, and the next scan picks up
-    # cleanly since paper_positions is already CLOSED). Same reasoning as
-    # paper_monitor.py's identical backtest_trades.insert() call.
-    supabase.table("backtest_trades").insert({
+    # No unique constraint on backtest_trades, so a blind retry could double-count
+    # a trade. insert_idempotent() retries only on a transient network error and
+    # first checks whether the earlier attempt already landed (same run/stock/
+    # entry/exit/reason).
+    insert_idempotent(supabase, "backtest_trades", {
         "run_id": run_id, "stock_code": trade_record["stock_code"],
         "entry_date": trade_record["entry_date"].isoformat(), "exit_date": trade_record["exit_date"].isoformat(),
         "entry_price": float(trade_record["entry_price"]), "exit_price": float(trade_record["exit_price"]),
         "lots": int(trade_record["lots"]), "pnl": float(trade_record["pnl"]), "pnl_pct": float(trade_record["pnl_pct"]),
         "exit_reason": trade_record["exit_reason"], "trigger": trade_record["trigger"],
         "hold_days": int(trade_record["hold_days"]),
-    }).execute()
+    }, key={"run_id": run_id, "stock_code": trade_record["stock_code"],
+            "entry_date": trade_record["entry_date"].isoformat(),
+            "exit_date": trade_record["exit_date"].isoformat(),
+            "exit_reason": trade_record["exit_reason"]})
 
 
 def _signal_scorecard(supabase, today: date) -> list[str]:
@@ -181,6 +177,55 @@ def _signal_scorecard(supabase, today: date) -> list[str]:
     return ["\U0001F9FE *How past signals actually did*", *out] if out else []
 
 
+_BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+_ALASAN_KELUAR = {
+    "SL": "kena batas rugi (stop loss)", "TP1": "ambil untung sebagian", "TRAILING": "trailing stop kena",
+    "TIME": "batas waktu tahan", "CHECKPOINT": "cek hari ke-N tidak lolos", "ROTATE": "diganti saham lain",
+    "DELISTED_GAP": "lama tidak diperdagangkan", "END": "akhir periode",
+}
+
+
+def _id_num(x: float, nd: int = 0) -> str:
+    """1234.5 -> '1.235' (Indonesian grouping); nd decimals use a comma."""
+    s = f"{x:,.{nd}f}"
+    return s.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def _daily_summary_lines(*, today, regime, idx_close, trend_strength, bullish_streak, regime_ok, index_missing,
+                         open_rows, queued, exits, equity, profit_pct, confirm_days, trend_min) -> list:
+    """Plain Indonesian end-of-scan message. Every number comes from the
+    variables the scan already computed; nothing is estimated here."""
+    lines = [f"Scan {today.day} {_BULAN[today.month - 1]} selesai."]
+    if index_missing:
+        lines.append("Data indeks hari ini belum masuk, jadi kondisi pasar tidak dinilai.")
+    else:
+        pct = abs(trend_strength) * 100
+        arah = "di atas" if trend_strength >= 0 else "di bawah"
+        lines.append(f"Pasar {regime} (IHSG {_id_num(idx_close)}, {_id_num(pct, 1)}% {arah} rata-rata 50 hari).")
+        if regime == "BULLISH" and not regime_ok:
+            kurang = []
+            if bullish_streak < confirm_days:
+                kurang.append(f"konfirmasi baru {bullish_streak} dari {confirm_days} hari")
+            if trend_strength < trend_min:
+                kurang.append(f"tren baru {_id_num(trend_strength * 100, 1)}%, butuh {_id_num(trend_min * 100, 1)}%")
+            if kurang:
+                lines.append("Belum boleh beli: " + "; ".join(kurang) + ".")
+    lines.append(f"Posisi terbuka: {len(open_rows)}.")
+    for r in open_rows:
+        lines.append(f"- {r['stock_code']}: dibeli di Rp{_id_num(float(r['avg_price']))}, {int(r['remaining_lots'])} lot.")
+    for code, price, reason in exits:
+        lines.append(f"Jual {code} di Rp{_id_num(float(price))}: {_ALASAN_KELUAR.get(reason, reason)}.")
+    for code, price in queued:
+        lines.append(f"Antre beli {code} saat buka besok (harga sinyal Rp{_id_num(price)}).")
+    if not open_rows and not queued and not exits:
+        if not index_missing and not regime_ok:
+            lines.append("Tidak ada beli hari ini, itu normal selama pasar belum pulih.")
+        elif not index_missing:
+            lines.append("Tidak ada saham yang lolos syarat beli hari ini.")
+    lines.append(f"Nilai portofolio Rp{_id_num(equity)} ({_id_num(profit_pct, 2)}% sejak mulai).")
+    return lines
+
+
 def main():
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
@@ -224,13 +269,9 @@ def main():
     # missing-row case explicitly and refuse to treat it as a market read.
     index_missing_today = idx_df.empty or not (idx_df["trade_date"] == today).any()
     if index_missing_today:
-        pc.notify(f"\U0001F6A8 *[{pc.PAPER_VERSION}] index_eod has no row for {today}* -- "
-                  f"ihsg_eod loaded normally but the index feed did not. Regime/"
-                  f"daily_gate_summary/daily_scoreboard/new-candidate generation are "
-                  f"being SKIPPED this run so a data outage can't be misread as a real "
-                  f"NEUTRAL regime (today's open-position exits below are unaffected -- "
-                  f"those only need ihsg_eod). Will retry in full on the next catch-up "
-                  f"schedule slot today once index_eod is fixed.")
+        pc.notify(f"Data indeks IHSG tanggal {today} belum masuk, jadi scan tidak menilai pasar dan tidak "
+                  f"mencari saham baru. Cek posisi terbuka tetap jalan. Dicoba lagi otomatis di jadwal "
+                  f"berikutnya. Kalau tetap kosong, cek pengisian data indeks (n8n).", markdown=False)
     regime_by_date, bullish_streak_by_date, trend_strength_by_date = bt.compute_regime_with_hysteresis(idx_df)
     regime = regime_by_date.get(today, "NEUTRAL")
     trend_strength = trend_strength_by_date.get(today, 0.0)
@@ -283,12 +324,14 @@ def main():
         # No backtest_trades row on purpose: nothing was ever bought or sold,
         # so counting it as a trade would pollute win-rate/profit-factor with
         # a phantom breakeven.
-        msg = (f"\U0001F6AB *EXPIRED* {row['stock_code']} -- queued {row['signal_date']}, never filled after "
-               f"{sessions_waited} session(s) (suspended / no valid open). Slot released.")
+        msg = (f"Order {row['stock_code']} dibatalkan: dipasang {row['signal_date']}, belum terisi setelah "
+               f"{sessions_waited} sesi (sahamnya disuspend atau tidak ada harga buka). Slot dilepas.")
         print(f"[EXPIRE] {msg}")
-        pc.notify(msg)
+        pc.notify(msg, markdown=False)
 
     new_candidates_notes = []
+    queued_today = []  # (stock, signal close) for the daily summary
+    exits_today = []   # (stock, exit price, reason) for the daily summary
     # Tracks whether any position actually closed (fully or TP1-partially)
     # today -- used below to quiet the routine EOD summary for a retired
     # run (pc.RETIRED_PAPER_VERSIONS) on a day where nothing happened to its
@@ -372,6 +415,7 @@ def main():
                 }
                 _close_position(supabase, run_id, row["id"], {"remaining_lots": 0}, trade_record)
                 had_exit_today = True
+                exits_today.append((row["stock_code"], exit_price, "DELISTED_GAP"))
                 print(f"  [EOD-RECONCILE] {row['stock_code']}: DELISTED_GAP (no print for {no_data_days}d) pnl={pnl:+,.0f}")
             else:
                 # Retry-safe: both fields are Python-computed absolute values
@@ -391,11 +435,11 @@ def main():
 
         prev_close = prev_close_by_stock.get(row["stock_code"])
         if pc.looks_like_unadjusted_corporate_action(prev_close, bar[1]):
-            msg = (f"⚠️ *{row['stock_code']}*: close Rp{bar[1]:,.0f} vs prev Rp{prev_close:,.0f} "
-                   f"looks like an unadjusted split/corporate action -- SKIPPING SL/TP check today, "
-                   f"please verify and correct avg_price/sl_price/tp1_price manually.")
+            msg = (f"Harga {row['stock_code']} turun/naik tidak wajar: Rp{prev_close:,.0f} jadi Rp{bar[1]:,.0f}. "
+                   f"Kemungkinan pemecahan saham (split), bukan harga asli. Cek stop loss hari ini dilewati. "
+                   f"Tolong cek manual dan betulkan harga beli/stop loss posisi ini.")
             print(f"  [CORP-ACTION-GUARD] {msg}")
-            pc.notify(msg)
+            pc.notify(msg, markdown=False)
             hold_days = int(row["hold_days"]) + 1
             # Retry-safe: absolute value keyed by this row's own id.
             _retry(lambda: supabase.table("paper_positions").update({"hold_days": hold_days}).eq("id", row["id"]).execute())
@@ -433,11 +477,13 @@ def main():
                     "no_data_days": 0, "last_valid_close": bar[1],
                 }).eq("id", row["id"]).execute())
                 had_exit_today = True
+                exits_today.append((trade_record["stock_code"], trade_record["exit_price"], "TP1"))
                 print(f"  [EOD-RECONCILE] {trade_record['stock_code']}: TP1 (partial, {pos['remaining_lots']} "
                       f"lot(s) remaining OPEN) pnl={trade_record['pnl']:+,.0f}")
             else:
                 _close_position(supabase, run_id, row["id"], pos, trade_record)
                 had_exit_today = True
+                exits_today.append((trade_record["stock_code"], trade_record["exit_price"], trade_record["exit_reason"]))
                 print(f"  [EOD-RECONCILE] {trade_record['stock_code']}: {trade_record['exit_reason']} "
                       f"pnl={trade_record['pnl']:+,.0f}")
             continue
@@ -637,26 +683,22 @@ def main():
                 # paper_monitor.py fills this row and computes all of that at execution
                 # time. signal_close is kept only for the gap-check at fill time.
                 #
-                # Deliberately NOT wrapped in retry: bare INSERT, no unique constraint
-                # on (run_id, stock_code, signal_date) or similar in
-                # sql/paper_trading_schema.sql (paper_positions' only unique column is
-                # its own serial id). If the first attempt actually succeeded server-side
-                # and only the response was lost, a retry would silently queue a second
-                # PENDING row for the same ticker -- the already_queued_codes dedup above
-                # only guards against re-scanning the SAME candidates list this run, not
-                # against a duplicate created by retrying this exact insert, and
-                # paper_monitor.py has no dedup of its own at fill time, so it would
-                # double-fill (double real capital deployed to one ticker on one signal).
-                # Same insert-safety reasoning as backtest_trades.insert() above.
-                supabase.table("paper_positions").insert({
+                # insert_idempotent(): no unique constraint on (run_id, stock_code,
+                # signal_date), so a blind retry could queue a second PENDING row and
+                # paper_monitor.py would double-fill it. The helper retries only on a
+                # transient network error, and only after checking that the first attempt
+                # did not already land (same run/stock/signal_date/PENDING).
+                insert_idempotent(supabase, "paper_positions", {
                     "run_id": run_id, "stock_code": sig["stock_code"], "status": "PENDING",
                     "signal_date": today.isoformat(), "trigger": sig["trigger"], "score": sig["score"],
                     "adtv_20": sig["adtv_20"], "avg_vol_20": sig["avg_vol_20"], "atr_at_entry": sig["atr"],
                     "entry_price_original": sig["signal_close"], "avg_price": sig["signal_close"],
                     "target_price": sig["tp_target"], "concentration": sig.get("concentration"),
                     "total_lots": 0, "remaining_lots": 0, "cost_basis": 0,
-                }).execute()
+                }, key={"run_id": run_id, "stock_code": sig["stock_code"],
+                        "signal_date": today.isoformat(), "status": "PENDING"})
                 new_candidates_notes.append(f"{sig['stock_code']} (score {sig['score']:.2f})")
+                queued_today.append((sig["stock_code"], float(sig["signal_close"])))
 
     # ---- EOD equity snapshot + backtest_runs summary ----
     still_open = _retry(lambda: supabase.table("paper_positions").select("*").eq("run_id", run_id).eq("status", "OPEN").execute()).data
@@ -750,25 +792,19 @@ def main():
     prior_max_dd = float(prior_max_dd_res.data[0]["max_drawdown"] or 0.0)
     running_max_dd = min(prior_max_dd, drawdown_pct)
 
-    # Deliberately NOT wrapped in retry: bare INSERT, no unique constraint on
-    # (run_id, date) visible in this repo (backtest_equity predates
-    # sql/paper_trading_schema.sql and isn't defined there at all). The
-    # last_signal_date == today guard at the top of main() prevents a whole
-    # second RUN of this script from re-inserting today's snapshot, but does
-    # not make retrying this specific insert call safe -- if the first
-    # attempt actually succeeded server-side and only the response was lost,
-    # a retry here would silently create a second equity row for the same
-    # date, corrupting the equity curve/drawdown history this same function
-    # reads on every subsequent run. Same insert-safety reasoning as
-    # backtest_trades.insert() in _close_position() above.
+    # insert_idempotent(): no unique constraint on (run_id, date) visible in this
+    # repo. The last_signal_date == today guard at the top of main() stops a second
+    # RUN from re-inserting; the helper makes a retry inside THIS run safe (it only
+    # retries on a transient network error, after checking the first attempt did not
+    # already land).
     # F-023: equity/drawdown itself is real (computed off ihsg_eod closes, not
     # the index) even on an index-missing day -- only the `regime` label on
     # this row would be the fabricated default, so mark it explicitly instead
     # of writing a bare "NEUTRAL" indistinguishable from a real neutral read.
-    supabase.table("backtest_equity").insert({
+    insert_idempotent(supabase, "backtest_equity", {
         "run_id": run_id, "date": today.isoformat(), "portfolio_value": total_equity,
         "drawdown_pct": drawdown_pct, "regime": (regime if not index_missing_today else "UNKNOWN_INDEX_MISSING"),
-    }).execute()
+    }, key={"run_id": run_id, "date": today.isoformat()})
     # Retry-safe: absolute overwrite keyed by this run's own id.
     _retry(lambda: supabase.table("backtest_runs").update({
         "period_end": today.isoformat(), "final_capital": total_equity, "net_profit_pct": net_profit_pct,
@@ -784,33 +820,16 @@ def main():
 
     print(f"[EOD] equity=Rp{total_equity:,.0f} ({net_profit_pct:+.2f}%) cash=Rp{cash:,.0f} open={len(still_open)}")
 
-    lines = [
-        "\U0001F4CA *Neira Paper Trading -- EOD*",
-        f"\U0001F4C5 `{today}`",
-        f"Equity: Rp{total_equity:,.0f} ({net_profit_pct:+.2f}%)",
-        f"Open positions: {len(still_open)} | Win rate: {win_rate:.1f}% ({wins}/{total_positions} positions closed)",
-    ]
-    if index_missing_today:
-        lines.append("\u26A0\uFE0F index_eod missing for today -- regime/scoreboard/new candidates "
-                     "SKIPPED, not defaulted to NEUTRAL. See the alert sent earlier this run.")
-    # Real-capital readiness gate (docs/MASTERPLAN.md criterion A) -- surfaced
-    # daily so it can't quietly go stale in the roadmap docs again (2026-08-26
-    # council finding: a 9-day gap between real work and any visible record of
-    # it was the actual cause of a "no progress" feeling, not a lack of real
-    # progress). Only meaningful for the run real capital would actually
-    # follow -- a retired run's trade count isn't gating anything.
-    if pc.PAPER_VERSION == pc.PRIMARY_PAPER_VERSION:
-        days_elapsed = (today - period_start).days
-        lines.append(f"Gate: {total_trades}/25-30 closed trades · day {days_elapsed}/42-56")
-        # Signal accountability. Wrapped because this is reporting, not
-        # trading: a view that is missing or slow must never take down the
-        # job that manages real open positions.
-        try:
-            lines.extend(_signal_scorecard(supabase, today))
-        except Exception as exc:  # noqa: BLE001
-            print(f"[SCORECARD] skipped -- {exc}")
-    if new_candidates_notes:
-        lines.append("New candidates queued for tomorrow's open: " + ", ".join(new_candidates_notes))
+    idx_close = None
+    if not index_missing_today:
+        idx_close = float(idx_df.loc[idx_df["trade_date"] == today, "close"].iloc[0])
+    lines = _daily_summary_lines(
+        today=today, regime=regime, idx_close=idx_close, trend_strength=trend_strength,
+        bullish_streak=int(bullish_streak_by_date.get(today, 0)), regime_ok=bool(regime_ok),
+        index_missing=index_missing_today, open_rows=still_open, queued=queued_today, exits=exits_today,
+        equity=total_equity, profit_pct=net_profit_pct,
+        confirm_days=bt.REGIME_CONFIRM_DAYS, trend_min=bt.TREND_STRENGTH_MIN,
+    )
     # A retired run (pc.RETIRED_PAPER_VERSIONS) never has new_candidates_notes
     # (stop_new_entries gates that above) -- so on a day where none of its
     # remaining open positions exited either, this EOD summary is pure
@@ -820,7 +839,7 @@ def main():
     if stop_new_entries and not had_exit_today:
         print("[EOD] Retired run, no exit today -- skipping routine Telegram summary.")
     else:
-        pc.notify("\n".join(lines))
+        pc.notify("\n".join(lines), markdown=False)
 
 
 if __name__ == "__main__":
