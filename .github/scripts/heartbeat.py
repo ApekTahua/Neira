@@ -23,7 +23,7 @@ def get(path):
     with urllib.request.urlopen(req, timeout=30) as r:
         rows = json.load(r)
     if not rows:
-        sys.exit(f"HEARTBEAT FAIL: {path.split('?')[0]} returned no rows")
+        sys.exit(f"Cek data harian gagal: tabel {path.split('?')[0]} kosong. Cek database.")
     return rows[0]
 
 
@@ -65,16 +65,16 @@ fails, warns = [], []
 for name, d in (("ihsg_eod", eod), ("index_eod", idx)):
     lag = weekdays_between(d, expected)
     if lag >= 2:
-        fails.append(f"{name} latest is {d}, {lag} business days behind {expected}. Ingest (n8n) may be dead.")
+        fails.append(f"Data {name} terakhir {d}, tertinggal {lag} hari bursa dari {expected}. Pengisian data (n8n) mungkin mati.")
 
 # (c) gate + scoreboard must follow ihsg_eod, and the gate must not be the fabricated default
 for name, d in (("daily_gate_summary", gate_d), ("daily_scoreboard", sb_d)):
     if d < eod:
-        msg = f"{name} latest is {d} but ihsg_eod is {eod}: scan/heal has not written that day."
+        msg = f"{name} terakhir {d}, padahal harga saham sudah sampai {eod}. Scan harian belum menulis hari itu."
         # Evening run: the scan has catch-up slots until 22:10 WIB, so a 1-day lag is only a warning.
         (warns if evening and eod == today and weekdays_between(d, eod) == 1 else fails).append(msg)
 if gate["regime"] == "NEUTRAL" and float(gate["trend_strength"]) == 0.0:
-    fails.append(f"daily_gate_summary {gate_d} is the fabricated default (NEUTRAL, trend 0.0). Index data was missing when the scan ran.")
+    fails.append(f"Status pasar tanggal {gate_d} berisi nilai bawaan (NETRAL, tren 0), bukan hasil hitung. Data indeks IHSG belum ada saat scan jalan.")
 
 # (a) ihsg_realtime freshness: n8n writes it every 15 min 09:00-17:00 WIB on trading days.
 # After a trading day it must hold a write from at least 14:00 WIB that day. Skip weekends and
@@ -86,12 +86,16 @@ elif eod < expected:
 else:
     need = datetime(eod.year, eod.month, eod.day, 14, 0, tzinfo=WIB)
     if rt < need:
-        fails.append(f"ihsg_realtime last write {rt.astimezone(WIB):%Y-%m-%d %H:%M} WIB, expected one after {need:%Y-%m-%d %H:%M}. n8n realtime job looks dead.")
+        fails.append(f"Harga live terakhir masuk {rt.astimezone(WIB):%Y-%m-%d %H:%M} WIB, seharusnya ada setelah {need:%Y-%m-%d %H:%M}. Pengisian harga live (n8n) mungkin mati.")
 
 for w in warns:
     print(f"::warning::{w}")
 if fails:
     for f in fails:
-        print(f"::error::HEARTBEAT FAIL: {f}")
+        print(f"::error::Cek data harian gagal: {f}")
+    run = os.environ.get("GITHUB_RUN_ID")
+    if run:
+        print(f"Log lengkap: {os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/"
+              f"{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{run}")
     sys.exit(1)
-print("HEARTBEAT OK")
+print("Cek data harian: OK")
