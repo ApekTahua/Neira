@@ -7,13 +7,30 @@ on:
   schedule:
     - cron: '30 13 * * 1-6'
     - cron: '30 23 * * 0-5'
+    # Hourly n8n uptime ping (job n8n-health below). Replaces an external uptime monitor.
+    - cron: '7 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  n8n-health:
+    if: github.event.schedule == '7 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping n8n /healthz (15 s timeout, 2 retries)
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://n8n.newscraperai.site/healthz || true)
+            [ "$code" = "200" ] && echo "n8n OK" && exit 0
+            sleep 5
+          done
+          echo "::error::n8n tidak merespons"
+          exit 1
   heartbeat:
+    if: github.event.schedule != '7 * * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
